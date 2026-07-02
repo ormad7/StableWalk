@@ -1,0 +1,11 @@
+{
+  "comment": "Pose-checked men's walk clips (OpenCV + MediaPipe full-body). Used by Preset / Next video.",
+  "videos": [
+    {"id": 5319095, "label": "Man walking — steady pace (best)", "pose_ratio": 1.0},
+    {"id": 6830920, "label": "Men walking — frozen lake", "pose_ratio": 1.0},
+    {"id": 5823532, "label": "Walker — front view path", "pose_ratio": 1.0},
+    {"id": 2803277, "label": "Man walking — sidewalk (full body)", "pose_ratio": 1.0},
+    {"id": 3756871, "label": "Man walking — park trail", "pose_ratio": 1.0},
+    {"id": 4540121, "label": "Man walking — outdoor clip A", "pose_ratio": 1.0}
+  ]
+}

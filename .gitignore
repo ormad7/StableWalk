@@ -1,0 +1,61 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg
+*.egg-info/
+.eggs/
+
+# ---- Build / distribution ----
+build/
+dist/
+*.spec
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Environment / secrets (never commit) ----
+.env
+.env.*
+*.key
+*.pem
+secrets.toml
+.streamlit/secrets.toml
+
+# ---- IDE / editor ----
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---- OS junk ----
+.DS_Store
+Thumbs.db
+
+# ---- Test / type / lint caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+htmlcov/
+
+# ---- Node (if ever added) ----
+node_modules/
+
+# ---- Large / generated project data (regenerable) ----
+models/
+data/output/
+data/videos/
+
+# ---- Media (large binaries) ----
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# ---- Archives ----
+*.zip

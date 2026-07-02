@@ -1,0 +1,18 @@
+# Men's walking videos for StableWalk
+# Format:  Label | URL
+# Use the Preset dropdown or click "Load Video" with the default URL below.
+#
+# DEFAULT (paste into URL field or pick first Preset):
+# https://www.pexels.com/download/video/5319095/
+#
+# All clips below are pose-verified (full-body walk, good for skeleton tracking):
+
+Man walking — steady pace (best) | https://www.pexels.com/download/video/5319095/
+Men walking — frozen lake | https://www.pexels.com/download/video/6830920/
+Walker — front view path | https://www.pexels.com/download/video/5823532/
+Man walking — sidewalk (full body) | https://www.pexels.com/download/video/2803277/
+Man walking — park trail | https://www.pexels.com/download/video/3756871/
+Man walking — outdoor clip A | https://www.pexels.com/download/video/4540121/
+
+# Find more: https://www.pexels.com/search/videos/man%20walking/
+# Use direct download links: https://www.pexels.com/download/video/VIDEO_ID/
