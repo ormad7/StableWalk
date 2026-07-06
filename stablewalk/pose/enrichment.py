@@ -70,7 +70,7 @@ def enrich_pose_sequence(sequence: PoseSequence) -> tuple[list[GaitEvent], dict[
     contact_result = ContactDetector().detect(sequence)
     attach_foot_contact_to_frames(sequence, contact_result)
 
-    events, annotations = analyze_gait_sequence(sequence.frames)
+    events, annotations = analyze_gait_sequence(sequence.frames, fps=sequence.fps)
     attach_gait_phases_to_frames(sequence, annotations)
     # Contact-based stance/swing kept on foot_contact; gait_phase may refine from HS/TO
     for frame in sequence.frames:

@@ -1,5 +1,8 @@
 """
 Gait cycle phase and event detection (heel strike, toe-off) from 2D ankle kinematics.
+
+Heel strikes use the shared robust detector in ``gait_step_detection`` so event
+counts match the stability pipeline and reject landmark jitter.
 """
 
 from __future__ import annotations
@@ -9,6 +12,10 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from stablewalk.models.pose_data import PoseFrame
+from stablewalk.pose.gait_step_detection import (
+    detect_gait_steps,
+    detect_steps_in_signal,
+)
 
 SIDES = ("left", "right")
 ANKLE_BY_SIDE = {"left": "left_ankle", "right": "right_ankle"}
@@ -54,58 +61,73 @@ def _ankle_y_series(
     return indices, np.array(ys, dtype=float)
 
 
-def _find_extrema(y: np.ndarray, mode: str) -> list[int]:
-    """Local maxima (mode='max') or minima (mode='min') indices."""
-    if len(y) < 3:
-        return []
-    extrema: list[int] = []
-    for i in range(1, len(y) - 1):
-        if mode == "max" and y[i] > y[i - 1] and y[i] > y[i + 1]:
-            extrema.append(i)
-        elif mode == "min" and y[i] < y[i - 1] and y[i] < y[i + 1]:
-            extrema.append(i)
-    return extrema
-
-
 def detect_side_events(
     frame_indices: list[int],
     y: np.ndarray,
     side: str,
+    *,
+    fps: float = 30.0,
+    body_height: float = 0.5,
 ) -> list[GaitEvent]:
     """
-    Heel strike ≈ ankle lowest in image (local max y).
-    Toe-off ≈ ankle highest in image during swing (local min y).
+    Heel strike ≈ foot contact (local max y after robust filtering).
+
+    Toe-off events are estimated as mid-swing minima between consecutive heel
+    strikes only (not every local minimum) to avoid jitter-driven over-counting.
     """
     events: list[GaitEvent] = []
     if len(y) < 5:
         return events
 
-    y_smooth = np.convolve(y, np.ones(3) / 3, mode="same")
-    y_range = float(np.max(y_smooth) - np.min(y_smooth))
-    if y_range < 0.02:
-        return events
+    signal = [float(v) if not np.isnan(v) else None for v in y]
+    det = detect_steps_in_signal(
+        signal,
+        fps,
+        side=side,
+        body_scale=body_height,
+        landmark_used=ANKLE_BY_SIDE[side],
+        aligned_frame_indices=frame_indices,
+    )
 
-    for idx in _find_extrema(y_smooth, "max"):
+    hs_frames = det.event_frame_indices
+    valid = det.smoothed_y[~np.isnan(det.smoothed_y)]
+    y_range = float(np.max(valid) - np.min(valid)) if valid.size else 0.0
+    conf = min(1.0, y_range / 0.08) if y_range > 0 else 0.5
+
+    for fi in hs_frames:
         events.append(
             GaitEvent(
-                frame_index=frame_indices[idx],
+                frame_index=fi,
                 side=side,
                 event_type="heel_strike",
-                confidence=min(1.0, y_range / 0.08),
+                confidence=conf,
             )
         )
 
-    for idx in _find_extrema(y_smooth, "min"):
+    # One toe-off between each pair of consecutive heel strikes (lowest y in between).
+    for i in range(len(hs_frames) - 1):
+        start_f, end_f = hs_frames[i], hs_frames[i + 1]
+        seg_idx = [
+            j for j, fidx in enumerate(frame_indices)
+            if start_f <= fidx <= end_f
+        ]
+        if len(seg_idx) < 3:
+            continue
+        seg_y = det.smoothed_y[seg_idx]
+        if np.all(np.isnan(seg_y)):
+            continue
+        toe_local = int(np.nanargmin(seg_y))
+        toe_frame = frame_indices[seg_idx[toe_local]]
         events.append(
             GaitEvent(
-                frame_index=frame_indices[idx],
+                frame_index=toe_frame,
                 side=side,
                 event_type="toe_off",
-                confidence=min(1.0, y_range / 0.08),
+                confidence=conf * 0.9,
             )
         )
 
-    events.sort(key=lambda e: e.frame_index)
+    events.sort(key=lambda e: (e.frame_index, e.side, e.event_type))
     return events
 
 
@@ -127,7 +149,6 @@ def assign_phases(
     for i, fidx in enumerate(frame_indices):
         phases[fidx] = "stance" if y[i] >= median_y else "swing"
 
-    # Refine using events when available
     hs_frames = [e.frame_index for e in events if e.side == side and e.event_type == "heel_strike"]
     to_frames = [e.frame_index for e in events if e.side == side and e.event_type == "toe_off"]
 
@@ -142,7 +163,11 @@ def assign_phases(
     return phases
 
 
-def analyze_gait_sequence(frames: list[PoseFrame]) -> tuple[list[GaitEvent], dict[int, GaitCycleAnnotation]]:
+def analyze_gait_sequence(
+    frames: list[PoseFrame],
+    *,
+    fps: float = 30.0,
+) -> tuple[list[GaitEvent], dict[int, GaitCycleAnnotation]]:
     """
     Detect gait events and per-frame phase labels for a pose sequence.
 
@@ -150,15 +175,52 @@ def analyze_gait_sequence(frames: list[PoseFrame]) -> tuple[list[GaitEvent], dic
         timeline of GaitEvent objects
         map frame_index → GaitCycleAnnotation
     """
+    from stablewalk.models.pose_data import PoseSequence
+
     detected = [f for f in frames if f.detected]
     all_events: list[GaitEvent] = []
     annotations: dict[int, GaitCycleAnnotation] = {}
 
+    # Use shared robust bilateral detector for consistent heel-strike timing.
+    seq = PoseSequence(source_video="", frames=frames, fps=fps)
+    gait = detect_gait_steps(seq)
+    body_h = gait.body_height
+
     phase_maps: dict[str, dict[int, str]] = {"left": {}, "right": {}}
 
     for side in SIDES:
+        side_det = gait.left if side == "left" else gait.right
         indices, y = _ankle_y_series(detected, side)
-        side_events = detect_side_events(indices, y, side) if len(indices) else []
+        side_events: list[GaitEvent] = []
+        for fi in side_det.event_frame_indices:
+            side_events.append(
+                GaitEvent(
+                    frame_index=fi,
+                    side=side,
+                    event_type="heel_strike",
+                    confidence=0.9 if gait.confidence == "high" else 0.6,
+                )
+            )
+        # Toe-off between consecutive heel strikes only.
+        hs_sorted = sorted(side_det.event_frame_indices)
+        for i in range(len(hs_sorted) - 1):
+            start_f, end_f = hs_sorted[i], hs_sorted[i + 1]
+            seg = [
+                (j, float(y[j]))
+                for j in range(len(indices))
+                if start_f <= indices[j] <= end_f and j < len(y)
+            ]
+            if len(seg) < 3:
+                continue
+            toe_j, _ = min(seg, key=lambda t: t[1])
+            side_events.append(
+                GaitEvent(
+                    frame_index=indices[toe_j],
+                    side=side,
+                    event_type="toe_off",
+                    confidence=0.8 if gait.confidence == "high" else 0.5,
+                )
+            )
         all_events.extend(side_events)
         phase_maps[side] = assign_phases(indices, y, side_events, side)
 

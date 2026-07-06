@@ -18,11 +18,14 @@ from stablewalk.analysis.ground_reference import (
     GroundReferencePlane,
     FootClearanceReading,
     FootClearanceSessionStats,
+    bilateral_foot_clearance,
+    bilateral_foot_clearance_series,
     clearance_sanity_flag,
     compute_foot_clearance_reading,
     compute_session_foot_clearance_stats,
     estimate_ground_plane,
     format_clearance_cm,
+    format_foot_clearance_display,
     format_supporting_clearance_cm,
     ground_distance_m,
     vertical_coordinate,
@@ -74,6 +77,22 @@ class FootAnalysisCardMetrics:
     clearance_value_cm: str = "—"
     clearance_quality: str = "—"
     ground_note: str = ""
+
+
+@dataclass(frozen=True)
+class BilateralGroundClearancePanel:
+    """Real-time left/right foot ground distance for the dashboard strip."""
+
+    left_cm: str
+    right_cm: str
+    left_contact: str
+    right_contact: str
+    phase_summary: str
+    scale_note: str
+    left_quality: str = ""
+    right_quality: str = ""
+    left_phase: str = "—"
+    right_phase: str = "—"
 
 
 @dataclass(frozen=True)
@@ -554,6 +573,136 @@ def floor_distance_parts_for_panel(
     primary = f"{frac * 100.0:.0f}% of body height"
     secondary = f"\u2248 {cm_est:.0f} cm (assumes 1.70 m tall)"
     return (primary, secondary)
+
+
+def _clearance_cm_for_panel(
+    reading: FootClearanceReading,
+    *,
+    plane: GroundReferencePlane | None,
+    calibration_check: bool = False,
+) -> tuple[str, str]:
+    """Format one foot clearance line for the bilateral ground strip."""
+    scale = plane.scale_mode if plane is not None else "body_normalized"
+    display = format_foot_clearance_display(
+        reading.foot_clearance_m,
+        sanity_flag=reading.sanity_flag,
+        scale_mode=scale,
+        calibration_check=calibration_check or reading.sanity_flag,
+    )
+    return display.value_cm, display.quality_label
+
+
+def bilateral_ground_clearance_for_panel(
+    snapshot: SkeletonSnapshot | None,
+    recording: GaitMotionRecording | None,
+    end_frame_float: float,
+    *,
+    prev_left_phase: str | None = None,
+    prev_right_phase: str | None = None,
+) -> BilateralGroundClearancePanel | None:
+    """
+    Left/right foot ground distance at the current playback frame.
+
+    Uses the minimum vertical distance among toe, heel, and ankle per side.
+    Centimeter values are estimated body-scale (not clinical ground truth).
+    """
+    if snapshot is None or recording is None:
+        return None
+    plane = estimate_ground_plane(recording, end_frame_float)
+    if plane is None:
+        return None
+
+    bilateral = bilateral_foot_clearance(
+        snapshot,
+        plane,
+        prev_left_phase=prev_left_phase,
+        prev_right_phase=prev_right_phase,
+    )
+    calibration = (
+        bilateral.left.sanity_flag
+        or bilateral.right.sanity_flag
+        or plane.scale_mode == "unknown"
+    )
+    left_cm, left_quality = _clearance_cm_for_panel(
+        bilateral.left, plane=plane, calibration_check=calibration
+    )
+    right_cm, right_quality = _clearance_cm_for_panel(
+        bilateral.right, plane=plane, calibration_check=calibration
+    )
+
+    if calibration:
+        left_contact = CALIBRATION_CHECK_LABEL
+        right_contact = CALIBRATION_CHECK_LABEL
+    else:
+        left_contact = bilateral.left.contact_state
+        right_contact = bilateral.right.contact_state
+
+    phase_bits: list[str] = []
+    if bilateral.left_phase not in ("—", ""):
+        phase_bits.append(f"L {bilateral.left_phase}")
+    if bilateral.right_phase not in ("—", ""):
+        phase_bits.append(f"R {bilateral.right_phase}")
+    phase_summary = " · ".join(phase_bits) if phase_bits else ""
+
+    if plane.scale_mode == "body_normalized":
+        scale_note = "est. body-scale"
+    else:
+        scale_note = "relative scale"
+
+    return BilateralGroundClearancePanel(
+        left_cm=left_cm,
+        right_cm=right_cm,
+        left_contact=left_contact,
+        right_contact=right_contact,
+        phase_summary=phase_summary,
+        scale_note=scale_note,
+        left_quality=left_quality,
+        right_quality=right_quality,
+        left_phase=bilateral.left_phase,
+        right_phase=bilateral.right_phase,
+    )
+
+
+def bilateral_foot_clearance_export_rows(
+    recording: GaitMotionRecording,
+    end_frame_float: float,
+) -> list[dict[str, Any]]:
+    """Export-friendly bilateral foot clearance time series."""
+    plane = estimate_ground_plane(recording, end_frame_float)
+    series = bilateral_foot_clearance_series(recording, end_frame_float)
+    is_estimated = plane is not None and plane.scale_mode == "body_normalized"
+    rows: list[dict[str, Any]] = []
+    for sample in series:
+        left_cm = (
+            None
+            if sample.left_clearance_m is None
+            else round(sample.left_clearance_m * 100.0, 2)
+        )
+        right_cm = (
+            None
+            if sample.right_clearance_m is None
+            else round(sample.right_clearance_m * 100.0, 2)
+        )
+        rows.append(
+            {
+                "frame": sample.frame_index + 1,
+                "time_sec": round(sample.time_s, 4),
+                "left_foot_ground_m": sample.left_clearance_m,
+                "right_foot_ground_m": sample.right_clearance_m,
+                "left_foot_ground_cm": left_cm,
+                "right_foot_ground_cm": right_cm,
+                "left_contact_status": sample.left_contact,
+                "right_contact_status": sample.right_contact,
+                "left_gait_phase": sample.left_phase,
+                "right_gait_phase": sample.right_phase,
+                "clearance_is_estimated": is_estimated,
+                "ground_level_reference_m": plane.floor_y if plane else None,
+                "vertical_distance_axis": (
+                    plane.vertical_axis.upper() if plane else "Y"
+                ),
+            }
+        )
+    return rows
 
 
 def floor_distance_range_parts_for_panel(

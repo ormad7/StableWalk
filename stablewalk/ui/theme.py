@@ -71,7 +71,11 @@ DASHBOARD_SIDE_PAD = (PAD_SM, PAD_XS)
 RADIUS_EMULATE = 2  # relief for card-like frames
 
 # User-facing copy (display only)
-EMPTY_VIDEO_TEXT = "Choose a preset, then click Analyze"
+EMPTY_VIDEO_TEXT = (
+    "Load a walking video\n\n"
+    "• Demo Gait Examples below\n"
+    "• File… or Analyze (preset URL)"
+)
 EMPTY_NO_JOINT = "No joint selected"
 EMPTY_SELECT_DOF_TRAJECTORY = "Select one or more joints to compare their trajectories."
 TRAJ_DEFAULT_STATUS = (
@@ -101,7 +105,7 @@ DOF_ANALYSIS_PANEL_LINE_Y = "Y"
 DOF_ANALYSIS_PANEL_LINE_Z = "Z"
 DOF_ANALYSIS_GRAPH_CAPTION_PATH = "Path so far"
 DOF_ANALYSIS_GRAPH_CAPTION_CURRENT = "Current position"
-DOF_ANALYSIS_GRAPH_CAPTION_GENERAL = "3D point movement"
+DOF_ANALYSIS_GRAPH_CAPTION_GENERAL = "Joint Movement"
 DOF_ANALYSIS_GRAPH_CAPTION_FOOT = ""
 DOF_ANALYSIS_GRAPH_CAPTION_GROUND = "Clearance to ground"
 DOF_ANALYSIS_GRAPH_LEGEND_START = "Start"

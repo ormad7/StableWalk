@@ -268,11 +268,11 @@ def _single_dof_figure_margins(
     # projected cube) and keep a thin top margin. Shorter panels need a
     # proportionally larger band so the descriptive labels are never clipped.
     if h_px < 300:
-        bottom, top = 0.24, 0.98
+        bottom, top = 0.16, 0.99
     elif h_px < 440:
-        bottom, top = 0.18, 0.98
+        bottom, top = 0.12, 0.99
     else:
-        bottom, top = 0.13, 0.98
+        bottom, top = 0.08, 0.99
 
     if foot_mode:
         bottom = min(bottom + 0.04, 0.30)
@@ -286,7 +286,7 @@ def _single_dof_figure_margins(
     width_frac = target_px_ratio * band_h * h_in / max(w_in, 0.1)
     # Let the cube claim most of the panel width so it reads as a large graph
     # instead of a small box stranded in empty space on a wide, short panel.
-    width_frac = max(0.72, min(0.92, width_frac))
+    width_frac = max(0.78, min(0.96, width_frac))
     span = 1.0 - width_frac
     left = span * 0.42
     right = left + width_frac

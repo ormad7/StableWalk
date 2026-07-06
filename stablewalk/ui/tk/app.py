@@ -29,7 +29,7 @@ from stablewalk import config
 from stablewalk.pose.dof import DOF_LABELS, GAIT_ANGLE_FIELDS, GAIT_VELOCITY_JOINTS, LIMB_GROUP_LABELS, limb_group_keys
 from stablewalk.pose.kinematics import velocity_between_frames
 from stablewalk.models.pose_data import PoseFrame, PoseSequence
-from stablewalk.storage.collector import SessionKinematicCollector
+from stablewalk.storage.collector import BilateralFootCollector, SessionKinematicCollector
 from stablewalk.storage.service import SessionStorageService
 from stablewalk.core.pipeline import PipelineResult, run_gait_pipeline
 from stablewalk.core.pipeline_reset import release_all_captures
@@ -130,6 +130,7 @@ from stablewalk.ui.viewers.dof_trajectory_3d import TRAJECTORY_COLORS, draw_sing
 from stablewalk.ui.viewers.gait_skeleton_renderer import (
     DEFAULT_SKELETON_DISPLAY_MODE,
     LABEL_TO_SKELETON_MODE,
+    compute_skeleton_view_box,
     draw_gait_skeleton,
     joint_id_from_pick,
     nearest_joint_from_event,
@@ -143,6 +144,23 @@ from stablewalk.ui.media.presets import (
     list_runnable_presets,
     preset_by_label,
     preset_from_custom_url,
+)
+from stablewalk.ui.media.demo_gait import (
+    DEMO_GAIT_EXAMPLES,
+    DemoGaitExample,
+    demo_cached_file_ready,
+    demo_exists,
+    demo_path,
+    demo_stream_source,
+    demo_validation_status,
+    example_by_key,
+    is_demo_video_path,
+    missing_file_message,
+    missing_file_placeholder,
+)
+from stablewalk.ui.media.demo_comparison import (
+    DemoGaitComparisonRow,
+    build_comparison_row,
 )
 from stablewalk.pose.video_validation import validate_video_source
 from stablewalk.ui.theme import (
@@ -165,6 +183,7 @@ from stablewalk.ui.theme import (
     PAD_MD,
     PAD_SM,
     PAD_XS,
+    REFRESH_INTERVAL_CHOICES,
     REFRESH_INTERVAL_DEFAULT,
     SIDEBAR_WIDTH,
     SURFACE,
@@ -179,6 +198,7 @@ from stablewalk.ui.theme import (
     FONT_TITLE,
     FONT_UI,
     FONT_METRIC,
+    FONT_MONO_SM,
     FONT_UI_SM,
     FONT_UI_XS,
     menu_colors,
@@ -209,8 +229,14 @@ class StableWalkGUI:
     ) -> None:
         self.root = root or tk.Tk()
         self.root.title("StableWalk — Gait Analysis Dashboard")
-        self.root.geometry("1920x1080")
-        self.root.minsize(1440, 880)
+        from stablewalk.ui.tk.dashboard_responsive import (
+            MIN_WINDOW_HEIGHT,
+            MIN_WINDOW_WIDTH,
+            initial_window_geometry,
+        )
+
+        self.root.geometry(initial_window_geometry(self.root))
+        self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
         self.root.configure(bg=BG)
 
         self.sequence: PoseSequence | None = None
@@ -234,6 +260,8 @@ class StableWalkGUI:
         self._last_dof_table_refresh = 0.0
         self._dof_table_history = DofPositionTableHistory()
         self._session_collector = SessionKinematicCollector()
+        self._bilateral_foot_collector = BilateralFootCollector()
+        self._ground_clearance_prev_phase: tuple[str | None, str | None] = (None, None)
         self._session_storage = SessionStorageService()
         self._session_save_in_progress = False
         self._dof_table_track_history = True
@@ -270,11 +298,13 @@ class StableWalkGUI:
         self._session_id: int = 0
         self._demo_running: bool = False
         self._presentation_mode: bool = False
+        self._active_demo_gait: DemoGaitExample | None = None
+        self._demo_comparison_rows: dict[str, DemoGaitComparisonRow] = {}
         self._presentation_after_id: str | None = None
         self._demo_poses_a: Path | None = None
         self._demo_stability_a: StabilityReport | None = None
         self._pipeline_callback: PipelineCallback | None = None
-        self._show_success_dialog: bool = True
+        self._show_success_dialog: bool = False
         self._fade_step: int = 0
         self._run_metadata: PipelineResult | None = None
         self._active_run_name: str | None = None
@@ -307,8 +337,53 @@ class StableWalkGUI:
             if initial:
                 self.load_poses(initial, fresh=True)
         else:
-            self._load_presentation_demo()
+            self._show_welcome_state()
 
+    def _show_welcome_state(self) -> None:
+        """Clean startup screen for live presentation — no synthetic demo loaded."""
+        self._cancel_presentation_autoplay()
+        self._cancel_timer()
+        self._presentation_mode = False
+        self.playing = False
+        self.gait_motion = None
+        self.skeleton_player = None
+        self.sequence = None
+        self.pose_indices = []
+        self._poses_path = None
+        self._active_run_name = None
+        self._dof_table_history.clear()
+        self._session_collector.clear()
+        self._bilateral_foot_collector.clear()
+        self._ground_clearance_prev_phase = (None, None)
+        self.selection.clear()
+        self._clear_demo_gait_context()
+        self._reset_stability_panel()
+        if hasattr(self, "slider"):
+            self.slider.configure(to=0)
+            self.frame_var.set(0)
+        self._sync_play_buttons()
+        self._sync_transport_labels()
+        if hasattr(self, "video_label"):
+            configure_video_placeholder(self.video_label)
+            self.video_label.configure(
+                image="",
+                text=EMPTY_VIDEO_TEXT,
+                fg=MUTED,
+                justify=tk.CENTER,
+                anchor=tk.CENTER,
+                wraplength=420,
+            )
+        self._video_aspect = None
+        from stablewalk.ui.tk.dashboard_layout import apply_top_row_aspect
+
+        apply_top_row_aspect(self, None)
+        self._update_dashboard_empty_states()
+        if hasattr(self, "ax_3d"):
+            self._update_interactive_skeleton(force_draw=True)
+        self._update_ground_clearance_visibility()
+        self.status.configure(
+            text="Ready — load a walking video or choose a Demo Gait Example"
+        )
     def _cancel_presentation_autoplay(self) -> None:
         if self._presentation_after_id:
             try:
@@ -327,14 +402,23 @@ class StableWalkGUI:
         self._opensim_status_override = None
         self._dof_table_history.clear()
         self._session_collector.clear()
+        self._bilateral_foot_collector.clear()
+        self._ground_clearance_prev_phase = (None, None)
 
         recording = generate_presentation_recording()
+        self._clear_demo_gait_context()
         self._set_gait_motion(recording)
         self._apply_presentation_dof_selection()
 
         self._session_display_src = "Presentation walk"
         self._update_session_selection_overview()
-        if hasattr(self, "lbl_stab_headline"):
+        if hasattr(self, "lbl_stab_score"):
+            self.lbl_stab_score.configure(text="—", fg=ACCENT)
+        if hasattr(self, "lbl_stab_category"):
+            self.lbl_stab_category.configure(
+                text=PRESENTATION_STABILITY_LABEL, foreground=ACCENT
+            )
+        elif hasattr(self, "lbl_stab_headline"):
             self.lbl_stab_headline.configure(
                 text=PRESENTATION_STABILITY_LABEL, foreground=ACCENT
             )
@@ -367,6 +451,8 @@ class StableWalkGUI:
         self.pose_indices = []
         self._dof_table_history.clear()
         self._session_collector.clear()
+        self._bilateral_foot_collector.clear()
+        self._ground_clearance_prev_phase = (None, None)
         self._load_presentation_demo()
 
     def _apply_presentation_dof_selection(self) -> None:
@@ -448,6 +534,14 @@ class StableWalkGUI:
         help_menu.add_command(label="Keyboard shortcuts", command=self._show_shortcuts)
         sim_menu = tk.Menu(menubar, tearoff=0, **mc)
         menubar.add_cascade(label="Simulation", menu=sim_menu)
+        sim_menu.add_command(
+            label="Run OpenSim IK (experimental)…",
+            command=self._run_stablewalk_ik_experimental,
+        )
+        sim_menu.add_command(
+            label="Run OpenSim demo IK…",
+            command=self._run_opensim_demo_ik,
+        )
         help_menu.add_command(label="About StableWalk", command=self._show_about)
         help_menu.add_command(label="Edit men's walk URL list…", command=self._open_url_list)
 
@@ -461,8 +555,8 @@ class StableWalkGUI:
         demo_menu.add_command(label="▶ Full video comparison demo", command=self._run_demo)
 
     def _build_input_bar(self) -> None:
-        """Compact toolbar: preset + URL + Analyze."""
-        bar = ttk.Frame(self.root, padding=(PAD_MD, PAD_SM, PAD_MD, PAD_SM))
+        """Compact toolbar: video source, analyze, and demo gait shortcuts."""
+        bar = ttk.Frame(self.root, padding=(PAD_MD, PAD_SM, PAD_MD, PAD_XS))
         bar.pack(fill=tk.X)
 
         row = ttk.Frame(bar)
@@ -477,34 +571,44 @@ class StableWalkGUI:
         self.preset_var = tk.StringVar(value=_default_label)
         self.url_var = tk.StringVar(value=config.DEFAULT_WALKING_VIDEO_URL)
 
+        ttk.Label(row, text="Source", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, PAD_XS))
         self.preset_combo = ttk.Combobox(
-            row, textvariable=self.preset_var, values=all_preset_labels(), width=26, state="readonly"
+            row, textvariable=self.preset_var, values=all_preset_labels(), width=18, state="readonly"
         )
-        self.preset_combo.pack(side=tk.LEFT, padx=(0, PAD_SM))
+        self.preset_combo.pack(side=tk.LEFT, padx=(0, PAD_XS))
         self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
 
         self.url_entry = ttk.Entry(row, textvariable=self.url_var)
-        self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, PAD_SM))
+        self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, PAD_XS))
         self.url_entry.bind("<Return>", lambda _e: self._load_video())
+
+        self.btn_browse = ttk.Button(
+            row,
+            text="Browse",
+            style="Secondary.TButton",
+            width=8,
+            command=self._browse_video,
+        )
+        self.btn_browse.pack(side=tk.LEFT, padx=(0, PAD_XS))
 
         self.btn_full = ttk.Button(
             row,
             text="Analyze",
             style="Accent.TButton",
-            width=10,
+            width=9,
             command=self._run_full_analysis,
         )
         self.btn_full.pack(side=tk.LEFT, padx=(0, PAD_XS))
         self.btn_load = self.btn_full
 
-        self.btn_browse = ttk.Button(
+        self.btn_input_settings = ttk.Button(
             row,
-            text="File…",
+            text="\u2699",
             style="Secondary.TButton",
-            width=10,
-            command=self._browse_video,
+            width=3,
+            command=self._show_input_settings_menu,
         )
-        self.btn_browse.pack(side=tk.LEFT)
+        self.btn_input_settings.pack(side=tk.LEFT)
 
         self.btn_next_video = ttk.Button(
             row, text="Next ▶", style="Secondary.TButton", command=self._next_video
@@ -525,10 +629,285 @@ class StableWalkGUI:
         self.progress = ttk.Progressbar(
             row2, mode="determinate", style="Accent.Horizontal.TProgressbar"
         )
-        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, PAD_SM))
-        ttk.Checkbutton(row2, text="Smooth motion", variable=self.smooth_motion, command=self._on_smooth_toggle).pack(side=tk.LEFT)
+        self.progress.pack(fill=tk.X, expand=True)
 
         self._input_row2 = row2
+
+        demo_row = ttk.Frame(bar)
+        demo_row.pack(fill=tk.X, pady=(PAD_XS, 0))
+
+        self._demo_gait_buttons: dict[str, ttk.Button] = {}
+        for ex in DEMO_GAIT_EXAMPLES:
+            btn = ttk.Button(
+                demo_row,
+                text=ex.button_label,
+                style="Secondary.TButton",
+                width=10,
+                command=lambda k=ex.key: self._load_demo_gait(k),
+            )
+            btn.pack(side=tk.LEFT, padx=(0, PAD_XS))
+            self._demo_gait_buttons[ex.key] = btn
+
+        self.btn_save_demo_comparison = ttk.Button(
+            demo_row,
+            text="Save",
+            style="Compact.TButton",
+            width=7,
+            command=self._save_demo_comparison,
+            state=tk.DISABLED,
+        )
+        self.btn_save_demo_comparison.pack(side=tk.LEFT, padx=(PAD_XS, 0))
+
+        self._demo_info_btn = ttk.Label(demo_row, text="Info", style="Card.TLabel", cursor="hand2")
+        self._demo_info_btn.pack(side=tk.RIGHT)
+        self._demo_info_btn.bind("<Button-1>", lambda _e: self._show_demo_video_details())
+        create_tooltip(self._demo_info_btn, "About the active demo video")
+
+    def _show_input_settings_menu(self) -> None:
+        """Popup for secondary input options (smooth motion, etc.)."""
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_checkbutton(
+            label="Smooth motion",
+            variable=self.smooth_motion,
+            command=self._on_smooth_toggle,
+        )
+        try:
+            x = self.btn_input_settings.winfo_rootx()
+            y = self.btn_input_settings.winfo_rooty() + self.btn_input_settings.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _load_demo_gait(self, key: str) -> None:
+        """Load a predefined demo gait video through the standard pipeline."""
+        ex = example_by_key(key)
+        if ex is None:
+            return
+        config.ensure_output_dirs()
+
+        self._active_demo_gait = ex
+        self._presentation_mode = False
+        self._cancel_presentation_autoplay()
+
+        resolved = demo_path(ex)
+        logger.info("Demo gait resolved path: %s (exists=%s)", resolved, resolved.is_file())
+
+        if ex.pexels_video_id is None:
+            if not resolved.is_file():
+                from stablewalk.ui.media.demo_download import download_demo_video
+
+                download_demo_video(key, force=False)
+            if not resolved.is_file():
+                messagebox.showwarning("Demo video missing", missing_file_message(ex))
+                return
+            from stablewalk.ui.media.utah_abnormal import opencv_can_decode
+
+            if not opencv_can_decode(resolved):
+                messagebox.showwarning(
+                    "Demo video error",
+                    f"OpenCV cannot decode the demo file:\n{resolved}\n\n"
+                    f"Run: python scripts/download_utah_abnormal_demo.py",
+                )
+                return
+            source = str(resolved)
+        else:
+            source = demo_stream_source(ex)
+            if demo_exists(ex) and not demo_cached_file_ready(ex):
+                def _refresh_cache() -> None:
+                    from stablewalk.ui.media.demo_download import download_demo_video
+
+                    download_demo_video(key, force=True)
+
+                threading.Thread(target=_refresh_cache, daemon=True).start()
+
+        self.url_var.set(source)
+        self.url_entry.delete(0, tk.END)
+        self.url_entry.insert(0, source)
+        self.preset_var.set(CUSTOM_URL_PRESET_LABEL)
+        self._update_demo_analysis_title(ex)
+        self._highlight_demo_button(key)
+        self._load_video(source=source, show_dialog=False, unique_session=True)
+
+    def _highlight_demo_button(self, active_key: str | None) -> None:
+        for key, btn in getattr(self, "_demo_gait_buttons", {}).items():
+            try:
+                btn.configure(
+                    style="Accent.TButton" if key == active_key else "Secondary.TButton"
+                )
+            except tk.TclError:
+                pass
+
+    def _clear_demo_gait_context(self) -> None:
+        self._active_demo_gait = None
+        self._update_demo_analysis_title(None)
+        self._highlight_demo_button(None)
+        self._sync_demo_save_button()
+
+    def _update_demo_analysis_title(self, example: DemoGaitExample | None = None) -> None:
+        """Keep the video panel clean — demo context lives in the Info dialog."""
+        lbl = getattr(self, "lbl_demo_analysis_title", None)
+        meta_row = getattr(self, "_demo_meta_row", None)
+        info_btn = getattr(self, "btn_demo_video_info", None)
+        if lbl is not None:
+            lbl.configure(text="")
+            lbl.grid_remove()
+        if meta_row is not None:
+            meta_row.grid_remove()
+        if info_btn is not None:
+            info_btn.grid_remove()
+
+    def _show_demo_video_details(self) -> None:
+        ex = self._active_demo_gait
+        if ex is None:
+            return
+        lines = [
+            ex.display_name,
+            "",
+            ex.source_attribution or ex.source_name,
+            "",
+            f"Source: {ex.source_url}",
+        ]
+        if ex.note:
+            lines.extend(["", ex.note])
+        messagebox.showinfo(ex.analysis_title, "\n".join(lines))
+
+    def _apply_demo_presentation(self) -> None:
+        """Refresh demo title and session label after a demo video loads."""
+        if not self._active_demo_gait:
+            return
+        self._update_demo_analysis_title()
+        self._session_display_src = self._active_demo_gait.display_name
+        self.status.configure(
+            text=f"✓  {self._active_demo_gait.button_label} — press Play"
+        )
+        self._sync_demo_save_button()
+
+    def _sync_demo_save_button(self) -> None:
+        btn = getattr(self, "btn_save_demo_comparison", None)
+        if btn is None:
+            return
+        can_save = (
+            self._active_demo_gait is not None
+            and self.gait_motion is not None
+            and self.selection.active_item_id is not None
+        )
+        btn.configure(state=tk.NORMAL if can_save else tk.DISABLED)
+
+    def _save_demo_comparison(self) -> None:
+        if not self._active_demo_gait or not self.gait_motion:
+            return
+        item_id = self.selection.active_item_id
+        if not item_id:
+            messagebox.showinfo(
+                "Select a joint",
+                "Select a joint or DOF in the sidebar, then click Save comparison.",
+            )
+            return
+        row = build_comparison_row(self.gait_motion, self._active_demo_gait, item_id)
+        self._demo_comparison_rows[self._active_demo_gait.key] = row
+        self._comparison_expanded = True
+        self._refresh_demo_comparison_panel()
+        self.status.configure(
+            text=f"Comparison saved — {row.demo_type} · {row.joint_label}"
+        )
+
+    def _refresh_demo_comparison_panel(self) -> None:
+        tree = getattr(self, "demo_comparison_tree", None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        has_rows = False
+        for key in ("abnormal", "normal", "athletic"):
+            row = self._demo_comparison_rows.get(key)
+            if row is None:
+                continue
+            has_rows = True
+            max_a = (
+                f"{row.max_angle_deg:.1f}°"
+                if row.max_angle_deg is not None
+                else "—"
+            )
+            avg_v = (
+                f"{row.avg_velocity:.3f} {row.velocity_unit}"
+                if row.avg_velocity is not None
+                else "—"
+            )
+            tree.insert(
+                "",
+                tk.END,
+                values=(row.demo_type, row.joint_label, max_a, avg_v),
+            )
+        self._sync_gait_comparison_visibility(has_rows=has_rows)
+
+    def _sync_gait_comparison_visibility(self, *, has_rows: bool | None = None) -> None:
+        toggle = getattr(self, "btn_toggle_comparison", None)
+        body = getattr(self, "comparison_body", None)
+        if toggle is None:
+            return
+        if body is not None:
+            body.pack_forget()
+        toggle.configure(text="Compare Gaits")
+
+    def _open_gait_comparison_dialog(self) -> None:
+        if not self._demo_comparison_rows:
+            messagebox.showinfo(
+                "Gait comparison",
+                "Load demo gaits and click Save on each, then open Compare Gaits.",
+            )
+            return
+        existing = getattr(self, "_gait_comparison_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Compare Gaits")
+        dlg.geometry("680x340")
+        dlg.minsize(480, 260)
+        dlg.transient(self.root)
+        self._gait_comparison_dialog = dlg
+
+        container = ttk.Frame(dlg, padding=8)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        body = getattr(self, "comparison_body", None)
+        if body is not None:
+            body.pack(in_=container, fill=tk.BOTH, expand=True)
+
+        footer = ttk.Frame(container)
+        footer.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(
+            footer,
+            text="Clear",
+            style="Compact.TButton",
+            command=self._clear_demo_comparison,
+        ).pack(side=tk.LEFT)
+        ttk.Button(footer, text="Close", command=lambda: _close()).pack(side=tk.RIGHT)
+
+        def _close() -> None:
+            if body is not None:
+                body.pack_forget()
+            self._gait_comparison_dialog = None
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+
+        dlg.protocol("WM_DELETE_WINDOW", _close)
+
+    def _toggle_gait_comparison_panel(self) -> None:
+        self._open_gait_comparison_dialog()
+
+    def _clear_demo_comparison(self) -> None:
+        self._demo_comparison_rows.clear()
+        self._comparison_expanded = False
+        self._refresh_demo_comparison_panel()
+        self.status.configure(text="Gait comparison cleared")
 
     def _build_layout(self) -> None:
         from stablewalk.ui.tk.dashboard_layout import build_dashboard_layout
@@ -541,6 +920,9 @@ class StableWalkGUI:
         self._update_dashboard_empty_states()
         if hasattr(self, "video_label"):
             self.video_label.bind("<Configure>", self._on_video_label_resize, add="+")
+        from stablewalk.ui.tk.dashboard_responsive import apply_responsive_layout
+
+        self.root.after_idle(lambda: apply_responsive_layout(self))
 
     def _build_legacy_hidden_panels(self) -> None:
         """Hidden legacy tables and optional robot panel (not shown in dashboard)."""
@@ -656,21 +1038,22 @@ class StableWalkGUI:
 
     def _build_transport_bar(self) -> None:
         """Playback controls and timeline scrubber."""
-        transport = ttk.LabelFrame(
-            self.root,
-            text=" Playback Controls ",
-            style="Card.TLabelframe",
-            padding=(PAD_SM, PAD_XS),
-        )
-        transport.pack(side=tk.BOTTOM, fill=tk.X, padx=PAD_XS, pady=(PAD_SM, PAD_XS))
+        transport = ttk.Frame(self.root, padding=(PAD_MD, PAD_XS, PAD_MD, PAD_XS))
+        transport.pack(side=tk.BOTTOM, fill=tk.X, padx=PAD_XS, pady=(0, PAD_XS))
 
-        row = ttk.Frame(transport, style="Card.TFrame")
+        row = ttk.Frame(transport)
         row.pack(fill=tk.X)
+        row.columnconfigure(5, weight=1)
+        self._transport_row = row
+
+        playback = ttk.Frame(row)
+        playback.grid(row=0, column=0, sticky="w")
+        self._transport_playback = playback
 
         self.btn_play_bar = ttk.Button(
-            row,
+            playback,
             text="Play",
-            width=9,
+            width=8,
             style="Accent.TButton",
             command=self._toggle_play,
         )
@@ -678,58 +1061,92 @@ class StableWalkGUI:
         self.btn_play = self.btn_play_bar
 
         self.btn_stop_bar = ttk.Button(
-            row,
+            playback,
             text="Stop",
-            width=8,
+            width=7,
             style="Secondary.TButton",
             command=self._stop_playback,
         )
         self.btn_stop_bar.pack(side=tk.LEFT, padx=(0, PAD_XS))
 
         self.btn_reset_bar = ttk.Button(
-            row,
+            playback,
             text="Reset",
-            width=8,
+            width=7,
             style="Secondary.TButton",
             command=self._reset_playback,
         )
-        self.btn_reset_bar.pack(side=tk.LEFT, padx=(0, PAD_XS))
+        self.btn_reset_bar.pack(side=tk.LEFT)
 
-        ttk.Button(
-            row,
+        self._transport_sep1 = ttk.Separator(row, orient=tk.VERTICAL)
+        self._transport_sep1.grid(row=0, column=1, sticky="ns", padx=PAD_MD)
+
+        frame_grp = ttk.Frame(row)
+        frame_grp.grid(row=0, column=2, sticky="w")
+        self._transport_frame = frame_grp
+
+        self._btn_step_back = ttk.Button(
+            frame_grp,
             text="◀ Frame",
             width=8,
             style="Secondary.TButton",
             command=lambda: self._step(-1),
-        ).pack(side=tk.LEFT, padx=(0, PAD_XS))
-
-        ttk.Button(
-            row,
+        )
+        self._btn_step_fwd = ttk.Button(
+            frame_grp,
             text="Frame ▶",
             width=8,
             style="Secondary.TButton",
             command=lambda: self._step(1),
-        ).pack(side=tk.LEFT, padx=(0, PAD_MD))
+        )
+        self._btn_step_back.pack(side=tk.LEFT, padx=(0, PAD_XS))
+        self._btn_step_fwd.pack(side=tk.LEFT)
 
-        ttk.Label(row, text="Speed", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, PAD_XS))
+        self._transport_sep2 = ttk.Separator(row, orient=tk.VERTICAL)
+        self._transport_sep2.grid(row=0, column=3, sticky="ns", padx=PAD_MD)
+
+        analysis = ttk.Frame(row)
+        analysis.grid(row=0, column=4, sticky="w")
+        self._transport_analysis = analysis
+
+        self._lbl_sampling = ttk.Label(analysis, text="Sampling", style="Card.TLabel")
+        self._lbl_sampling.pack(side=tk.LEFT, padx=(0, PAD_XS))
+        self.refresh_var = tk.StringVar(value=REFRESH_INTERVAL_DEFAULT)
+        self.cmb_sampling = ttk.Combobox(
+            analysis,
+            textvariable=self.refresh_var,
+            values=REFRESH_INTERVAL_CHOICES,
+            state="readonly",
+            width=6,
+        )
+        self.cmb_sampling.pack(side=tk.LEFT, padx=(0, PAD_MD))
+        self.cmb_sampling.bind("<<ComboboxSelected>>", self._on_refresh_interval)
+
+        self._lbl_speed = ttk.Label(analysis, text="Speed", style="Card.TLabel")
+        self._lbl_speed.pack(side=tk.LEFT, padx=(0, PAD_XS))
         self.speed_var = tk.DoubleVar(value=1.0)
-        ttk.Scale(
-            row,
+        self._speed_scale = ttk.Scale(
+            analysis,
             from_=0.25,
             to=2.0,
             orient=tk.HORIZONTAL,
             variable=self.speed_var,
-            length=80,
+            length=72,
             style="Transport.Horizontal.TScale",
             command=self._on_speed_change,
-        ).pack(side=tk.LEFT, padx=PAD_XS)
-        self.lbl_speed = ttk.Label(row, text="1.00×", style="Card.TLabel", width=5)
+        )
+        self._speed_scale.pack(side=tk.LEFT, padx=(0, PAD_XS))
+        self.lbl_speed = ttk.Label(analysis, text="1.00×", style="Card.TLabel", width=5)
         self.lbl_speed.pack(side=tk.LEFT, padx=(0, PAD_MD))
 
-        ttk.Label(row, text="Time", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, PAD_XS))
+        timeline = ttk.Frame(row)
+        timeline.grid(row=0, column=5, sticky="ew")
+        row.columnconfigure(5, weight=1)
+        self._transport_timeline = timeline
+
         self.frame_var = tk.IntVar(value=0)
         self.slider = ttk.Scale(
-            row,
+            timeline,
             from_=0,
             to=0,
             orient=tk.HORIZONTAL,
@@ -737,11 +1154,11 @@ class StableWalkGUI:
             style="Transport.Horizontal.TScale",
             command=self._on_slider,
         )
-        self.slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=PAD_XS)
-        self.lbl_frame = ttk.Label(row, text="0.00s / 0.00s", style="Heading.TLabel", width=16)
-        self.lbl_frame.pack(side=tk.RIGHT, padx=PAD_XS)
-        self.lbl_frame_idx = ttk.Label(row, text="", style="Card.TLabel", width=10)
-        self.lbl_frame_idx.pack(side=tk.RIGHT, padx=PAD_XS)
+        self.slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, PAD_XS))
+
+        self.lbl_frame = ttk.Label(timeline, text="0.00s / 0.00s", style="Heading.TLabel", width=13)
+        self.lbl_frame.pack(side=tk.RIGHT)
+        self.lbl_frame_idx = ttk.Label(timeline, text="", style="Card.TLabel", width=1)
 
     def _build_status_bar(self) -> None:
         self.status = ttk.Label(self.root, text="Ready", style="Status.TLabel", anchor=tk.W)
@@ -776,15 +1193,30 @@ class StableWalkGUI:
             self.preset_combo: "Video preset",
             self.url_entry: "URL or file (Enter)",
             self.btn_full: "Run analysis",
-            self.btn_browse: "Local file",
+            self.btn_browse: "Local video file",
+            self.btn_input_settings: "Input settings (smooth motion, etc.)",
             self.btn_next_video: "Next clip",
             self.btn_play: "Play / pause (Space)",
             self.btn_play_bar: "Play / pause",
             self.btn_stop_bar: "Stop (keeps the current frame)",
             self.btn_reset_bar: "Reset to the first frame",
-            self.slider: "Timeline",
+            self.slider: "Timeline scrubber",
         }.items():
             create_tooltip(widget, tip)
+        if hasattr(self, "cmb_skeleton_mode"):
+            create_tooltip(self.cmb_skeleton_mode, "Skeleton display mode")
+        explain = getattr(self, "lbl_dof_graph_explain_body", None)
+        if explain is not None:
+            create_tooltip(
+                explain,
+                "3D path colored from dim (start) to bright (current position)",
+            )
+        gc_left = getattr(self, "lbl_ground_clearance_left", None)
+        gc_right = getattr(self, "lbl_ground_clearance_right", None)
+        if gc_left is not None:
+            create_tooltip(gc_left, "Left foot ground clearance (estimated body-scale)")
+        if gc_right is not None:
+            create_tooltip(gc_right, "Right foot ground clearance (estimated body-scale)")
         self._attach_opensim_tooltips()
 
     def _attach_opensim_tooltips(self) -> None:
@@ -880,21 +1312,45 @@ class StableWalkGUI:
         self._sync_play_buttons()
         self._cancel_timer()
         self._sync_transport_labels()
+        self._update_skeleton_view_box()
         self._update_interactive_skeleton(force_draw=True)
         self._update_session_selection_overview()
         self._ensure_default_dof_selection()
 
+    def _update_skeleton_view_box(self) -> None:
+        """Compute a stable, sequence-global view box for the skeleton panel.
+
+        Called whenever the recording or display mode changes. The box encloses
+        the full body across every frame, so playback keeps a constant scale and
+        never crops the person. Stored on the axes and consumed by
+        ``draw_gait_skeleton`` -> ``_apply_view_limits``.
+        """
+        ax = getattr(self, "ax_3d", None)
+        if ax is None:
+            return
+        recording = getattr(self, "gait_motion", None)
+        if recording is None or not getattr(recording, "snapshots", None):
+            ax._sw_fixed_view_box = None  # type: ignore[attr-defined]
+            return
+        try:
+            box = compute_skeleton_view_box(
+                recording, self._skeleton_display_mode_key()
+            )
+        except Exception:
+            box = None
+        ax._sw_fixed_view_box = box  # type: ignore[attr-defined]
+
     def _sync_transport_labels(self) -> None:
         if not self.skeleton_player:
             self.lbl_frame.configure(text="0.00s / 0.00s")
-            self.lbl_frame_idx.configure(text="")
+            if hasattr(self, "lbl_frame_idx"):
+                self.lbl_frame_idx.configure(text="")
             return
         t = self.skeleton_player.time_at_current()
         dur = self.skeleton_player.duration_s
-        idx = self.skeleton_player.state.frame_index
-        total = self.skeleton_player.frame_count
         self.lbl_frame.configure(text=f"{t:.2f}s / {dur:.2f}s")
-        self.lbl_frame_idx.configure(text=f"frame {idx + 1}/{total}")
+        if hasattr(self, "lbl_frame_idx"):
+            self.lbl_frame_idx.configure(text="")
 
     def _update_interactive_skeleton(self, *, force_draw: bool = False) -> None:
         """Draw the human skeleton for the current playback position."""
@@ -933,6 +1389,7 @@ class StableWalkGUI:
         analysis_force = force_draw or not is_playing
         if self._realtime_refresh_due(force=analysis_force):
             self._refresh_realtime_analysis(snapshot=snap, force_draw=force_draw)
+        self._refresh_bilateral_ground_clearance(snapshot=snap)
         draw_gait_skeleton(
             self.ax_3d,
             snap,
@@ -945,6 +1402,7 @@ class StableWalkGUI:
             motion_arrows=self._motion_arrows_from_previews() if show_detail else None,
             title="",
             display_mode=self._skeleton_display_mode_key(),
+            ground_floor_y=self._ground_floor_y_for_skeleton(),
         )
         if force_draw or show_detail:
             self.canvas_3d.draw()
@@ -1062,6 +1520,8 @@ class StableWalkGUI:
         self._last_dof_table_refresh = 0.0
         self._dof_table_history.clear()
         self._session_collector.clear()
+        self._bilateral_foot_collector.clear()
+        self._ground_clearance_prev_phase = (None, None)
         self.selection = SelectionState()
         self._sync_dof_checkboxes()
         self._update_dof_selection_chrome()
@@ -1128,6 +1588,8 @@ class StableWalkGUI:
             self.pose_indices = []
             self._dof_table_history.clear()
             self._session_collector.clear()
+            self._bilateral_foot_collector.clear()
+            self._ground_clearance_prev_phase = (None, None)
         try:
             self.sequence = load_pose_sequence(path)
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
@@ -1226,6 +1688,12 @@ class StableWalkGUI:
                 )
             return False
 
+        if self._current_source:
+            detected = is_demo_video_path(self._current_source)
+            if detected:
+                self._active_demo_gait = detected
+        self._apply_demo_presentation()
+
         return True
 
     def _prepare_3d_sequence(self) -> None:
@@ -1286,6 +1754,9 @@ class StableWalkGUI:
 
     def _run_full_analysis(self) -> None:
         """Run complete pipeline: video → pose → DOF → JSON → 3D → simulation."""
+        source = self._get_input_source()
+        if source and is_demo_video_path(source) is None:
+            self._clear_demo_gait_context()
         self._load_video()
 
     def _get_input_source(self) -> str:
@@ -1417,6 +1888,13 @@ class StableWalkGUI:
             self.url_entry.delete(0, tk.END)
             self.url_entry.insert(0, path)
             self.preset_var.set(CUSTOM_URL_PRESET_LABEL)
+            detected = is_demo_video_path(path)
+            if detected:
+                self._active_demo_gait = detected
+                self._update_demo_analysis_title(detected)
+                self._highlight_demo_button(detected.key)
+            else:
+                self._clear_demo_gait_context()
             if self.auto_load_on_change.get():
                 self._load_video(source=path)
             else:
@@ -1446,6 +1924,16 @@ class StableWalkGUI:
             if on_complete:
                 on_complete(None, ValueError("No video source"))
             return
+
+        detected_demo = is_demo_video_path(source)
+        if detected_demo:
+            self._active_demo_gait = detected_demo
+            self._presentation_mode = False
+            self._cancel_presentation_autoplay()
+            self._update_demo_analysis_title(detected_demo)
+            self._highlight_demo_button(detected_demo.key)
+        elif self._active_demo_gait is not None:
+            self._clear_demo_gait_context()
 
         ok, fmt_msg = check_source_format(source)
         if not ok:
@@ -1482,7 +1970,10 @@ class StableWalkGUI:
         )
 
         if max_frames is None and not self._demo_running:
-            max_frames = config.GUI_MAX_FRAMES_PER_LOAD
+            if detected_demo is not None:
+                max_frames = DEMO_MAX_FRAMES
+            else:
+                max_frames = config.GUI_MAX_FRAMES_PER_LOAD
 
         self._fade_transition(
             on_done=lambda: self._begin_pipeline(
@@ -1723,26 +2214,18 @@ class StableWalkGUI:
             return
 
         preset = preset_by_label(self.preset_var.get())
-        title = preset.label if preset else result.source[:40]
+        title = preset.label if preset else Path(result.source).name
+        if self._active_demo_gait:
+            title = self._active_demo_gait.display_name
         self.status.configure(
-            text=(
-                f"✓ NEW VIDEO: {title} | {result.frame_count} frames | "
-                f"hash {result.first_frame_hash}"
-            )
+            text=f"✓  {title} — {result.frame_count} frames — press Play"
         )
-        self._show_overlay(
-            f"Video changed\n\n{title}\n"
-            f"hash {result.first_frame_hash}  ({result.width}×{result.height})"
-        )
-        self.root.after(3500, self._hide_overlay)
+        self._show_overlay(f"Loaded\n\n{title}")
+        self.root.after(2000, self._hide_overlay)
         if self._show_success_dialog and not self._demo_running:
             messagebox.showinfo(
-                "Video loaded successfully",
-                f"Analysis complete.\n\n"
-                f"Source: {result.source[:60]}\n"
-                f"Frames: {result.frame_count} @ {result.width}×{result.height}\n"
-                f"First frame ID: {result.first_frame_hash}\n\n"
-                f"Stability: {self._stability.label if self._stability else '—'}",
+                "Video loaded",
+                f"{title}\n{result.frame_count} frames analyzed.\nPress Play to begin.",
             )
 
         if callback:
@@ -1976,67 +2459,128 @@ class StableWalkGUI:
         }.get(classification, MUTED)
 
     def _update_stability_panel(self, result: "StabilityResult | None") -> None:
-        """Refresh the Session Overview label and the Stability Breakdown panel."""
+        """Refresh the gait summary with primary stability metrics."""
         if result is None:
             return
         color = self._stability_color(result.classification)
-        icon = "✓" if result.is_stable else "⚠"
 
-        if not hasattr(self, "lbl_stab_headline"):
-            return
-        self.lbl_stab_headline.configure(
-            text=f"{icon} {result.classification} · {result.score:.0f}/100",
-            foreground=color,
-        )
+        score_lbl = getattr(self, "lbl_stab_score", None)
+        if score_lbl is not None:
+            score_lbl.configure(text=f"{result.score:.0f}", fg=color)
 
-        short = {
-            "symmetry": "Symmetry",
-            "range_of_motion": "ROM",
-            "step_consistency": "Steps",
-            "center_of_mass": "CoM",
-        }
-        parts = []
-        for m in result.metrics:
-            label = short.get(m.key, m.name)
-            parts.append(f"{label} {'—' if m.score is None else f'{m.score:.0f}'}")
-        self.lbl_stab_metrics.configure(
-            text=("  ·  ".join(parts)) if parts else "Not enough data"
-        )
-
-        from stablewalk.ui.tk.sidebar_display import truncate_line
-
-        if result.primary_issue:
-            self.lbl_stab_reason.configure(
-                text=truncate_line(f"Concern: {result.primary_issue}")
+        cat_lbl = getattr(self, "lbl_stab_category", None)
+        if cat_lbl is not None:
+            cat_lbl.configure(text=result.classification, foreground=color)
+        elif hasattr(self, "lbl_stab_headline"):
+            self.lbl_stab_headline.configure(
+                text=result.classification,
+                foreground=color,
             )
-            if not self.lbl_stab_reason.winfo_ismapped():
-                self.lbl_stab_reason.pack(anchor=tk.W, pady=(PAD_XS, 0))
-        else:
-            self.lbl_stab_reason.configure(text="")
-            self.lbl_stab_reason.pack_forget()
+
+        metric_map = {
+            "symmetry": 0,
+            "range_of_motion": 1,
+            "step_consistency": 2,
+            "body_stability": 3,
+        }
+        slots = getattr(self, "_walk_summary_slots", None)
+        if slots:
+            for title_lbl, value_lbl in slots:
+                value_lbl.configure(text="—", fg=TEXT)
+            for m in result.metrics:
+                idx = metric_map.get(m.key)
+                if idx is None or idx >= len(slots):
+                    continue
+                _title_lbl, value_lbl = slots[idx]
+                value_lbl.configure(
+                    text="—" if m.score is None else f"{m.score:.0f}",
+                    fg=color if m.score is not None and m.score < 60 else TEXT,
+                )
+
+        btn = getattr(self, "btn_walk_summary_details", None)
+        if btn is not None:
+            btn.configure(state=tk.NORMAL)
 
     def _reset_stability_panel(self) -> None:
         self._biomech = None
-        if hasattr(self, "lbl_stab_headline"):
+        if hasattr(self, "lbl_stab_score"):
+            self.lbl_stab_score.configure(text="—", fg=MUTED)
+        if hasattr(self, "lbl_stab_category"):
+            self.lbl_stab_category.configure(text="No walk analyzed yet", foreground=MUTED)
+        elif hasattr(self, "lbl_stab_headline"):
             self.lbl_stab_headline.configure(text="No walk analyzed yet", foreground=MUTED)
+        slots = getattr(self, "_walk_summary_slots", None)
+        if slots:
+            for _title_lbl, value_lbl in slots:
+                value_lbl.configure(text="—", fg=TEXT)
+        if hasattr(self, "lbl_stab_metrics"):
             self.lbl_stab_metrics.configure(text="")
+        if hasattr(self, "lbl_stab_steps"):
+            self.lbl_stab_steps.configure(text="")
+        conf_lbl = getattr(self, "lbl_stab_step_confidence", None)
+        if conf_lbl is not None:
+            conf_lbl.configure(text="")
+        detail_btn = getattr(self, "btn_stab_steps_details", None)
+        if detail_btn is not None:
+            detail_btn.pack_forget()
+        if hasattr(self, "lbl_stab_reason"):
             self.lbl_stab_reason.configure(text="")
             self.lbl_stab_reason.pack_forget()
+        btn = getattr(self, "btn_walk_summary_details", None)
+        if btn is not None:
+            btn.configure(state=tk.DISABLED)
+
+    def _open_opensim_details_dialog(self) -> None:
+        """Show full OpenSim technical status in a dialog."""
+        frame = getattr(self, "_opensim_details_frame", None)
+        if frame is None:
+            return
+        existing = getattr(self, "_opensim_details_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("OpenSim Status")
+        dlg.geometry("520x420")
+        dlg.minsize(400, 280)
+        dlg.transient(self.root)
+        self._opensim_details_dialog = dlg
+
+        container = ttk.Frame(dlg, padding=8)
+        container.pack(fill=tk.BOTH, expand=True)
+        frame.pack(in_=container, fill=tk.BOTH, expand=True)
+
+        footer = ttk.Frame(container)
+        footer.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(footer, text="Close", command=lambda: _close()).pack(side=tk.RIGHT)
+
+        def _close() -> None:
+            frame.pack_forget()
+            self._opensim_details_dialog = None
+            self._opensim_details_visible = False
+            btn = getattr(self, "btn_opensim_toggle_details", None)
+            if btn is not None:
+                btn.configure(text="Details")
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+
+        dlg.protocol("WM_DELETE_WINDOW", _close)
+        self._opensim_details_visible = True
+        btn = getattr(self, "btn_opensim_toggle_details", None)
+        if btn is not None:
+            btn.configure(text="Details")
 
     def _toggle_opensim_details(self) -> None:
-        """Expand or collapse the verbose OpenSim status section."""
-        frame = getattr(self, "_opensim_details_frame", None)
-        btn = getattr(self, "btn_opensim_toggle_details", None)
-        if frame is None or btn is None:
-            return
-        if frame.winfo_ismapped():
-            frame.pack_forget()
-            self._opensim_details_visible = False
-            btn.configure(text="Show details")
-        else:
-            frame.pack(fill=tk.BOTH, expand=True, before=btn)
-            self._opensim_details_visible = True
-            btn.configure(text="Hide details")
+        """Legacy alias — open OpenSim details dialog."""
+        self._open_opensim_details_dialog()
 
     def _apply_opensim_compact_summary(
         self,
@@ -2047,62 +2591,152 @@ class StableWalkGUI:
         has_session: bool,
         presentation: bool,
     ) -> None:
-        """Refresh the always-visible two-line OpenSim status summary."""
+        """Refresh the compact OpenSim status line and dot indicator."""
         from stablewalk.ui.tk.sidebar_display import (
             compact_export_summary_line,
-            compact_mode_line,
-            compact_model_line,
             compact_opensim_ready_line,
         )
 
-        ready = compact_opensim_ready_line(sdk=sdk, presentation=presentation)
-        if not presentation:
-            mode = compact_mode_line(sdk=sdk).replace("Mode: ", "")
-            ready = f"{ready} · {mode}"
+        if presentation:
+            status_text = "Demo mode"
+            dot_color = INFO
+        elif sdk and model_valid:
+            status_text = "Ready"
+            dot_color = SUCCESS
+        elif sdk:
+            status_text = "Partial setup"
+            dot_color = WARNING
+        elif export_complete or has_session:
+            status_text = "Export only"
+            dot_color = INFO
+        else:
+            status_text = "Unavailable"
+            dot_color = DANGER
 
-        model = compact_model_line(model_valid=model_valid)
-        export = compact_export_summary_line(
+        ready_line = compact_opensim_ready_line(sdk=sdk, presentation=presentation)
+        export_line = compact_export_summary_line(
             export_complete=export_complete,
             has_session=has_session,
             presentation=presentation,
         )
-        detail = f"{model} · {export.replace('Export: ', 'Export ')}"
+        tip = f"{ready_line}\n{export_line.replace('Export: ', 'Export ')}"
 
-        rows = (
-            ("lbl_opensim_compact_ready", ready, "ok" if sdk or presentation else "fail"),
-            (
-                "lbl_opensim_compact_model",
-                detail,
-                "ok" if model_valid or export_complete else "muted",
-            ),
-        )
-        for attr, text, color_kind in rows:
-            widget = getattr(self, attr, None)
-            if widget is None:
-                continue
-            widget.configure(
-                text=text,
-                foreground=self._opensim_status_color(color_kind),
-            )
-            if not widget.winfo_ismapped():
-                widget.pack(anchor=tk.W, pady=(2, 0))
+        ready_lbl = getattr(self, "lbl_opensim_compact_ready", None)
+        if ready_lbl is not None:
+            ready_lbl.configure(text=f"OpenSim · {status_text}")
+            create_tooltip(ready_lbl, tip)
 
-        for attr in ("lbl_opensim_compact_mode", "lbl_opensim_compact_export"):
+        dot = getattr(self, "lbl_opensim_status_dot", None)
+        if dot is not None:
+            dot.configure(fg=dot_color)
+
+        for attr in ("lbl_opensim_compact_mode", "lbl_opensim_compact_model", "lbl_opensim_compact_export"):
             widget = getattr(self, attr, None)
             if widget is not None and widget.winfo_ismapped():
                 widget.pack_forget()
 
-    def _show_stability_explanation(self) -> None:
-        """Show the full transparent stability explanation in a dialog."""
+    def _format_gait_summary_details(self, result: "StabilityResult") -> str:
+        """Structured gait summary for the Details dialog (no long prose blocks)."""
+        metric_labels = {
+            "symmetry": "Symmetry",
+            "range_of_motion": "ROM",
+            "step_consistency": "Regularity",
+            "body_stability": "Body",
+            "trajectory_smoothness": "Smoothness",
+            "pose_quality": "Pose quality",
+        }
+        lines = [
+            f"{'Stability':<14}{result.score:.0f} / 100",
+            f"{'Category':<14}{result.classification}",
+            "",
+        ]
+        for m in result.metrics:
+            label = metric_labels.get(m.key, m.name)
+            if m.score is None:
+                lines.append(f"{label:<14}—")
+            else:
+                lines.append(f"{label:<14}{m.score:.0f}")
+
+        steps_m = result.metric("step_consistency")
+        if steps_m and steps_m.values:
+            values = steps_m.values
+            ls = int(values.get("left_steps", 0))
+            rs = int(values.get("right_steps", 0))
+            total = ls + rs
+            conf = values.get("step_detection_confidence", "high")
+            cadence = values.get("cadence_hz")
+            lines.extend(["", f"{'Steps':<14}{total}", f"{'Confidence':<14}{'Low' if conf == 'low' else 'High'}"])
+            lines.append(f"{'Left steps':<14}{ls}")
+            lines.append(f"{'Right steps':<14}{rs}")
+            if cadence is not None:
+                lines.append(f"{'Cadence':<14}{float(cadence):.2f} Hz")
+
+        if result.primary_issue:
+            lines.extend(["", f"Note: {result.primary_issue}"])
+        if result.scoring_notes:
+            lines.extend(["", "Scoring notes:", result.scoring_notes.strip()])
+        if result.explanation:
+            lines.extend(["", "Explanation:", result.explanation.strip()])
+        return "\n".join(lines)
+
+    def _show_gait_summary_details(self) -> None:
+        """Open structured gait summary details (advanced metrics and notes)."""
         if self._biomech is None:
             messagebox.showinfo(
-                "Stability explanation",
+                "Gait Summary",
                 "No analyzed walking session yet.\n\n"
-                "Load a video and run Full Analysis to see the stability breakdown.",
+                "Load a video and run Analyze to see the gait summary.",
             )
             return
-        body = self._biomech.explanation + "\n\n" + self._biomech.scoring_notes
-        messagebox.showinfo("Walking stability — full explanation", body)
+        existing = getattr(self, "_gait_summary_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Gait Summary — Details")
+        dlg.geometry("520x480")
+        dlg.minsize(400, 320)
+        dlg.transient(self.root)
+        self._gait_summary_dialog = dlg
+
+        frame = ttk.Frame(dlg, padding=8)
+        frame.pack(fill=tk.BOTH, expand=True)
+        text = tk.Text(
+            frame,
+            wrap=tk.WORD,
+            bg=PANEL,
+            fg=TEXT,
+            font=FONT_MONO_SM,
+            relief=tk.FLAT,
+            padx=8,
+            pady=8,
+        )
+        text.pack(fill=tk.BOTH, expand=True)
+        text.insert("1.0", self._format_gait_summary_details(self._biomech))
+        text.configure(state=tk.DISABLED)
+
+        footer = ttk.Frame(frame)
+        footer.pack(fill=tk.X, pady=(8, 0))
+
+        def _close() -> None:
+            self._gait_summary_dialog = None
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+
+        ttk.Button(footer, text="Close", command=_close).pack(side=tk.RIGHT)
+        dlg.protocol("WM_DELETE_WINDOW", _close)
+
+    def _show_stability_explanation(self) -> None:
+        """Legacy alias for gait summary details."""
+        self._show_gait_summary_details()
 
     @staticmethod
     def _opensim_status_color(kind: str) -> str:
@@ -3546,6 +4180,9 @@ class StableWalkGUI:
         return DEFAULT_SKELETON_DISPLAY_MODE
 
     def _on_skeleton_display_mode(self, _event: object = None) -> None:
+        # Different display modes project coordinates differently, so recompute
+        # the stable view box before redrawing.
+        self._update_skeleton_view_box()
         self._update_interactive_skeleton(force_draw=True)
 
     def _on_skeleton_motion(self, event) -> None:
@@ -3638,6 +4275,138 @@ class StableWalkGUI:
         if self.skeleton_player is not None:
             return getattr(self.skeleton_player, "recording", None)
         return None
+
+    def _clear_bilateral_ground_clearance_ui(self) -> None:
+        """Reset the ground clearance strip to empty placeholders."""
+        for attr in ("lbl_ground_clearance_left", "lbl_ground_clearance_right"):
+            lbl = getattr(self, attr, None)
+            if lbl is not None:
+                lbl.configure(text="\u2014", fg=TEXT)
+        for attr in (
+            "lbl_ground_clearance_phase",
+            "lbl_ground_clearance_scale",
+        ):
+            lbl = getattr(self, attr, None)
+            if lbl is not None:
+                lbl.configure(text="")
+        self._ground_clearance_prev_phase = (None, None)
+
+    def _update_ground_clearance_visibility(self) -> None:
+        """Show the bilateral strip whenever motion data is loaded."""
+        strip = getattr(self, "ground_clearance_strip", None)
+        if strip is None:
+            return
+        recording = self._analysis_motion_recording()
+        if recording is not None and recording.frame_count > 0:
+            strip.grid()
+        else:
+            strip.grid_remove()
+            self._clear_bilateral_ground_clearance_ui()
+
+    def _refresh_bilateral_ground_clearance(self, snapshot=None) -> None:
+        """Update left/right foot ground distance for the current playback frame."""
+        from stablewalk.analysis.ground_reference import CALIBRATION_CHECK_LABEL
+        from stablewalk.ui.selected_point_analysis import bilateral_ground_clearance_for_panel
+
+        self._update_ground_clearance_visibility()
+        recording = self._analysis_motion_recording()
+        player = self.skeleton_player
+        if snapshot is None and player is not None:
+            snapshot = player.current_snapshot()
+        end_f = float(player.state.frame_float) if player is not None else 0.0
+
+        if recording is None or snapshot is None:
+            self._clear_bilateral_ground_clearance_ui()
+            return
+
+        prev_l, prev_r = self._ground_clearance_prev_phase
+        panel = bilateral_ground_clearance_for_panel(
+            snapshot,
+            recording,
+            end_f,
+            prev_left_phase=prev_l,
+            prev_right_phase=prev_r,
+        )
+        if panel is None:
+            self._clear_bilateral_ground_clearance_ui()
+            return
+
+        self._ground_clearance_prev_phase = (panel.left_phase, panel.right_phase)
+
+        left_lbl = getattr(self, "lbl_ground_clearance_left", None)
+        right_lbl = getattr(self, "lbl_ground_clearance_right", None)
+        phase_lbl = getattr(self, "lbl_ground_clearance_phase", None)
+        scale_lbl = getattr(self, "lbl_ground_clearance_scale", None)
+
+        if left_lbl is not None:
+            left_lbl.configure(
+                text=panel.left_cm,
+                fg=DANGER if panel.left_cm == CALIBRATION_CHECK_LABEL else ORANGE,
+            )
+        if right_lbl is not None:
+            right_lbl.configure(
+                text=panel.right_cm,
+                fg=DANGER if panel.right_cm == CALIBRATION_CHECK_LABEL else ORANGE,
+            )
+        if phase_lbl is not None:
+            phase_lbl.configure(text=panel.phase_summary)
+        if scale_lbl is not None:
+            scale_lbl.configure(text=panel.scale_note)
+        tip_parts = [panel.phase_summary, panel.scale_note]
+        tip = "\n".join(p for p in tip_parts if p)
+        if tip and left_lbl is not None:
+            create_tooltip(left_lbl, f"L foot clearance\n{tip}")
+        if tip and right_lbl is not None:
+            create_tooltip(right_lbl, f"R foot clearance\n{tip}")
+        self._refresh_foot_clearance_graph_hint()
+
+    def _refresh_foot_clearance_graph_hint(self) -> None:
+        """Update optional foot-clearance range readout beside the movement graph."""
+        lbl = getattr(self, "lbl_foot_clearance_graph_range", None)
+        combo = getattr(self, "var_foot_clearance_graph", None)
+        if lbl is None or combo is None:
+            return
+        choice = combo.get()
+        if choice == "Off":
+            lbl.configure(text="")
+            return
+        recording = self._analysis_motion_recording()
+        player = self.skeleton_player
+        if recording is None or player is None:
+            lbl.configure(text="")
+            return
+        from stablewalk.ui.selected_point_analysis import bilateral_foot_clearance_export_rows
+
+        rows = bilateral_foot_clearance_export_rows(
+            recording,
+            float(player.state.frame_float),
+        )
+        if not rows:
+            lbl.configure(text="")
+            return
+        key = (
+            "left_foot_ground_cm"
+            if choice.startswith("Left")
+            else "right_foot_ground_cm"
+        )
+        values = [row[key] for row in rows if row.get(key) is not None]
+        if not values:
+            lbl.configure(text="")
+            return
+        lo, hi = min(values), max(values)
+        lbl.configure(
+            text=f"Range so far: {lo:.1f}\u2013{hi:.1f} cm (estimated body-scale)"
+        )
+
+    def _ground_floor_y_for_skeleton(self) -> float | None:
+        """Estimated ground plane height for the 3D skeleton overlay."""
+        recording = self._analysis_motion_recording()
+        player = self.skeleton_player
+        if recording is None or player is None:
+            return None
+        from stablewalk.analysis.ground_reference import floor_reference_y
+
+        return floor_reference_y(recording, float(player.state.frame_float))
 
     def _fit_dof_traj_canvas(self) -> None:
         """Resize the 3D trajectory figure to its widget so nothing is clipped."""
@@ -3811,7 +4580,7 @@ class StableWalkGUI:
                     floor_lbl.configure(text=primary)
                 floor_note = getattr(self, "lbl_dof_graph_floor_note", None)
                 if floor_note is not None:
-                    floor_note.configure(text=secondary)
+                    floor_note.configure(text="")
                 floor_range = getattr(self, "lbl_dof_graph_floor_range", None)
                 if floor_range is not None:
                     range_primary, range_secondary = floor_distance_range_parts_for_panel(
@@ -3894,6 +4663,7 @@ class StableWalkGUI:
                     empty_lbl.configure(text=EMPTY_SELECT_DOF_CHART)
                 panel_empty.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self._update_analysis_export_state()
+        self._update_ground_clearance_visibility()
 
     def _update_analysis_export_state(self) -> None:
         """Enable export when a selected point and motion recording are available."""
@@ -3938,8 +4708,8 @@ class StableWalkGUI:
                     self.lbl_details_empty.pack(anchor=tk.W, pady=(PAD_XS, 0))
                 self.lbl_details_empty.configure(
                     text=(
-                        "No points selected — use the checklist or click skeleton "
-                        "joints to inspect position and motion."
+                        "No joints selected — pick from the dropdown or click "
+                        "skeleton joints to inspect motion."
                     )
                 )
 
@@ -4096,6 +4866,170 @@ class StableWalkGUI:
         finally:
             self._dof_list_syncing = False
         self._refresh_add_point_combo()
+        self._refresh_dof_chips()
+
+    def _refresh_dof_chips(self) -> None:
+        """Render selected joints as compact removable chips."""
+        frame = getattr(self, "dof_chips_frame", None)
+        if frame is None:
+            return
+        for child in frame.winfo_children():
+            child.destroy()
+        active = self.selection.active_item_id
+        selected_ids = [i for i in GUI_DOF_ITEM_IDS if i in self.selection.selected]
+        if not selected_ids:
+            tk.Label(
+                frame,
+                text="None — add from dropdown or click skeleton",
+                bg=PANEL,
+                fg=MUTED,
+                font=FONT_UI_XS,
+                anchor="w",
+            ).pack(anchor=tk.W)
+            return
+        for item_id in selected_ids:
+            chip = tk.Frame(frame, bg=ELEVATED, highlightthickness=0)
+            chip.pack(side=tk.LEFT, padx=(0, 4), pady=2)
+            label = GUI_DOF_LABELS.get(item_id, item_id)
+            fg = ORANGE if item_id == active else ACCENT
+            name_lbl = tk.Label(
+                chip,
+                text=label,
+                bg=ELEVATED,
+                fg=fg,
+                font=("Segoe UI Semibold", 8),
+                cursor="hand2",
+                padx=6,
+                pady=2,
+            )
+            name_lbl.pack(side=tk.LEFT)
+            name_lbl.bind("<Button-1>", lambda _e, i=item_id: self._on_dof_item_focus(i))
+            remove_btn = tk.Label(
+                chip,
+                text="\u00d7",
+                bg=ELEVATED,
+                fg=MUTED,
+                font=("Segoe UI", 9),
+                cursor="hand2",
+                padx=4,
+            )
+            remove_btn.pack(side=tk.LEFT)
+            remove_btn.bind(
+                "<Button-1>",
+                lambda _e, i=item_id: self._remove_dof_chip(i),
+            )
+
+    def _remove_dof_chip(self, item_id: str) -> None:
+        if item_id not in self.selection.selected:
+            return
+        if item_id in self._dof_checkbox_vars:
+            self._dof_checkbox_vars[item_id].set(False)
+        self._on_dof_checkbox_changed(item_id)
+
+    def _toggle_joint_advanced_data(self) -> None:
+        host = getattr(self, "dof_analysis_advanced_host", None)
+        btn = getattr(self, "btn_toggle_joint_advanced", None)
+        if host is None or btn is None:
+            return
+        visible = not getattr(self, "_joint_advanced_visible", False)
+        self._joint_advanced_visible = visible
+        if visible:
+            host.grid()
+            btn.configure(text="Detailed Joint Data \u25b4")
+        else:
+            host.grid_remove()
+            btn.configure(text="Detailed Joint Data \u25be")
+
+    def _open_collected_data_dialog(self) -> None:
+        existing = getattr(self, "_collected_data_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+        self._toggle_collected_data_table()
+
+    def _toggle_collected_data_table(self) -> None:
+        btn = getattr(self, "btn_collected_data", None) or getattr(
+            self, "btn_view_table_data", None
+        )
+        existing = getattr(self, "_collected_data_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.destroy()
+            except tk.TclError:
+                pass
+            self._collected_data_dialog = None
+            if btn is not None:
+                self._update_table_summary_label()
+            return
+
+        from stablewalk.ui.dof_position_table import (
+            DOF_TABLE_COLUMNS,
+            DOF_TABLE_HEADINGS,
+        )
+        from stablewalk.ui.tk.dashboard_layout import (
+            _TABLE_COL_WIDTHS_COMPACT,
+            _make_data_tree,
+        )
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Collected Data")
+        dlg.geometry("760x440")
+        dlg.minsize(520, 300)
+        dlg.transient(self.root)
+        self._collected_data_dialog = dlg
+
+        frame = ttk.Frame(dlg, padding=8)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        tree_host = ttk.Frame(frame)
+        tree_host.pack(fill=tk.BOTH, expand=True)
+
+        popup_tree = _make_data_tree(
+            tree_host,
+            DOF_TABLE_COLUMNS,
+            DOF_TABLE_HEADINGS,
+            col_widths=_TABLE_COL_WIDTHS_COMPACT,
+            height=16,
+            text_cols=frozenset({"dof", "contact_status"}),
+            style="Compact.Treeview",
+        )
+        src = getattr(self, "dof_pos_tree", None)
+        if src is not None:
+            for iid in src.get_children():
+                popup_tree.insert("", tk.END, values=src.item(iid)["values"])
+
+        def _close() -> None:
+            self._collected_data_dialog = None
+            self._update_table_summary_label()
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+
+        dlg.protocol("WM_DELETE_WINDOW", _close)
+        footer = ttk.Frame(frame)
+        footer.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(footer, text="Close", command=_close).pack(side=tk.RIGHT)
+
+    def _update_table_summary_label(self) -> None:
+        count = len(self._dof_table_history.rows) if self._dof_table_history.rows else 0
+        if count == 0 and self._session_collector.sample_count > 0:
+            count = self._session_collector.sample_count
+        label = f"Data ({count} sample{'s' if count != 1 else ''})"
+        btn = getattr(self, "btn_collected_data", None)
+        if btn is not None:
+            btn.configure(text=label if count else "Data (0)")
+            return
+        lbl = getattr(self, "lbl_table_summary", None)
+        if lbl is None:
+            return
+        lbl.configure(text=f"Collected Data \u2014 {count} sample{'s' if count != 1 else ''}")
 
     def _refresh_add_point_combo(self) -> None:
         """Keep the 'Add a point' dropdown showing only not-yet-selected joints."""
@@ -4130,8 +5064,18 @@ class StableWalkGUI:
         """Refresh every panel that depends on the current DOF selection."""
         self.selection.ensure_last_selected()
         self._sync_active_joint_from_charted()
-        self._dof_table_history.clear()
-        self._session_collector.clear()
+        # Keep collected table rows when adding/removing DOFs — only reset when empty.
+        if not self.selection.selected:
+            self._dof_table_history.clear()
+            self._session_collector.clear()
+        else:
+            stale = [
+                item_id
+                for item_id in self._dof_table_history._last_frame_by_item
+                if item_id not in self.selection.selected
+            ]
+            for item_id in stale:
+                del self._dof_table_history._last_frame_by_item[item_id]
         self._sync_dof_checkboxes()
         self._update_dof_selection_chrome()
         self._sync_dof_analysis_panel_state()
@@ -4140,7 +5084,17 @@ class StableWalkGUI:
         self._update_interactive_skeleton(force_draw=True)
         self._update_dof_table_controls_state()
         self._configure_dof_table_columns()
+        self._sync_demo_save_button()
         if self.sequence:
+            if self._dof_table_history.rows:
+                rows = self._filtered_position_table_rows(
+                    list(self._dof_table_history.rows)
+                )
+                emphasize = label_for_item(self._active_dof_item_id() or "")
+                self._fill_dof_position_table(
+                    rows,
+                    emphasize_dof=emphasize or None,
+                )
             self._refresh_display()
 
     _MAX_DETAIL_CARDS = 6
@@ -4410,6 +5364,25 @@ class StableWalkGUI:
             self._refresh_selected_dof_trajectory_3d()
             self._update_dof_table_controls_state()
         return added
+
+    def _append_bilateral_foot_tick(self) -> None:
+        """Record bilateral foot ground distance for the current playback frame."""
+        if not self.playing or not self.skeleton_player:
+            return
+        snap = self._discrete_playback_snapshot()
+        if not snap:
+            return
+        player = self.skeleton_player
+        prev_l, prev_r = self._ground_clearance_prev_phase
+        _, new_l, new_r = self._bilateral_foot_collector.append_tick(
+            snap,
+            player.recording,
+            float(player.state.frame_float),
+            prev_left_phase=prev_l,
+            prev_right_phase=prev_r,
+        )
+        if new_l is not None and new_r is not None:
+            self._ground_clearance_prev_phase = (new_l, new_r)
 
     def _dof_table_hint_text(self) -> str:
         charted = self._charted_dof_item_id()
@@ -4944,6 +5917,8 @@ class StableWalkGUI:
     def _clear_dof_table_history(self) -> None:
         self._dof_table_history.clear()
         self._session_collector.clear()
+        self._bilateral_foot_collector.clear()
+        self._ground_clearance_prev_phase = (None, None)
         self._refresh_dof_position_table()
 
     def _collect_playback_tracking_samples(self) -> list:
@@ -5044,6 +6019,7 @@ class StableWalkGUI:
             self.dof_pos_tree.yview_moveto(1.0 if scroll_to_bottom else 0.0)
         except tk.TclError:
             pass
+        self._update_table_summary_label()
         self.dof_pos_tree.update_idletasks()
 
     def _clear_dof_position_table_display(self) -> None:
@@ -5362,7 +6338,7 @@ class StableWalkGUI:
         for title_lbl, value_lbl in summary_slots:
             title_lbl.configure(text="")
             value_lbl.configure(text="", fg=TEXT, font=FONT_METRIC)
-        self._set_analysis_summary_visible_slots(len(summary_slots))
+        self._set_analysis_summary_visible_slots(len(summary_slots) if summary_slots else 0)
         movement_title = getattr(self, "lbl_dof_analysis_movement_title", None)
         if movement_title is not None:
             movement_title.grid_remove()
@@ -5374,6 +6350,18 @@ class StableWalkGUI:
             for title_lbl, value_lbl in derived_slots:
                 title_lbl.configure(text="")
                 value_lbl.configure(text="—", fg=TEXT)
+        coord_slots = getattr(self, "dof_analysis_advanced_coord_slots", None)
+        if coord_slots:
+            for title_lbl, value_lbl in coord_slots:
+                title_lbl.configure(text="")
+                value_lbl.configure(text="—", fg=TEXT)
+        advanced_host = getattr(self, "dof_analysis_advanced_host", None)
+        if advanced_host is not None:
+            advanced_host.grid_remove()
+        self._joint_advanced_visible = False
+        toggle_btn = getattr(self, "btn_toggle_joint_advanced", None)
+        if toggle_btn is not None:
+            toggle_btn.configure(text="Detailed Joint Data \u25be")
         self._set_analysis_secondary_visible_slots(0)
         self._clear_foot_analysis_card()
         self._update_analysis_mode_ui(None)
@@ -5430,39 +6418,80 @@ class StableWalkGUI:
         )
 
         is_foot = panel_metrics.mode == "foot"
-        top_metrics = panel_metrics.identity + panel_metrics.kinematics
+        identity = panel_metrics.identity
+        kinematics = panel_metrics.kinematics
+
+        # Primary row: joint, time, speed, movement (angle or position).
+        movement_metric = ("Movement", "—")
+        if panel_metrics.derived:
+            movement_metric = panel_metrics.derived[0]
+        elif len(kinematics) >= 4:
+            movement_metric = kinematics[3]
+        elif kinematics:
+            movement_metric = kinematics[-1]
+
+        primary_metrics = (
+            identity[0] if identity else ("Joint", "—"),
+            identity[1] if len(identity) > 1 else ("Time (s)", "—"),
+            kinematics[3] if len(kinematics) > 3 else ("Speed (m/s)", "—"),
+            movement_metric,
+        )
 
         if summary_slots:
             self._fill_analysis_metric_slots(
                 summary_slots,
-                top_metrics,
+                primary_metrics,
                 accent_value_index=0,
             )
-            self._set_analysis_summary_visible_slots(len(top_metrics))
+            self._set_analysis_summary_visible_slots(len(primary_metrics))
         else:
             self._fill_analysis_metric_slots(
-                identity_slots, panel_metrics.identity, accent_value_index=0
+                identity_slots, panel_metrics.identity[:2], accent_value_index=0
             )
             self._fill_analysis_metric_slots(
-                kinematics_slots, panel_metrics.kinematics
+                kinematics_slots, primary_metrics[2:]
             )
-            self._set_analysis_summary_visible_slots(len(top_metrics))
+            self._set_analysis_summary_visible_slots(len(primary_metrics))
+
+        coord_slots = getattr(self, "dof_analysis_advanced_coord_slots", None)
+        if coord_slots and len(identity) > 2 and len(kinematics) >= 3:
+            coord_metrics = (
+                identity[2],
+                kinematics[0],
+                kinematics[1],
+                kinematics[2],
+            )
+            self._fill_analysis_metric_slots(coord_slots, coord_metrics)
+            hosts = getattr(self, "dof_analysis_advanced_coord_hosts", None)
+            if hosts:
+                for host in hosts:
+                    host.grid()
 
         derived_row = getattr(self, "dof_analysis_derived_row", None)
         derived_slots = getattr(self, "dof_analysis_derived_slots", None)
+        advanced_host = getattr(self, "dof_analysis_advanced_host", None)
 
-        if derived_row is not None and derived_slots and panel_metrics.derived:
-            derived_row.grid(row=1, column=0, sticky="ew", pady=(2, 0))
-            self._fill_analysis_secondary_slots(
-                derived_slots,
-                panel_metrics.derived,
-                mode=panel_metrics.mode,
-            )
-            visible_secondary = 4 if is_foot else 3
-            self._set_analysis_secondary_visible_slots(visible_secondary)
+        if derived_slots and panel_metrics.derived:
+            start_idx = 1 if is_foot else 0
+            derived_subset = panel_metrics.derived[start_idx:]
+            if derived_subset:
+                self._fill_analysis_secondary_slots(
+                    derived_slots,
+                    derived_subset,
+                    mode=panel_metrics.mode,
+                )
+                visible_secondary = min(
+                    len(derived_subset),
+                    4 if is_foot else 3,
+                )
+                self._set_analysis_secondary_visible_slots(visible_secondary)
+            elif derived_row is not None:
+                self._set_analysis_secondary_visible_slots(0)
         elif derived_row is not None:
-            derived_row.grid_remove()
             self._set_analysis_secondary_visible_slots(0)
+
+        if advanced_host is not None and not getattr(self, "_joint_advanced_visible", False):
+            advanced_host.grid_remove()
 
         if is_foot:
             self._update_analysis_mode_ui("foot")
@@ -5688,9 +6717,13 @@ class StableWalkGUI:
         if self.selection.selected:
             return
         default_item = (
-            "right_hip"
-            if "right_hip" in self._dof_checkbox_vars
-            else next(iter(GUI_DOF_ITEM_IDS), None)
+            "right_knee"
+            if "right_knee" in self._dof_checkbox_vars
+            else (
+                "right_hip"
+                if "right_hip" in self._dof_checkbox_vars
+                else next(iter(GUI_DOF_ITEM_IDS), None)
+            )
         )
         if not default_item or default_item not in self._dof_checkbox_vars:
             return
@@ -5897,6 +6930,7 @@ class StableWalkGUI:
             self._ensure_dof_table_tracking_on_play()
             if self._should_record_dof_table_history():
                 self._append_dof_table_history_tick()
+            self._append_bilateral_foot_tick()
             self._schedule_tick()
         else:
             self._cancel_timer()
@@ -5927,6 +6961,8 @@ class StableWalkGUI:
                 and self.skeleton_player.state.frame_index != prev_frame
             ):
                 self._append_dof_table_history_tick()
+            if self.skeleton_player.state.frame_index != prev_frame:
+                self._append_bilateral_foot_tick()
             self._update_interactive_skeleton(force_draw=False)
             if self.sequence and self.pose_indices:
                 self._show_pose_at(self._playback_pos, force_draw=False, skeleton_only=True)
@@ -6182,18 +7218,20 @@ class StableWalkGUI:
         # pose overlay) to fit inside the visible label without cropping, so
         # the full body — head to feet — stays visible. Scaling uniformly
         # keeps the overlay points/lines aligned with the video.
+        # Maximize video within the label (contain fit, minimal padding).
         self.video_label.update_idletasks()
         lw = self.video_label.winfo_width()
         lh = self.video_label.winfo_height()
         if lw <= 1 or lh <= 1:
-            lw, lh = 720, 640
-        # Leave room for the panel's highlight border.
-        box_w = max(lw - 10, 64)
-        box_h = max(lh - 10, 64)
+            lw, lh = 900, 720
+        pad = 4
+        box_w = max(lw - pad * 2, 64)
+        box_h = max(lh - pad * 2, 64)
 
         scale = min(box_w / src_w, box_h / src_h)
-        new_w = max(1, int(round(src_w * scale)))
-        new_h = max(1, int(round(src_h * scale)))
+        target_scale = scale * 0.97
+        new_w = max(1, int(round(src_w * target_scale)))
+        new_h = max(1, int(round(src_h * target_scale)))
         fitted = pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
         self._photo = ImageTk.PhotoImage(fitted)
         self.video_label.configure(image=self._photo, text="")

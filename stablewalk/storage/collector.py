@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from stablewalk.analysis.ground_reference import (
+    BilateralFootClearanceSample,
+    bilateral_foot_clearance,
+    estimate_ground_plane,
+)
 from stablewalk.models.gait_motion import GaitMotionRecording, SkeletonSnapshot
 from stablewalk.storage.models import KinematicSample
 from stablewalk.ui.dof_position_table import (
@@ -12,6 +17,60 @@ from stablewalk.ui.dof_position_table import (
 )
 from stablewalk.ui.dof_selection import label_for_item
 
+
+@dataclass
+class BilateralFootCollector:
+    """Accumulates bilateral foot ground-distance samples during playback."""
+
+    samples: list[BilateralFootClearanceSample] = field(default_factory=list)
+    _last_frame: int | None = field(default=None, repr=False)
+
+    def clear(self) -> None:
+        self.samples.clear()
+        self._last_frame = None
+
+    @property
+    def sample_count(self) -> int:
+        return len(self.samples)
+
+    def append_tick(
+        self,
+        snapshot: SkeletonSnapshot,
+        recording: GaitMotionRecording,
+        end_frame_float: float,
+        *,
+        prev_left_phase: str | None = None,
+        prev_right_phase: str | None = None,
+    ) -> tuple[bool, str | None, str | None]:
+        """Record one bilateral foot sample for the current frame."""
+        frame_index = snapshot.frame_index
+        if self._last_frame == frame_index:
+            return False, prev_left_phase, prev_right_phase
+
+        plane = estimate_ground_plane(recording, end_frame_float)
+        if plane is None:
+            return False, prev_left_phase, prev_right_phase
+
+        bilateral = bilateral_foot_clearance(
+            snapshot,
+            plane,
+            prev_left_phase=prev_left_phase,
+            prev_right_phase=prev_right_phase,
+        )
+        self._last_frame = frame_index
+        self.samples.append(
+            BilateralFootClearanceSample(
+                frame_index=frame_index,
+                time_s=float(snapshot.time_s),
+                left_clearance_m=bilateral.left.foot_clearance_m,
+                right_clearance_m=bilateral.right.foot_clearance_m,
+                left_contact=bilateral.left.contact_state,
+                right_contact=bilateral.right.contact_state,
+                left_phase=bilateral.left_phase,
+                right_phase=bilateral.right_phase,
+            )
+        )
+        return True, bilateral.left_phase, bilateral.right_phase
 
 
 @dataclass

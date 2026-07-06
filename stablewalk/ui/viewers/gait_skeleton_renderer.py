@@ -112,9 +112,12 @@ SKELETON_PANEL_MARGINS = dict(
     top=_SKEL_AX_BOTTOM + _SKEL_AX_HEIGHT,
 )
 _VIEW_PAD_FRAC = 0.018
+# Slightly larger margin for the sequence-global view box so the body always has
+# comfortable headroom and is never cropped at the extremes of the walk cycle.
+_GLOBAL_VIEW_PAD_FRAC = 0.06
 _MIN_WIDTH_FRAC_OF_HEIGHT = 0.14
 _VIEW_MIN_HEIGHT_FRAC = 0.72
-_SKELETON_VIEW_FILL = 0.985
+_SKELETON_VIEW_FILL = 0.94
 # Headroom around the selected-point callout so its text box is never clipped by
 # the panel edge (the label uses a padded bbox drawn with clip_on=False).
 _LABEL_VIEW_PAD_FRAC = 0.11
@@ -276,6 +279,30 @@ def _drawable_aspect(ax: Axes) -> float:
     if draw_h < 1e-6:
         return 1.0
     return draw_w / draw_h
+
+
+def _drawable_pixels(ax: Axes) -> tuple[float, float]:
+    """Rounded (width, height) in pixels of the panel widget/figure.
+
+    Used as a stable cache key so the fixed-view limits only recompute when the
+    panel is actually resized (not on every frame).
+    """
+    canvas = ax.figure.canvas
+    w_px, h_px = 0.0, 0.0
+    widget_fn = getattr(canvas, "get_tk_widget", None)
+    if callable(widget_fn):
+        tk_widget = widget_fn()
+        if tk_widget is not None:
+            tk_widget.update_idletasks()
+            w_px = float(tk_widget.winfo_width())
+            h_px = float(tk_widget.winfo_height())
+    if w_px < 60.0 or h_px < 60.0:
+        fig = ax.figure
+        w_in, h_in = fig.get_size_inches()
+        dpi = fig.get_dpi()
+        w_px = w_in * dpi
+        h_px = h_in * dpi
+    return (round(w_px), round(h_px))
 
 
 def _panel_aspect(ax: Axes) -> float:
@@ -597,27 +624,63 @@ def _draw_bone(
     )
 
 
-def _draw_ground(ax: Axes, snapshot: SkeletonSnapshot, height: float) -> None:
+def _draw_ground(
+    ax: Axes,
+    snapshot: SkeletonSnapshot,
+    height: float,
+    *,
+    floor_y: float | None = None,
+    display_mode: str = "biomechanical",
+) -> None:
     foot_pts = [
         _xy(snapshot, j)
         for j in ("left_toe", "right_toe", "left_heel", "right_heel", "left_ankle", "right_ankle")
     ]
     foot_pts = [p for p in foot_pts if p]
-    if not foot_pts:
+    if not foot_pts and floor_y is None:
         return
-    y_floor = min(p[1] for p in foot_pts) - height * 0.025
     pelvis = _xy(snapshot, ROOT_JOINT_ID) or _xy(snapshot, "spine")
     cx = pelvis[0] if pelvis else 0.0
     half = height * 0.32
+
+    if floor_y is not None and display_mode != "2d_pose":
+        y_floor = floor_y
+    elif foot_pts:
+        y_floor = min(p[1] for p in foot_pts) - height * 0.025
+    else:
+        y_floor = floor_y if floor_y is not None else 0.0
+
     ax.plot(
         [cx - half, cx + half],
         [y_floor, y_floor],
         color=_COLOR_GROUND,
-        linewidth=0.7,
-        linestyle="--",
-        alpha=0.4,
+        linewidth=0.9,
+        linestyle=(0, (4, 3)),
+        alpha=0.55,
         zorder=0,
     )
+
+    if floor_y is not None and display_mode != "2d_pose":
+        for side, joints in (
+            ("left", ("left_toe", "left_heel", "left_ankle")),
+            ("right", ("right_toe", "right_heel", "right_ankle")),
+        ):
+            lowest: tuple[float, float] | None = None
+            for jid in joints:
+                pt = _xy(snapshot, jid)
+                if pt and (lowest is None or pt[1] < lowest[1]):
+                    lowest = pt
+            if lowest is None:
+                continue
+            ax.plot(
+                [lowest[0], lowest[0]],
+                [lowest[1], y_floor],
+                color=_COLOR_GROUND,
+                linewidth=0.6,
+                linestyle=":",
+                alpha=0.35,
+                zorder=0,
+            )
 
 
 def _draw_head(ax: Axes, snapshot: SkeletonSnapshot, height: float) -> None:
@@ -1162,17 +1225,12 @@ def joint_id_from_pick(event) -> str | None:
     return None
 
 
-def _apply_view_limits(
-    ax: Axes,
+def _single_frame_view_box(
     snapshot: SkeletonSnapshot,
-    *,
-    extra_points: list[tuple[float, float]] | None = None,
-) -> None:
-    """
-    Fit and center the body in the panel with equal X/Y scaling (no stretch).
+) -> tuple[float, float, float, float] | None:
+    """Per-frame content box (cx, cy, half_x, half_y) from the current pose.
 
-    Maximizes skeleton size within the drawable area while preserving
-    human proportions and a comfortable margin.
+    Used only when no stable sequence-global box has been supplied.
     """
     points: list[tuple[float, float]] = []
     for jid in _VIEW_SPAN_JOINTS:
@@ -1181,10 +1239,7 @@ def _apply_view_limits(
             points.append(pt)
 
     if not points:
-        ax.set_xlim(-0.35, 0.35)
-        ax.set_ylim(0.0, 1.0)
-        _layout_skeleton_figure(ax)
-        return
+        return None
 
     body_h = max(_robust_body_height(snapshot), 1e-3)
     head_pt = _xy(snapshot, "head")
@@ -1217,8 +1272,102 @@ def _apply_view_limits(
     span_y = max(max_y - min_y, body_h * _VIEW_MIN_HEIGHT_FRAC)
 
     pad = body_h * _VIEW_PAD_FRAC
-    content_half_x = span_x / 2.0 + pad
-    content_half_y = span_y / 2.0 + pad
+    return (cx, cy, span_x / 2.0 + pad, span_y / 2.0 + pad)
+
+
+def compute_skeleton_view_box(
+    recording,
+    display_mode: str = DEFAULT_SKELETON_DISPLAY_MODE,
+) -> tuple[float, float, float, float] | None:
+    """Stable content view box (cx, cy, half_x, half_y) over the WHOLE recording.
+
+    Scans every snapshot's display coordinates for ``display_mode`` and returns a
+    single centered box that encloses every pose in the sequence plus a
+    comfortable margin. Feeding one box to every frame keeps the scale constant
+    during playback (no zoom "breathing") and guarantees the full body — head to
+    both feet — is always visible regardless of the walk-cycle phase.
+    """
+    snaps = getattr(recording, "snapshots", None)
+    if not snaps:
+        return None
+
+    min_x = min_y = float("inf")
+    max_x = max_y = float("-inf")
+    core_min_y = float("inf")
+    core_max_y = float("-inf")
+    found = False
+
+    for snap in snaps:
+        coords = _build_display_coords(snap, display_mode)
+        if not coords:
+            continue
+        for jid in _VIEW_SPAN_JOINTS:
+            pt = coords.get(jid)
+            if not pt:
+                continue
+            found = True
+            x, y = float(pt[0]), float(pt[1])
+            min_x = min(min_x, x)
+            max_x = max(max_x, x)
+            min_y = min(min_y, y)
+            max_y = max(max_y, y)
+        for jid in _CORE_SPAN_JOINTS:
+            pt = coords.get(jid)
+            if pt:
+                y = float(pt[1])
+                core_min_y = min(core_min_y, y)
+                core_max_y = max(core_max_y, y)
+
+    if not found:
+        return None
+
+    body_h = max(core_max_y - core_min_y, max_y - min_y, 1e-3)
+    cx = (min_x + max_x) / 2.0
+    cy = (min_y + max_y) / 2.0
+    span_x = max(max_x - min_x, body_h * _MIN_WIDTH_FRAC_OF_HEIGHT)
+    span_y = max(max_y - min_y, body_h * _VIEW_MIN_HEIGHT_FRAC)
+    pad = body_h * _GLOBAL_VIEW_PAD_FRAC
+    return (cx, cy, span_x / 2.0 + pad, span_y / 2.0 + pad)
+
+
+def _apply_view_limits(
+    ax: Axes,
+    snapshot: SkeletonSnapshot,
+    *,
+    extra_points: list[tuple[float, float]] | None = None,
+) -> None:
+    """
+    Fit and center the body in the panel with equal X/Y scaling (no stretch).
+
+    Prefers a stable sequence-global content box (``ax._sw_fixed_view_box``) so
+    the scale stays constant across frames and the whole body is always visible;
+    falls back to a per-frame fit when no global box has been computed.
+    """
+    fixed = getattr(ax, "_sw_fixed_view_box", None)
+    use_fixed = isinstance(fixed, (tuple, list)) and len(fixed) == 4
+    if use_fixed:
+        cx, cy, content_half_x, content_half_y = (float(v) for v in fixed)
+        # A stable sequence-global box means the limits are frame-independent.
+        # Cache them so the tiny equal-aspect box feedback loop cannot drift the
+        # scale between frames; reuse verbatim while the box and panel size match.
+        _layout_skeleton_figure(ax)
+        panel_px = _drawable_pixels(ax)
+        cache = getattr(ax, "_sw_view_cache", None)
+        key = (round(cx, 6), round(cy, 6), round(content_half_x, 6),
+               round(content_half_y, 6), panel_px)
+        if isinstance(cache, tuple) and len(cache) == 3 and cache[0] == key:
+            ax.set_xlim(*cache[1])
+            ax.set_ylim(*cache[2])
+            _layout_skeleton_figure(ax)
+            return
+    else:
+        box = _single_frame_view_box(snapshot)
+        if box is None:
+            ax.set_xlim(-0.35, 0.35)
+            ax.set_ylim(0.0, 1.0)
+            _layout_skeleton_figure(ax)
+            return
+        cx, cy, content_half_x, content_half_y = box
 
     _layout_skeleton_figure(ax)
     panel_aspect = _drawable_aspect(ax)
@@ -1239,8 +1388,13 @@ def _apply_view_limits(
     else:
         half_x = half_y * panel_aspect
 
-    if extra_points:
-        label_pad = body_h * _LABEL_VIEW_PAD_FRAC
+    # In fixed mode we deliberately skip per-frame label expansion: it would move
+    # the limits every frame (labels track the moving joint) and reintroduce zoom
+    # drift. Callout labels use clip_on=False and the global box carries a
+    # comfortable margin, so they remain readable without resizing the view.
+    if extra_points and not use_fixed:
+        # Approximate body height from the content box for label headroom.
+        label_pad = 2.0 * content_half_y * _LABEL_VIEW_PAD_FRAC
         for tx, ty in extra_points:
             half_x = max(half_x, abs(tx - cx) + label_pad)
             half_y = max(half_y, abs(ty - cy) + label_pad)
@@ -1249,9 +1403,13 @@ def _apply_view_limits(
         else:
             half_x = half_y * panel_aspect
 
-    ax.set_xlim(cx - half_x, cx + half_x)
-    ax.set_ylim(cy - half_y, cy + half_y)
+    xlim = (cx - half_x, cx + half_x)
+    ylim = (cy - half_y, cy + half_y)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
     _layout_skeleton_figure(ax)
+    if use_fixed:
+        ax._sw_view_cache = (key, xlim, ylim)  # type: ignore[attr-defined]
 
 
 def interpolate_snapshots(
@@ -1431,6 +1589,7 @@ def draw_gait_skeleton(
     labeled_joints: dict[str, str] | None = None,
     motion_arrows: dict[str, tuple[Vec3, Vec3]] | None = None,
     display_mode: str = DEFAULT_SKELETON_DISPLAY_MODE,
+    ground_floor_y: float | None = None,
 ) -> None:
     """
     Render a stick-figure skeleton from a ``SkeletonSnapshot``.
@@ -1456,7 +1615,13 @@ def draw_gait_skeleton(
     highlight = highlight_joints or set()
     labels = labeled_joints or {}
 
-    _draw_ground(ax, snapshot, height)
+    _draw_ground(
+        ax,
+        snapshot,
+        height,
+        floor_y=ground_floor_y,
+        display_mode=display_mode,
+    )
 
     for parent, child, side in _all_edges(snapshot, display_mode):
         p0, p1 = _xy(snapshot, parent), _xy(snapshot, child)

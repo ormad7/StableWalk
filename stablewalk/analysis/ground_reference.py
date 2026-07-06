@@ -29,6 +29,12 @@ from stablewalk.models.joint_registry import ROOT_JOINT_ID
 # Analysis vertical axis — all ground-distance math uses this component only.
 VERTICAL_AXIS: str = "y"
 
+# Lowest foot landmarks used for bilateral clearance (minimum vertical distance).
+FOOT_MEASUREMENT_JOINTS: dict[str, tuple[str, ...]] = {
+    "left": ("left_toe", "left_heel", "left_ankle"),
+    "right": ("right_toe", "right_heel", "right_ankle"),
+}
+
 # Foot landmarks scanned when estimating where the floor sits in Y.
 FLOOR_ESTIMATION_JOINTS: tuple[str, ...] = (
     "left_toe",
@@ -104,6 +110,32 @@ class FootClearanceReading:
     contact_state: str
     sanity_flag: bool = False
     display_note: str = ""
+
+
+@dataclass(frozen=True)
+class BilateralFootClearance:
+    """Left and right foot clearance at one frame (same ground plane)."""
+
+    left: FootClearanceReading
+    right: FootClearanceReading
+    left_phase: str = "—"
+    right_phase: str = "—"
+    measuring_joint_left: str | None = None
+    measuring_joint_right: str | None = None
+
+
+@dataclass(frozen=True)
+class BilateralFootClearanceSample:
+    """One bilateral foot clearance sample for export / time series."""
+
+    frame_index: int
+    time_s: float
+    left_clearance_m: float | None
+    right_clearance_m: float | None
+    left_contact: str
+    right_contact: str
+    left_phase: str
+    right_phase: str
 
 
 @dataclass(frozen=True)
@@ -666,3 +698,138 @@ def floor_reference_y(
     """Vertical coordinate of the estimated ground plane, or None if unavailable."""
     plane = estimate_ground_plane(recording, end_frame_float)
     return plane.floor_y if plane is not None else None
+
+
+def lowest_foot_landmark(
+    snapshot: SkeletonSnapshot,
+    side: str,
+) -> tuple[Vec3 | None, str | None]:
+    """
+    Return the lowest foot landmark on ``side`` (``left`` / ``right``).
+
+    Uses the minimum vertical coordinate among toe, heel, and ankle.
+    """
+    joints = FOOT_MEASUREMENT_JOINTS.get(side, ())
+    best_pos: Vec3 | None = None
+    best_joint: str | None = None
+    best_y = float("inf")
+    axis = VERTICAL_AXIS
+    for joint_id in joints:
+        sample = snapshot.joints.get(joint_id)
+        if sample is None:
+            continue
+        y = vertical_coordinate(sample.position, axis=axis)
+        if y < best_y:
+            best_y = y
+            best_pos = sample.position
+            best_joint = joint_id
+    return best_pos, best_joint
+
+
+def foot_clearance_for_side(
+    snapshot: SkeletonSnapshot,
+    plane: GroundReferencePlane | None,
+    side: str,
+) -> tuple[FootClearanceReading, str | None]:
+    """Instantaneous clearance for one foot using its lowest landmark."""
+    pos, joint_id = lowest_foot_landmark(snapshot, side)
+    return compute_foot_clearance_reading(pos, plane), joint_id
+
+
+def _phase_from_clearance(
+    clearance_m: float | None,
+    *,
+    prev_phase: str | None = None,
+) -> str:
+    """
+    Classify stance vs swing from foot clearance with hysteresis.
+
+    Stance when clearance is below the on-ground threshold; swing when above
+    the near-ground threshold; otherwise hold the previous phase.
+    """
+    if clearance_m is None:
+        return prev_phase or "—"
+    if clearance_m < ON_GROUND_THRESHOLD_M:
+        return "stance"
+    if clearance_m >= NEAR_GROUND_THRESHOLD_M:
+        return "swing"
+    if prev_phase in ("stance", "swing"):
+        return prev_phase
+    return "stance" if clearance_m < (ON_GROUND_THRESHOLD_M + NEAR_GROUND_THRESHOLD_M) / 2 else "swing"
+
+
+def bilateral_foot_clearance(
+    snapshot: SkeletonSnapshot,
+    plane: GroundReferencePlane | None,
+    *,
+    prev_left_phase: str | None = None,
+    prev_right_phase: str | None = None,
+) -> BilateralFootClearance:
+    """Left and right foot clearance at one frame using the shared ground plane."""
+    left_reading, left_joint = foot_clearance_for_side(snapshot, plane, "left")
+    right_reading, right_joint = foot_clearance_for_side(snapshot, plane, "right")
+    left_phase = _phase_from_clearance(
+        left_reading.foot_clearance_m,
+        prev_phase=prev_left_phase,
+    )
+    right_phase = _phase_from_clearance(
+        right_reading.foot_clearance_m,
+        prev_phase=prev_right_phase,
+    )
+    return BilateralFootClearance(
+        left=left_reading,
+        right=right_reading,
+        left_phase=left_phase,
+        right_phase=right_phase,
+        measuring_joint_left=left_joint,
+        measuring_joint_right=right_joint,
+    )
+
+
+def bilateral_foot_clearance_series(
+    recording: GaitMotionRecording,
+    end_frame_float: float,
+) -> list[BilateralFootClearanceSample]:
+    """
+    Bilateral foot clearance for every frame through ``end_frame_float``.
+
+    Uses a session-stable ground plane and hysteresis-based stance/swing labels.
+    """
+    if recording.frame_count <= 0:
+        return []
+    plane = estimate_ground_plane(recording, end_frame_float)
+    if plane is None:
+        return []
+
+    last_index = min(
+        recording.frame_count - 1,
+        max(0, int(end_frame_float)),
+    )
+    out: list[BilateralFootClearanceSample] = []
+    prev_left: str | None = None
+    prev_right: str | None = None
+    for index in range(last_index + 1):
+        snap = recording.snapshot_at(index)
+        if snap is None:
+            continue
+        bilateral = bilateral_foot_clearance(
+            snap,
+            plane,
+            prev_left_phase=prev_left,
+            prev_right_phase=prev_right,
+        )
+        prev_left = bilateral.left_phase
+        prev_right = bilateral.right_phase
+        out.append(
+            BilateralFootClearanceSample(
+                frame_index=index,
+                time_s=float(snap.time_s),
+                left_clearance_m=bilateral.left.foot_clearance_m,
+                right_clearance_m=bilateral.right.foot_clearance_m,
+                left_contact=bilateral.left.contact_state,
+                right_contact=bilateral.right.contact_state,
+                left_phase=bilateral.left_phase,
+                right_phase=bilateral.right_phase,
+            )
+        )
+    return out

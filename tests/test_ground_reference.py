@@ -274,6 +274,69 @@ class GroundReferenceTests(unittest.TestCase):
         self.assertEqual(bad.quality_label, CALIBRATION_CHECK_LABEL)
         self.assertTrue(bad.calibration_check)
 
+    def test_bilateral_foot_clearance_uses_lowest_landmark(self) -> None:
+        from stablewalk.analysis.ground_reference import (
+            bilateral_foot_clearance,
+            estimate_ground_plane,
+        )
+
+        recording = GaitMotionRecording(
+            source="test.mp4",
+            fps=30.0,
+            snapshots=[
+                SkeletonSnapshot(
+                    frame_index=0,
+                    time_s=0.0,
+                    joints={
+                        "left_hip": JointSample("left_hip", Vec3(-0.1, 0.5, 0.0)),
+                        "right_hip": JointSample("right_hip", Vec3(0.1, 0.5, 0.0)),
+                        "left_toe": JointSample("left_toe", Vec3(-0.1, 0.08, 0.1)),
+                        "left_heel": JointSample("left_heel", Vec3(-0.12, 0.05, -0.05)),
+                        "left_ankle": JointSample("left_ankle", Vec3(-0.11, 0.12, 0.0)),
+                        "right_toe": JointSample("right_toe", Vec3(0.1, 0.15, 0.1)),
+                        "right_heel": JointSample("right_heel", Vec3(0.12, 0.10, -0.05)),
+                        "right_ankle": JointSample("right_ankle", Vec3(0.11, 0.14, 0.0)),
+                        "head": JointSample("head", Vec3(0.0, 0.95, 0.0)),
+                    },
+                ),
+            ],
+        )
+        plane = estimate_ground_plane(recording, 0.0)
+        assert plane is not None
+        bilateral = bilateral_foot_clearance(recording.snapshot_at(0), plane)
+        self.assertEqual(bilateral.measuring_joint_left, "left_heel")
+        self.assertGreater(
+            bilateral.right.foot_clearance_m or 0.0,
+            bilateral.left.foot_clearance_m or 0.0,
+        )
+        self.assertEqual(bilateral.left.contact_state, "On Ground")
+
+    def test_bilateral_clearance_series_has_phases(self) -> None:
+        from stablewalk.analysis.ground_reference import bilateral_foot_clearance_series
+
+        snapshots = []
+        for index, toe_y in enumerate((0.05, 0.05, 0.22, 0.24)):
+            snapshots.append(
+                SkeletonSnapshot(
+                    frame_index=index,
+                    time_s=float(index) * 0.033,
+                    joints={
+                        "left_hip": JointSample("left_hip", Vec3(-0.1, 0.5, 0.0)),
+                        "right_hip": JointSample("right_hip", Vec3(0.1, 0.5, 0.0)),
+                        "left_toe": JointSample("left_toe", Vec3(-0.1, toe_y, 0.1)),
+                        "left_heel": JointSample("left_heel", Vec3(-0.12, toe_y - 0.01, -0.05)),
+                        "right_toe": JointSample("right_toe", Vec3(0.1, 0.05, 0.1)),
+                        "right_heel": JointSample("right_heel", Vec3(0.12, 0.04, -0.05)),
+                        "head": JointSample("head", Vec3(0.0, 0.95, 0.0)),
+                    },
+                )
+            )
+        recording = GaitMotionRecording(source="test.mp4", fps=30.0, snapshots=snapshots)
+        series = bilateral_foot_clearance_series(recording, 3.0)
+        self.assertEqual(len(series), 4)
+        self.assertIn(series[0].left_phase, ("stance", "swing"))
+        self.assertIn(series[-1].left_phase, ("stance", "swing"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -160,7 +160,7 @@ class GaitMetrics:
 
             grf = GRFAnalyzer().analyze(sequence)
 
-        events, _ = analyze_gait_sequence(sequence.frames)
+        events, _ = analyze_gait_sequence(sequence.frames, fps=fps)
         hs = [e for e in events if e.event_type == "heel_strike"]
         frames_map = _frame_by_index(sequence)
         indices = detected_frame_indices(sequence)

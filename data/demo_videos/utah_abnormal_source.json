@@ -1,0 +1,51 @@
+{
+  "source_institution": "University of Utah \u2013 NeuroLogic Examination",
+  "source_page": "https://neurologicexam.med.utah.edu/adult/html/gait_abnormal.html",
+  "download_page": "https://neurologicexam.med.utah.edu/adult/html/download_by_exam.html",
+  "video_title": "Neuropathic Gait",
+  "utah_video_identifier": "gait_ab_10",
+  "kaltura_entry_id": "0_z1p8nsbi",
+  "download_url": "https://cdnapisec.kaltura.com/p/816122/sp/81612200/playManifest/entryId/0_z1p8nsbi/format/download/protocol/https",
+  "gait_type": "Neuropathic gait",
+  "gait_description": "Abnormal gait pattern: right foot dorsiflexion weakness with compensatory high stepping for foot clearance.",
+  "original_format": "MP4/H.264 (Kaltura CDN \u2014 official Utah site embed)",
+  "final_codec": "H.264 / yuv420p / MP4",
+  "trim": "trimmed from frame 510, 150 frames",
+  "trim_start_frame": 510,
+  "trim_output_frames": 150,
+  "opencv": {
+    "opened": true,
+    "frame_count": 150,
+    "fps": 29.97,
+    "width": 480,
+    "height": 360,
+    "decoded_samples": {
+      "0": true,
+      "37": true,
+      "75": true,
+      "112": true,
+      "149": true
+    },
+    "duration_s": 5.005005005005005
+  },
+  "validation": {
+    "video": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\data\\demo_videos\\abnormal_gait.mp4",
+    "duration_s": 5.005005005005005,
+    "fps": 29.97,
+    "resolution": "480x360",
+    "total_frames": 150,
+    "sampled_frames": 80,
+    "pose_detection_rate": 1.0,
+    "hip_visibility_rate": 1.0,
+    "knee_visibility_rate": 1.0,
+    "ankle_visibility_rate": 1.0,
+    "foot_visibility_rate": 1.0,
+    "gait_detected_rate": 1.0,
+    "full_body_quality": "PASS",
+    "analysis_3d_suitability": "PASS",
+    "foot_clearance_suitability": "PASS",
+    "compact_status": "Demo Video: Ready",
+    "notes": []
+  },
+  "local_path": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\data\\demo_videos\\abnormal_gait.mp4"
+}

@@ -52,7 +52,7 @@ DEFAULT_MIN_VALID_FRAME_RATIO = 0.25
 DEFAULT_VIDEO_VALIDATION_SAMPLES = 20
 
 # Presentation demo (see stablewalk.ui.demo)
-DEMO_MAX_FRAMES = 50
+DEMO_MAX_FRAMES = 120
 
 # Pose/frames are always regenerated on load (keyed by content hash in video_source)
 DISABLE_POSE_CACHE_REUSE = True

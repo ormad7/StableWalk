@@ -58,7 +58,8 @@ GAIT_DOF_LANDMARKS: tuple[str, ...] = (
     "mid_hip",
 )
 
-MIN_GAIT_DOF = 14
+# Side-view running often yields 13/15 gait angles; walking typically reaches 14–15.
+MIN_GAIT_DOF = 13
 
 GAIT_VELOCITY_JOINTS: tuple[str, ...] = (
     "left_hip",

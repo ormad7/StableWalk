@@ -76,44 +76,33 @@ from stablewalk.ui.viewers.gait_skeleton_renderer import (
 # Placeholder shown in the "Add a point" dropdown
 ADD_POINT_PLACEHOLDER = "Add joint\u2026"
 
-# ── Dashboard grid weights (structural layout) ─────────────────────────────
-# The three top-row columns share a "uniform" group, so their widths are kept
-# proportional to these weights regardless of window size:
-#   Video & Pose Overlay ≈ 45%  ·  Skeleton ≈ 35%  ·  Right sidebar ≈ 20%
-# Bottom row: selected-point analysis (expands) | position table (fixed width),
-# so the analysis view always keeps the majority of the width.
-_TOP_VIDEO_WEIGHT = 45
-_TOP_SKELETON_WEIGHT = 35
-_SIDEBAR_WEIGHT = 20
+# Primary visual area (~52% height): Original Video + 3D Reconstruction + summary.
+# Analysis row (~48%): Selected Joint Analysis + movement graph (scrollable).
+_TOP_VIDEO_WEIGHT = 48
+_TOP_SKELETON_WEIGHT = 34
+_SIDEBAR_WEIGHT = 18
 _BOTTOM_ANALYSIS_WEIGHT = 1
 _BOTTOM_TABLE_WEIGHT = 0
-_TABLE_PANEL_WIDTH = 380
-# The Selected Point Analysis row holds the 3D cube, so it gets the lion's
-# share of the body height; the video/skeleton row stays compact but readable.
-_DASH_VIZ_ROW_WEIGHT = 6
-_DASH_ANALYTICS_ROW_WEIGHT = 32
-_DASH_VIZ_ROW_MINSIZE = 180
-_DASH_ANALYTICS_ROW_MINSIZE = 475
-# Keep the sidebar wide enough that the OpenSim controls, comboboxes and
-# status text are never clipped.
-_SIDEBAR_MIN_WIDTH = 248
-_ANALYTICS_ANALYSIS_MINSIZE = 460
-_ANALYTICS_TABLE_MINSIZE = _TABLE_PANEL_WIDTH
-_ANALYSIS_METRICS_ROW_WEIGHT = 0
-_ANALYSIS_GRAPH_ROW_WEIGHT = 1
-_ANALYTICS_GRAPH_MINSIZE = 380
-_ANALYTICS_METRICS_MINSIZE = 0
-_ANALYSIS_GRAPH_INNER_PAD = (12, 8, 12, 10)
+_TABLE_PANEL_WIDTH = 0
+_TABLE_PANEL_WIDTH_EXPANDED = 520
+_DASH_VIZ_ROW_WEIGHT = 52
+_DASH_ANALYTICS_ROW_WEIGHT = 48
+_DASH_VIZ_ROW_MINSIZE = 200
+_DASH_ANALYTICS_ROW_MINSIZE = 180
+_SIDEBAR_MIN_WIDTH = 152
+_ANALYTICS_ANALYSIS_MINSIZE = 280
+_ANALYTICS_TABLE_MINSIZE = 0
+_ANALYSIS_GRAPH_INNER_PAD = (2, 2, 2, 2)
 _ANALYSIS_INFO_STRIP_PAD = (2, 3)
 _ANALYSIS_PANEL_PAD = (PAD_SM, PAD_XS, PAD_SM, PAD_XS)
 _ANALYSIS_GRAPH_BOTTOM_PAD = 0
-_ANALYSIS_PANEL_PLAYBACK_GAP = 24
+_ANALYSIS_PANEL_PLAYBACK_GAP = 8
 _ANALYSIS_LEFT_PANEL_WIDTH = 204
 # Width of the explanation panel placed to the right of the 3D cube. The cube
 # keeps the remaining (taller, squarer) area so it renders large and uncut,
 # while this column uses the panel's wide horizontal space for the legend and a
 # short description of what the graph shows.
-_ANALYSIS_EXPLAIN_WIDTH = 250
+_ANALYSIS_EXPLAIN_WIDTH = 140
 _ANALYSIS_GRAPH_CANVAS_STICKY = "nsew"
 _ANALYSIS_GRAPH_HEADER_ROW = 0
 _ANALYSIS_GRAPH_CANVAS_ROW = 1
@@ -124,10 +113,11 @@ _TABLE_PANEL_PAD = (PAD_XS, PAD_XS, PAD_XS, PAD_XS)
 _SKELETON_PANEL_PAD = (PAD_XS, 2)
 _SKELETON_CANVAS_PAD = (0, 0, 0, 0)
 _SKELETON_HEADER_PAD = (0, 0)
-_ANALYTICS_SUMMARY_SLOTS = 7
 _ANALYTICS_SECONDARY_SLOTS = 4
+_ANALYTICS_ADVANCED_COORD_SLOTS = 4
 
-_BODY_CHECKLIST_HEIGHT = 140
+_BODY_CHECKLIST_HEIGHT = 1
+_ANALYTICS_SUMMARY_SLOTS = 4
 _TABLE_TREE_HEIGHT = 10
 # Readable column widths: the six core columns (Time, Frame, Selected Point,
 # X, Y, Z) fit without horizontal scrolling; Speed/foot columns scroll in.
@@ -334,14 +324,14 @@ def _metric_grid_cell(
     accent: bool = False,
 ) -> tuple[tk.Label, tk.Label]:
     """One titled value cell inside a metrics grid (roomy, readable cards)."""
-    pad = 2
-    cell_pad = (1, 1)
-    title_pad = (2, 0)
-    value_pad = (0, 3)
-    inner_x = 8
+    pad = 2 if compact else 2
+    cell_pad = (0, 0) if compact else (1, 1)
+    title_pad = (1, 0) if compact else (2, 0)
+    value_pad = (0, 1) if compact else (0, 3)
+    inner_x = 4 if compact else 8
     grid_kwargs = dict(row=row, column=column, sticky="nsew", padx=pad, pady=cell_pad)
 
-    if accent:
+    if accent and not compact:
         shell = tk.Frame(parent, bg=ORANGE, highlightthickness=0)
         shell.grid(**grid_kwargs)
         cell = tk.Frame(shell, bg=ELEVATED, highlightthickness=0)
@@ -349,26 +339,27 @@ def _metric_grid_cell(
     else:
         cell = tk.Frame(
             parent,
-            bg=ELEVATED,
-            highlightthickness=1,
+            bg=PANEL if compact else ELEVATED,
+            highlightthickness=0 if compact else 1,
             highlightbackground=BORDER,
             highlightcolor=BORDER,
         )
         cell.grid(**grid_kwargs)
 
+    cell_bg = PANEL if compact else ELEVATED
     title_lbl = tk.Label(
         cell,
         text=title,
-        bg=ELEVATED,
+        bg=cell_bg,
         fg=MUTED,
-        font=FONT_METRIC_TITLE,
+        font=FONT_METRIC_TITLE if not compact else FONT_UI_XS,
         anchor="w",
     )
     title_lbl.pack(fill=tk.X, padx=inner_x, pady=title_pad)
     value_lbl = tk.Label(
         cell,
         text="—",
-        bg=ELEVATED,
+        bg=cell_bg,
         fg=TEXT,
         font=FONT_METRIC_VALUE,
         anchor="w",
@@ -487,6 +478,50 @@ def _foot_card_inline_pair(
         return lbl
 
     return _cell(0, left_label), _cell(1, right_label)
+
+
+def _build_ground_clearance_strip(gui, parent: tk.Misc) -> tk.Frame:
+    """Compact bilateral foot readout under the skeleton view."""
+    from stablewalk.ui.theme import FONT_METRIC_VALUE, FONT_UI_XS
+
+    strip = tk.Frame(parent, bg=PANEL, highlightthickness=0)
+    gui.ground_clearance_strip = strip
+
+    inner = tk.Frame(strip, bg=PANEL, highlightthickness=0)
+    inner.pack(fill=tk.X, padx=2, pady=2)
+
+    tk.Label(inner, text="L", bg=PANEL, fg=MUTED, font=FONT_UI_XS).pack(
+        side=tk.LEFT, padx=(0, 2)
+    )
+    gui.lbl_ground_clearance_left = tk.Label(
+        inner,
+        text="\u2014",
+        bg=PANEL,
+        fg=ORANGE,
+        font=FONT_METRIC_VALUE,
+        anchor="w",
+    )
+    gui.lbl_ground_clearance_left.pack(side=tk.LEFT, padx=(0, 12))
+
+    tk.Label(inner, text="R", bg=PANEL, fg=MUTED, font=FONT_UI_XS).pack(
+        side=tk.LEFT, padx=(0, 2)
+    )
+    gui.lbl_ground_clearance_right = tk.Label(
+        inner,
+        text="\u2014",
+        bg=PANEL,
+        fg=ORANGE,
+        font=FONT_METRIC_VALUE,
+        anchor="w",
+    )
+    gui.lbl_ground_clearance_right.pack(side=tk.LEFT)
+
+    # Phase / scale kept for logic and tooltips — not shown in the main strip.
+    gui.lbl_ground_clearance_phase = tk.Label(strip, text="", bg=PANEL)
+    gui.lbl_ground_clearance_scale = tk.Label(strip, text="", bg=PANEL)
+
+    strip.grid_remove()
+    return strip
 
 
 def _build_foot_analysis_card(gui, parent: tk.Misc) -> tk.Frame:
@@ -709,165 +744,114 @@ def _build_compact_graph_legend(parent: tk.Misc) -> list[tk.Label]:
 
 
 def _build_analysis_graph_explainer(gui, parent: tk.Misc) -> tk.Frame:
-    """Side panel (right of the 3D cube) describing what the graph shows."""
+    """Compact side panel beside the 3D trajectory cube."""
     from stablewalk.ui.theme import (
         DOF_TRAJ_DOT_COLOR,
         DOF_TRAJ_PATH_COLOR,
         DOF_TRAJ_START_COLOR,
     )
 
-    # Host the explanation inside a scrollable canvas so the content can never be
-    # clipped, no matter how short this section gets on small windows.
     container = tk.Frame(parent, bg=PANEL, highlightthickness=0)
     container.grid(row=0, column=1, sticky="nsew", padx=(PAD_SM, 0), pady=(2, 2))
-    container.rowconfigure(0, weight=1)
     container.columnconfigure(0, weight=1)
 
-    canvas = tk.Canvas(container, bg=PANEL, highlightthickness=0, bd=0)
-    canvas.grid(row=0, column=0, sticky="nsew")
-    vbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-    canvas.configure(yscrollcommand=vbar.set)
-
-    panel = tk.Frame(canvas, bg=PANEL, highlightthickness=0)
-    panel_window = canvas.create_window((0, 0), window=panel, anchor="nw")
+    panel = tk.Frame(container, bg=PANEL, highlightthickness=0)
+    panel.grid(row=0, column=0, sticky="new")
     panel.columnconfigure(0, weight=1)
 
-    def _sync_scroll(_event=None):
-        canvas.configure(scrollregion=canvas.bbox("all"))
-        needs_bar = panel.winfo_reqheight() > canvas.winfo_height() + 1
-        if needs_bar:
-            vbar.grid(row=0, column=1, sticky="ns")
-        else:
-            vbar.grid_remove()
-            canvas.yview_moveto(0.0)
-
-    def _fit_width(event):
-        canvas.itemconfigure(panel_window, width=event.width)
-        _sync_scroll()
-
-    panel.bind("<Configure>", _sync_scroll)
-    canvas.bind("<Configure>", _fit_width)
-
-    def _on_wheel(event):
-        if panel.winfo_reqheight() > canvas.winfo_height() + 1:
-            canvas.yview_scroll(int(-event.delta / 120), "units")
-
-    canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_wheel))
-    canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
-
-    # Live readout first so the key number is always visible without scrolling:
-    # how high the selected point currently sits above the estimated floor
-    # (works for any leg point — hip, knee, ankle, heel, toe).
-    floor_card = tk.Frame(
-        panel,
-        bg=ELEVATED,
-        highlightthickness=1,
-        highlightbackground=BORDER,
-        highlightcolor=BORDER,
-    )
-    floor_card.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+    floor_card = tk.Frame(panel, bg=ELEVATED, highlightthickness=0)
+    floor_card.grid(row=0, column=0, sticky="ew", pady=(0, 4))
     gui.dof_graph_floor_card = floor_card
     tk.Label(
         floor_card,
-        text="Distance from floor",
+        text="Floor distance",
         bg=ELEVATED,
         fg=MUTED,
-        font=FONT_METRIC_TITLE,
+        font=FONT_UI_XS,
         anchor="w",
-    ).pack(fill=tk.X, padx=8, pady=(4, 0))
+    ).pack(fill=tk.X, padx=6, pady=(4, 0))
     gui.lbl_dof_graph_floor_value = tk.Label(
         floor_card,
         text="\u2014",
         bg=ELEVATED,
         fg=ACCENT,
-        font=FONT_METRIC_VALUE_ACCENT,
+        font=FONT_METRIC_VALUE,
         anchor="w",
         justify=tk.LEFT,
-        wraplength=_ANALYSIS_EXPLAIN_WIDTH - 24,
+        wraplength=_ANALYSIS_EXPLAIN_WIDTH - 16,
     )
-    gui.lbl_dof_graph_floor_value.pack(fill=tk.X, padx=8, pady=(0, 0))
-    # Secondary line: the centimeter value is only an estimate (no metric scale
-    # in monocular video), so it is shown smaller and clearly qualified.
-    gui.lbl_dof_graph_floor_note = tk.Label(
-        floor_card,
-        text="",
-        bg=ELEVATED,
-        fg=MUTED,
-        font=FONT_UI_XS,
-        anchor="w",
-        justify=tk.LEFT,
-        wraplength=_ANALYSIS_EXPLAIN_WIDTH - 24,
-    )
-    gui.lbl_dof_graph_floor_note.pack(fill=tk.X, padx=8, pady=(0, 1))
-    # Range over the clip so far (lowest -> highest height above the floor): the
-    # step-clearance range for a foot, or the vertical bob for the hip. Hidden
-    # (empty text) when the point barely changes height.
-    gui.lbl_dof_graph_floor_range = tk.Label(
-        floor_card,
-        text="",
-        bg=ELEVATED,
-        fg=TEXT_SECONDARY,
-        font=FONT_UI_XS,
-        anchor="w",
-        justify=tk.LEFT,
-        wraplength=_ANALYSIS_EXPLAIN_WIDTH - 24,
-    )
-    gui.lbl_dof_graph_floor_range.pack(fill=tk.X, padx=8, pady=(0, 1))
-    # Static explainer so it is always clear what this number means.
-    tk.Label(
-        floor_card,
-        text="0% = on the floor \u00b7 100% = standing height",
-        bg=ELEVATED,
-        fg=MUTED,
-        font=FONT_UI_XS,
-        anchor="w",
-        justify=tk.LEFT,
-        wraplength=_ANALYSIS_EXPLAIN_WIDTH - 24,
-    ).pack(fill=tk.X, padx=8, pady=(0, 4))
+    gui.lbl_dof_graph_floor_value.pack(fill=tk.X, padx=6, pady=(0, 4))
+    gui.lbl_dof_graph_floor_note = tk.Label(floor_card, text="", bg=ELEVATED)
+    gui.lbl_dof_graph_floor_range = tk.Label(floor_card, text="", bg=ELEVATED)
 
-    tk.Label(
-        panel,
-        text="What this graph shows",
-        bg=PANEL,
-        fg=ACCENT_ALT,
-        font=FONT_PANEL_HEADER,
-        anchor="w",
-        justify=tk.LEFT,
-    ).grid(row=1, column=0, sticky="ew", pady=(0, 3))
-
-    gui.lbl_dof_graph_explain_body = tk.Label(
-        panel,
-        text=(
-            "3D path of the point over the clip. Trail dim\u2192bright = "
-            "start\u2192now. The grey shadow on the floor shows its depth."
-        ),
-        bg=PANEL,
-        fg=TEXT_SECONDARY,
-        font=FONT_UI_SM,
-        anchor="w",
-        justify=tk.LEFT,
-        wraplength=_ANALYSIS_EXPLAIN_WIDTH - 12,
+    overlay_row = tk.Frame(panel, bg=PANEL, highlightthickness=0)
+    overlay_row.grid(row=1, column=0, sticky="ew", pady=(0, 2))
+    gui.var_foot_clearance_graph = tk.StringVar(value="Off")
+    gui.cmb_foot_clearance_graph = ttk.Combobox(
+        overlay_row,
+        textvariable=gui.var_foot_clearance_graph,
+        values=("Off", "Left foot", "Right foot"),
+        state="readonly",
+        width=12,
     )
-    gui.lbl_dof_graph_explain_body.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+    gui.cmb_foot_clearance_graph.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    gui.cmb_foot_clearance_graph.bind(
+        "<<ComboboxSelected>>",
+        lambda _e: gui._refresh_foot_clearance_graph_hint(),
+    )
+    gui.lbl_foot_clearance_graph_range = tk.Label(panel, text="", bg=PANEL)
 
-    # Colour legend on a single compact row to keep the panel short.
     legend = tk.Frame(panel, bg=PANEL, highlightthickness=0)
-    legend.grid(row=3, column=0, sticky="ew", pady=(0, 3))
+    legend.grid(row=2, column=0, sticky="ew", pady=(2, 0))
     legend_items = (
         (DOF_TRAJ_START_COLOR, "Start"),
         (DOF_TRAJ_PATH_COLOR, "Path"),
         (DOF_TRAJ_DOT_COLOR, "Now"),
     )
     gui.dof_graph_explain_legend_labels = []
-    for color, name in legend_items:
+    for index, (color, name) in enumerate(legend_items):
+        if index:
+            tk.Label(legend, text="\u00b7", bg=PANEL, fg=MUTED, font=FONT_UI_XS).pack(
+                side=tk.LEFT, padx=2
+            )
         chip = tk.Frame(legend, bg=PANEL, highlightthickness=0)
-        chip.pack(side=tk.LEFT, padx=(0, 10))
-        tk.Label(chip, text="\u25cf", bg=PANEL, fg=color, font=FONT_UI_SM).pack(
-            side=tk.LEFT, padx=(0, 3)
+        chip.pack(side=tk.LEFT)
+        tk.Label(chip, text="\u25cf", bg=PANEL, fg=color, font=FONT_UI_XS).pack(
+            side=tk.LEFT, padx=(0, 2)
         )
         lbl = tk.Label(chip, text=name, bg=PANEL, fg=TEXT_SECONDARY, font=FONT_UI_XS)
         lbl.pack(side=tk.LEFT)
         gui.dof_graph_explain_legend_labels.append(lbl)
+
+    gui.lbl_dof_graph_explain_body = tk.Label(
+        panel,
+        text="",
+        bg=PANEL,
+        fg=TEXT_SECONDARY,
+        font=FONT_UI_XS,
+    )
+
+    from stablewalk.ui.theme import DOF_ANALYSIS_GRAPH_CAPTION_GENERAL
+
+    gui.lbl_dof_analysis_graph_caption = tk.Label(
+        panel,
+        text=DOF_ANALYSIS_GRAPH_CAPTION_GENERAL,
+        bg=PANEL,
+        fg=ACCENT_ALT,
+        font=FONT_UI_XS,
+        anchor="w",
+    )
+
+    gui.btn_export_analysis = ttk.Button(
+        panel,
+        text="Export Data",
+        style="Compact.TButton",
+        width=11,
+        command=gui._export_analysis_data,
+        state=tk.DISABLED,
+    )
+    gui.btn_export_analysis.grid(row=5, column=0, sticky="ew", pady=(6, 0))
+    gui.dof_analysis_export_row = panel
 
     gui.dof_analysis_graph_explainer = panel
     return panel
@@ -941,7 +925,7 @@ def _build_analysis_sidebar(gui, parent: tk.Misc) -> tk.Frame:
 
 
 def _build_analysis_metrics_panel(gui, parent: tk.Misc) -> tk.Frame:
-    """Zone 1 — two clean metric rows (summary + movement) under the title."""
+    """Primary metrics row + collapsible advanced measurements."""
     from stablewalk.ui.theme import (
         DOF_ANALYSIS_MODE_FOOT,
         DOF_ANALYSIS_MODE_FOOT_HINT,
@@ -952,8 +936,6 @@ def _build_analysis_metrics_panel(gui, parent: tk.Misc) -> tk.Frame:
     section = tk.Frame(parent, bg=PANEL, highlightthickness=0)
     section.columnconfigure(0, weight=1)
 
-    # Mode labels are kept for the update logic but never displayed: the
-    # LabelFrame title ("Selected Point Analysis") is the only header shown.
     mode_holder = tk.Frame(section, bg=PANEL, highlightthickness=0)
     gui.lbl_dof_analysis_mode = tk.Label(mode_holder, text="", bg=PANEL, fg=ACCENT)
     gui.lbl_dof_analysis_mode_hint = tk.Label(mode_holder, text="", bg=PANEL, fg=MUTED)
@@ -964,37 +946,27 @@ def _build_analysis_metrics_panel(gui, parent: tk.Misc) -> tk.Frame:
         DOF_ANALYSIS_MODE_FOOT_HINT,
     )
 
-    summary_bar = tk.Frame(
-        section,
-        bg=ELEVATED,
-        highlightthickness=1,
-        highlightbackground=BORDER,
-        highlightcolor=BORDER,
-    )
-    summary_bar.grid(row=0, column=0, sticky="ew", pady=(0, PAD_XS))
+    summary_bar = tk.Frame(section, bg=PANEL, highlightthickness=0)
+    summary_bar.grid(row=0, column=0, sticky="ew", pady=(0, 2))
     summary_bar.columnconfigure(0, weight=1)
 
-    metrics_host = tk.Frame(summary_bar, bg=ELEVATED, highlightthickness=0)
-    metrics_host.grid(row=0, column=0, sticky="ew", padx=PAD_XS, pady=(PAD_XS, PAD_SM))
+    metrics_host = tk.Frame(summary_bar, bg=PANEL, highlightthickness=0)
+    metrics_host.grid(row=0, column=0, sticky="ew")
     metrics_host.columnconfigure(0, weight=1)
 
-    # Primary summary row — 7 readable cards (own frame so it spans full width).
-    primary_host = tk.Frame(metrics_host, bg=ELEVATED, highlightthickness=0)
+    primary_host = tk.Frame(metrics_host, bg=PANEL, highlightthickness=0)
     primary_host.grid(row=0, column=0, sticky="ew")
     gui.dof_analysis_summary_slots = _build_metric_grid(
         primary_host,
         columns=_ANALYTICS_SUMMARY_SLOTS,
         row=0,
         slot_titles=(
-            "Selected Point",
-            "Time (s)",
-            "Frame",
-            "X (m)",
-            "Y (m)",
-            "Z (m)",
-            "Speed (m/s)",
+            "Selected point",
+            "Time",
+            "Speed",
+            "Path length",
         ),
-        compact=False,
+        compact=True,
         accent_first=True,
     )
     gui.dof_analysis_point_value_lbl = gui.dof_analysis_summary_slots[0][1]
@@ -1003,16 +975,49 @@ def _build_analysis_metrics_panel(gui, parent: tk.Misc) -> tk.Frame:
         justify=tk.LEFT,
         anchor="w",
     )
-    gui.dof_analysis_identity_slots = gui.dof_analysis_summary_slots[:3]
-    gui.dof_analysis_kinematics_slots = gui.dof_analysis_summary_slots[3:]
+    gui.dof_analysis_identity_slots = gui.dof_analysis_summary_slots[:2]
+    gui.dof_analysis_kinematics_slots = gui.dof_analysis_summary_slots[2:]
     gui.dof_analysis_summary_hosts = [
         _metric_slot_host(title_lbl, primary_host)
         for title_lbl, _ in gui.dof_analysis_summary_slots
     ]
 
-    # Secondary movement row — Path Length · Delta from Start · Vertical
-    # Position (general mode shows 3; foot mode reveals a 4th slot).
-    secondary_host = tk.Frame(metrics_host, bg=ELEVATED, highlightthickness=0)
+    toggle_row = tk.Frame(metrics_host, bg=PANEL, highlightthickness=0)
+    toggle_row.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+    gui.btn_toggle_joint_advanced = ttk.Button(
+        toggle_row,
+        text="Detailed Joint Data \u25be",
+        style="Compact.TButton",
+        command=gui._toggle_joint_advanced_data,
+    )
+    gui.btn_toggle_joint_advanced.pack(side=tk.LEFT)
+    gui.btn_collected_data = ttk.Button(
+        toggle_row,
+        text="Data (0)",
+        style="Compact.TButton",
+        command=gui._open_collected_data_dialog,
+    )
+    gui.btn_collected_data.pack(side=tk.RIGHT)
+    gui._joint_advanced_visible = False
+
+    advanced_host = tk.Frame(metrics_host, bg=PANEL, highlightthickness=0)
+    advanced_host.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+    advanced_host.grid_remove()
+    gui.dof_analysis_advanced_host = advanced_host
+
+    gui.dof_analysis_advanced_coord_slots = _build_metric_grid(
+        advanced_host,
+        columns=_ANALYTICS_ADVANCED_COORD_SLOTS,
+        row=0,
+        slot_titles=("Frame", "X (m)", "Y (m)", "Z (m)"),
+        compact=True,
+    )
+    gui.dof_analysis_advanced_coord_hosts = [
+        _metric_slot_host(title_lbl, advanced_host)
+        for title_lbl, _ in gui.dof_analysis_advanced_coord_slots
+    ]
+
+    secondary_host = tk.Frame(advanced_host, bg=PANEL, highlightthickness=0)
     secondary_host.grid(row=1, column=0, sticky="ew", pady=(PAD_XS, 0))
     gui.dof_analysis_secondary_host = secondary_host
     gui.dof_analysis_derived_row = secondary_host
@@ -1026,21 +1031,22 @@ def _build_analysis_metrics_panel(gui, parent: tk.Misc) -> tk.Frame:
             "Vertical Position",
             "",
         ),
-        compact=False,
+        compact=True,
     )
     gui.dof_analysis_secondary_hosts = [
         _metric_slot_host(title_lbl, secondary_host)
         for title_lbl, _ in gui.dof_analysis_derived_slots
     ]
 
-    # Legend + Export live in the graph header (built in build_dashboard_layout)
-    # to keep this metrics card uncluttered; create safe defaults here.
     gui.dof_graph_legend_labels = getattr(gui, "dof_graph_legend_labels", [])
     gui.btn_export_analysis = getattr(gui, "btn_export_analysis", None)
-
     gui.lbl_dof_analysis_movement_title = tk.Label(mode_holder, text="", bg=PANEL)
 
-    gui.dof_analysis_metric_slots = gui.dof_analysis_summary_slots
+    gui.dof_analysis_metric_slots = (
+        gui.dof_analysis_summary_slots
+        + gui.dof_analysis_advanced_coord_slots
+        + gui.dof_analysis_derived_slots
+    )
     gui.dof_analysis_metrics_section = section
     gui.dof_analysis_header = section
     gui.dof_analysis_summary = summary_bar
@@ -1052,7 +1058,6 @@ def _build_analysis_metrics_panel(gui, parent: tk.Misc) -> tk.Frame:
     gui.dof_analysis_slots = gui.dof_analysis_metric_slots
     gui.dof_analysis_status = None
     gui.dof_analysis_export_row = None
-
     gui.dof_analysis_details_row = None
     gui.lbl_dof_analysis_clarification = None
     gui.lbl_dof_analysis_guide = None
@@ -1201,54 +1206,62 @@ def _make_data_tree(
 # Combined width budget shared by the video and skeleton columns; the sidebar
 # keeps its own fixed weight so only these two reflow with the clip.
 _TOP_SPAN_WEIGHT = _TOP_VIDEO_WEIGHT + _TOP_SKELETON_WEIGHT
-_TOP_VIDEO_WEIGHT_MIN = 26
-_TOP_VIDEO_WEIGHT_MAX = _TOP_SPAN_WEIGHT - 24
+_TOP_VIDEO_WEIGHT_MIN = 30
+_TOP_VIDEO_WEIGHT_MAX = _TOP_SPAN_WEIGHT - 28
 
 
 def apply_top_row_aspect(gui, aspect: float | None) -> None:
-    """Resize the video/skeleton columns to suit the loaded clip's aspect ratio.
+    """Keep a stable video/skeleton column split.
 
-    ``aspect`` is the clip's width / height. Portrait clips (aspect < 1) shrink
-    the video column so the video fills it instead of floating between wide
-    empty bands, and the reclaimed width is handed to the Skeleton panel.
-    Landscape clips do the opposite. Pass ``None`` to restore the default split
-    (e.g. for the synthetic presentation demo, which has no video frame).
+    Video frames are scaled with contain-fit inside the video panel; changing
+    column weights for portrait clips made the skeleton column swallow width
+    and left the video panel too narrow on wide displays.
     """
     body = getattr(gui, "_dashboard_body", None)
     if body is None:
         return
 
-    if aspect is None or aspect <= 0:
-        video_weight = _TOP_VIDEO_WEIGHT
-    else:
-        # Linear map: a 9:16 portrait clip lands near the minimum, a 16:9
-        # landscape clip near the maximum, with square clips in between.
-        video_weight = int(round(19.7 * aspect + 17.0))
-        video_weight = max(_TOP_VIDEO_WEIGHT_MIN, min(_TOP_VIDEO_WEIGHT_MAX, video_weight))
-
+    video_weight = _TOP_VIDEO_WEIGHT
     if getattr(gui, "_top_video_weight", None) == video_weight:
         return
     gui._top_video_weight = video_weight
 
     skeleton_weight = _TOP_SPAN_WEIGHT - video_weight
+    host = getattr(gui, "_primary_viz_host", None)
     try:
-        body.columnconfigure(0, weight=video_weight, uniform="top")
-        body.columnconfigure(1, weight=skeleton_weight, uniform="top")
+        if host is not None:
+            host.columnconfigure(0, weight=video_weight, uniform="viz")
+            host.columnconfigure(1, weight=skeleton_weight, uniform="viz")
+        else:
+            body.columnconfigure(0, weight=video_weight, uniform="top")
+            body.columnconfigure(1, weight=skeleton_weight, uniform="top")
     except tk.TclError:
         pass
 
 
 def build_dashboard_layout(gui) -> None:
     """Build the main dashboard grid and attach widgets to ``gui``."""
+    from stablewalk.ui.tk.dashboard_responsive import (
+        finalize_responsive_dashboard,
+        install_responsive_shell,
+    )
+
+    # Hidden host for widgets kept for logic/menu but not shown on the dashboard.
+    if not hasattr(gui, "_sidebar_hidden"):
+        gui._sidebar_hidden = ttk.Frame(gui.root)
+
     main = ttk.Frame(gui.root, padding=(PAD_SM, PAD_XS, PAD_SM, 14))
     main.pack(fill=tk.BOTH, expand=True)
+    gui._dashboard_main = main
 
-    body = ttk.Frame(main)
+    scroll_host = install_responsive_shell(gui, main)
+    body = ttk.Frame(scroll_host)
     body.pack(fill=tk.BOTH, expand=True)
     body.rowconfigure(0, weight=_DASH_VIZ_ROW_WEIGHT, minsize=_DASH_VIZ_ROW_MINSIZE)
     body.rowconfigure(1, weight=_DASH_ANALYTICS_ROW_WEIGHT, minsize=_DASH_ANALYTICS_ROW_MINSIZE)
-    body.columnconfigure(0, weight=_TOP_VIDEO_WEIGHT, uniform="top")
-    body.columnconfigure(1, weight=_TOP_SKELETON_WEIGHT, uniform="top")
+    body.rowconfigure(2, weight=0, minsize=0)
+    body.columnconfigure(0, weight=_TOP_VIDEO_WEIGHT + _TOP_SKELETON_WEIGHT, uniform="top")
+    body.columnconfigure(1, weight=0, minsize=0)
     body.columnconfigure(
         2,
         weight=_SIDEBAR_WEIGHT,
@@ -1261,20 +1274,96 @@ def build_dashboard_layout(gui) -> None:
     gui._dashboard_body = body
     gui._top_video_weight = _TOP_VIDEO_WEIGHT
 
-    # ── Row 0: video · skeleton · sidebar ─────────────────────────────────
+    # ── Row 0: video · skeleton (inside host) · sidebar ───────────────────
+    primary_viz = ttk.Frame(body)
+    primary_viz.grid(row=0, column=0, columnspan=2, sticky="nsew")
+    primary_viz.columnconfigure(0, weight=_TOP_VIDEO_WEIGHT, uniform="viz")
+    primary_viz.columnconfigure(1, weight=_TOP_SKELETON_WEIGHT, uniform="viz")
+    primary_viz.rowconfigure(0, weight=1)
+    primary_viz.rowconfigure(1, weight=1)
+    gui._primary_viz_host = primary_viz
+    gui._primary_viz_content_row = 0
+    gui._viz_tabs_active = False
+
+    viz_tab_bar = ttk.Frame(primary_viz)
+    viz_tab_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, PAD_XS))
+    viz_tab_bar.grid_remove()
+    gui._viz_tab_bar = viz_tab_bar
+    gui._viz_tab_var = tk.StringVar(value="video")
+
+    def _on_viz_tab_selected() -> None:
+        from stablewalk.ui.tk.dashboard_responsive import apply_viz_tab_visibility
+
+        apply_viz_tab_visibility(gui)
+
+    for tab_label, tab_value in (("Video", "video"), ("3D Reconstruction", "3d")):
+        ttk.Radiobutton(
+            viz_tab_bar,
+            text=tab_label,
+            variable=gui._viz_tab_var,
+            value=tab_value,
+            command=_on_viz_tab_selected,
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
     video_frame = ttk.LabelFrame(
-        body,
-        text=_card_title("Video & Pose Overlay"),
+        primary_viz,
+        text=_card_title("Original Video"),
         style="Card.TLabelframe",
         padding=DASHBOARD_VIZ_CARD_PAD,
     )
     video_frame.grid(row=0, column=0, sticky="nsew", padx=(0, DASHBOARD_GUTTER))
+    gui.video_frame = video_frame
     video_frame.columnconfigure(0, weight=1)
-    video_frame.rowconfigure(0, weight=1)
+    video_frame.rowconfigure(0, weight=0)
+    video_frame.rowconfigure(1, weight=0)
+    video_frame.rowconfigure(2, weight=1)
+
+    gui.lbl_demo_analysis_title = tk.Label(
+        video_frame,
+        text="",
+        bg=ELEVATED,
+        fg=ACCENT,
+        font=FONT_UI_SM,
+        anchor="w",
+        justify=tk.LEFT,
+        padx=4,
+        pady=2,
+    )
+    gui.lbl_demo_analysis_title.grid(row=0, column=0, sticky="ew")
+    gui.lbl_demo_analysis_title.grid_remove()
+
+    demo_meta_row = tk.Frame(video_frame, bg=ELEVATED, highlightthickness=0)
+    demo_meta_row.grid(row=1, column=0, sticky="ew")
+    demo_meta_row.columnconfigure(0, weight=1)
+    demo_meta_row.grid_remove()
+    gui._demo_meta_row = demo_meta_row
+
+    gui.lbl_demo_source_attribution = tk.Label(
+        demo_meta_row,
+        text="",
+        bg=ELEVATED,
+        fg=MUTED,
+        font=FONT_UI_XS,
+        anchor="w",
+        justify=tk.LEFT,
+        padx=4,
+        pady=0,
+    )
+    gui.lbl_demo_source_attribution.grid(row=0, column=0, sticky="ew")
+
+    gui.btn_demo_video_info = ttk.Button(
+        demo_meta_row,
+        text="i",
+        style="Compact.TButton",
+        width=2,
+        command=gui._show_demo_video_details,
+    )
+    gui.btn_demo_video_info.grid(row=0, column=1, sticky="e", padx=(2, 0))
+    gui.btn_demo_video_info.grid_remove()
 
     gui.video_label = tk.Label(video_frame, text=EMPTY_VIDEO_TEXT)
     configure_video_placeholder(gui.video_label)
-    gui.video_label.grid(row=0, column=0, sticky="nsew")
+    gui.video_label.grid(row=2, column=0, sticky="nsew")
 
     gui._demo_overlay = tk.Label(video_frame, text="")
     configure_demo_overlay(gui._demo_overlay)
@@ -1288,47 +1377,70 @@ def build_dashboard_layout(gui) -> None:
     gui._init_chart()
 
     skel_frame = ttk.LabelFrame(
-        body,
-        text=_card_title("Skeleton Visualization"),
+        primary_viz,
+        text=_card_title("3D Gait Reconstruction"),
         style="Card.TLabelframe",
         padding=_SKELETON_PANEL_PAD,
     )
     skel_frame.grid(row=0, column=1, sticky="nsew", padx=(0, DASHBOARD_GUTTER))
     skel_frame.columnconfigure(0, weight=1)
-    skel_frame.rowconfigure(0, weight=0)
-    skel_frame.rowconfigure(1, weight=1)
+    skel_frame.rowconfigure(0, weight=1)
+    skel_frame.rowconfigure(1, weight=0)
     gui.skel_frame = skel_frame
 
-    skel_header = ttk.Frame(skel_frame)
-    skel_header.grid(row=0, column=0, sticky="ew", pady=(0, PAD_XS))
-    skel_header.columnconfigure(0, weight=1)
-    tk.Label(
-        skel_header,
-        text="View:",
-        bg=PANEL,
-        fg=MUTED,
-        font=FONT_UI_XS,
-    ).grid(row=0, column=1, sticky="e", padx=(0, PAD_XS))
+    gui.skel_canvas_host = tk.Frame(skel_frame, bg=PANEL, highlightthickness=0)
+    gui.skel_canvas_host.grid(row=0, column=0, sticky="nsew")
+    gui.skel_canvas_host.columnconfigure(0, weight=1)
+    gui.skel_canvas_host.rowconfigure(0, weight=1)
+
+    skel_toolbar = tk.Frame(gui.skel_canvas_host, bg=PANEL, highlightthickness=0)
+    skel_toolbar.place(relx=1.0, rely=0.0, anchor="ne", x=-2, y=2)
     gui.skeleton_display_mode = tk.StringVar(
         value=MODE_TO_SKELETON_LABEL[DEFAULT_SKELETON_DISPLAY_MODE]
     )
     gui.cmb_skeleton_mode = ttk.Combobox(
-        skel_header,
+        skel_toolbar,
         textvariable=gui.skeleton_display_mode,
         values=SKELETON_MODE_LABELS,
         state="readonly",
-        width=8,
+        width=14,
     )
-    gui.cmb_skeleton_mode.grid(row=0, column=2, sticky="e")
+    gui.cmb_skeleton_mode.pack(side=tk.RIGHT)
     gui.cmb_skeleton_mode.bind("<<ComboboxSelected>>", gui._on_skeleton_display_mode)
     gui.lbl_skeleton_status = None
 
-    gui.skel_canvas_host = tk.Frame(skel_frame, bg=PANEL, highlightthickness=0)
-    gui.skel_canvas_host.grid(row=1, column=0, sticky="nsew")
-    gui.skel_canvas_host.columnconfigure(0, weight=1)
-    gui.skel_canvas_host.rowconfigure(0, weight=1)
+    clearance_badges = tk.Frame(gui.skel_canvas_host, bg=PANEL, highlightthickness=0)
+    clearance_badges.place(relx=0.0, rely=0.0, anchor="nw", x=2, y=2)
 
-    gui.fig_3d = Figure(figsize=(5.0, 5.4), dpi=100, facecolor=PANEL)
+    tk.Label(clearance_badges, text="L", bg=PANEL, fg=MUTED, font=FONT_UI_XS).pack(
+        side=tk.LEFT, padx=(0, 2)
+    )
+    gui.lbl_ground_clearance_left = tk.Label(
+        clearance_badges,
+        text="\u2014",
+        bg=PANEL,
+        fg=ORANGE,
+        font=FONT_METRIC_VALUE,
+        anchor="w",
+    )
+    gui.lbl_ground_clearance_left.pack(side=tk.LEFT, padx=(0, 8))
+    tk.Label(clearance_badges, text="R", bg=PANEL, fg=MUTED, font=FONT_UI_XS).pack(
+        side=tk.LEFT, padx=(0, 2)
+    )
+    gui.lbl_ground_clearance_right = tk.Label(
+        clearance_badges,
+        text="\u2014",
+        bg=PANEL,
+        fg=ORANGE,
+        font=FONT_METRIC_VALUE,
+        anchor="w",
+    )
+    gui.lbl_ground_clearance_right.pack(side=tk.LEFT)
+    gui.ground_clearance_strip = clearance_badges
+    gui.lbl_ground_clearance_phase = tk.Label(clearance_badges, text="", bg=PANEL)
+    gui.lbl_ground_clearance_scale = tk.Label(clearance_badges, text="", bg=PANEL)
+
+    gui.fig_3d = Figure(figsize=(5.6, 5.0), dpi=100, facecolor=PANEL)
     gui.ax_3d = gui.fig_3d.add_subplot(111)
     setup_skeleton_axes(gui.ax_3d)
     _layout_skeleton_figure(gui.ax_3d)
@@ -1346,31 +1458,70 @@ def build_dashboard_layout(gui) -> None:
     gui.canvas_3d.mpl_connect("pick_event", gui._on_skeleton_pick)
     gui.canvas_3d.mpl_connect("motion_notify_event", gui._on_skeleton_motion)
 
-    # ── Row 1: selected-point analysis · position table (cols 0–1) ────────
-    bottom_row = ttk.Frame(body)
-    bottom_row.grid(
-        row=1,
-        column=0,
-        columnspan=2,
-        sticky="nsew",
-        pady=(DASHBOARD_GUTTER, _ANALYSIS_PANEL_PLAYBACK_GAP),
+    # ── Row 1 (wide) / 2 (compact): scrollable selected-point analysis ────
+    analysis_scroll_outer = ttk.Frame(body)
+    analysis_scroll_outer.grid(row=1, column=0, columnspan=3, sticky="nsew")
+    gui._analysis_scroll_row = 1
+    analysis_scroll_outer.columnconfigure(0, weight=1)
+    analysis_scroll_outer.rowconfigure(0, weight=1)
+    gui._analysis_scroll_outer = analysis_scroll_outer
+
+    analysis_canvas = tk.Canvas(
+        analysis_scroll_outer,
+        bg=BG,
+        highlightthickness=0,
+        borderwidth=0,
     )
+    analysis_canvas.grid(row=0, column=0, sticky="nsew")
+    analysis_vsb = ttk.Scrollbar(analysis_scroll_outer, orient=tk.VERTICAL, command=analysis_canvas.yview)
+    analysis_vsb.grid(row=0, column=1, sticky="ns")
+    analysis_canvas.configure(yscrollcommand=analysis_vsb.set)
+    gui._analysis_scroll_canvas = analysis_canvas
+    gui._analysis_scrollbar = analysis_vsb
+
+    analysis_inner = ttk.Frame(analysis_canvas)
+    gui._analysis_scroll_inner = analysis_inner
+    gui._analysis_scroll_window_id = analysis_canvas.create_window(
+        (0, 0), window=analysis_inner, anchor="nw",
+    )
+
+    def _sync_analysis_scroll(_event: object | None = None) -> None:
+        try:
+            analysis_canvas.update_idletasks()
+            analysis_canvas.configure(scrollregion=analysis_canvas.bbox("all"))
+            cw = analysis_canvas.winfo_width()
+            if cw > 1:
+                analysis_canvas.itemconfigure(gui._analysis_scroll_window_id, width=cw)
+        except tk.TclError:
+            pass
+
+    analysis_inner.bind("<Configure>", _sync_analysis_scroll)
+    analysis_canvas.bind("<Configure>", _sync_analysis_scroll)
+    gui._sync_analysis_scroll = _sync_analysis_scroll
+
+    def _analysis_wheel(event: tk.Event) -> None:
+        if event.delta:
+            analysis_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    for widget in (analysis_inner, analysis_canvas):
+        widget.bind("<Enter>", lambda _e: analysis_canvas.bind_all("<MouseWheel>", _analysis_wheel))
+        widget.bind("<Leave>", lambda _e: analysis_canvas.unbind_all("<MouseWheel>"))
+
+    bottom_row = ttk.Frame(analysis_inner)
+    bottom_row.pack(fill=tk.BOTH, expand=True)
     bottom_row.columnconfigure(
         0,
-        weight=_BOTTOM_ANALYSIS_WEIGHT,
+        weight=1,
         minsize=_ANALYTICS_ANALYSIS_MINSIZE,
     )
-    bottom_row.columnconfigure(
-        1,
-        weight=_BOTTOM_TABLE_WEIGHT,
-        minsize=_ANALYTICS_TABLE_MINSIZE,
-    )
     bottom_row.rowconfigure(0, weight=1)
+    bottom_row.rowconfigure(1, weight=0)
+    gui._dashboard_bottom_row = bottom_row
     gui.dashboard = bottom_row
 
     traj_panel = ttk.LabelFrame(
         bottom_row,
-        text=_card_title("Selected Point Analysis"),
+        text=_card_title("Selected Joint Analysis"),
         style="Card.TLabelframe",
         padding=_ANALYSIS_PANEL_PAD,
     )
@@ -1378,10 +1529,8 @@ def build_dashboard_layout(gui) -> None:
     gui.traj_panel = traj_panel
     traj_panel.columnconfigure(0, weight=1)
     traj_panel.rowconfigure(0, weight=0)
-    # Keep the floor small so the graph fills the leftover space instead of
-    # overflowing the panel (a large minsize pushes the 3D canvas off-screen
-    # on shorter windows, leaving only an empty band).
-    traj_panel.rowconfigure(1, weight=1, minsize=180)
+    traj_panel.rowconfigure(1, weight=1, minsize=200)
+    traj_panel.rowconfigure(2, weight=0)
 
     gui.dof_analysis_header = _build_analysis_metrics_panel(gui, traj_panel)
     gui.dof_analysis_header.grid(row=0, column=0, sticky="ew")
@@ -1402,10 +1551,10 @@ def build_dashboard_layout(gui) -> None:
     gui.dof_analysis_body.grid(row=1, column=0, sticky="nsew")
     gui.dof_analysis_body.columnconfigure(0, weight=0, minsize=0)
     gui.dof_analysis_body.columnconfigure(1, weight=1)
-    gui.dof_analysis_body.rowconfigure(0, weight=1, minsize=170)
+    gui.dof_analysis_body.rowconfigure(0, weight=1, minsize=120)
 
     gui.dof_analysis_left = tk.Frame(
-        gui.dof_analysis_body, bg=PANEL, highlightthickness=0, width=_ANALYSIS_LEFT_PANEL_WIDTH
+        gui.dof_analysis_body, bg=PANEL, highlightthickness=0,
     )
     gui.dof_analysis_left.grid(row=0, column=0, sticky="new", padx=(0, 6))
     gui.dof_analysis_left.grid_remove()
@@ -1420,41 +1569,26 @@ def build_dashboard_layout(gui) -> None:
     gui.dof_analysis_graph_section.columnconfigure(0, weight=1)
     gui.dof_analysis_graph_section.rowconfigure(0, weight=0)
     gui.dof_analysis_graph_section.rowconfigure(1, weight=1)
+    gui.dof_analysis_graph_section.rowconfigure(2, weight=0)
+
+    gui.lbl_joint_movement_title = tk.Label(
+        gui.dof_analysis_graph_section,
+        text="Joint Movement",
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_XS,
+        anchor="w",
+    )
+    gui.lbl_joint_movement_title.grid(row=0, column=0, sticky="ew", pady=(0, 2))
 
     _build_analysis_graph_chrome(gui, gui.dof_analysis_graph_section)
     gui.dof_graph_chrome.grid_remove()
 
     gui.dof_analysis_graph_summary_slots = []
     gui.dof_analysis_graph_summary_row = None
-
-    # Persistent graph header: "3D point movement" label (left) + color legend
-    # and Export control (right), sitting directly above the large 3D canvas.
-    graph_header = tk.Frame(
-        gui.dof_analysis_graph_section, bg=PANEL, highlightthickness=0
-    )
-    graph_header.grid(row=0, column=0, sticky="ew", pady=(PAD_XS, PAD_XS))
-    graph_header.columnconfigure(0, weight=1)
-    gui.dof_analysis_graph_header = graph_header
-
-    _build_analysis_graph_caption(gui, graph_header)
-
-    graph_tools = tk.Frame(graph_header, bg=PANEL, highlightthickness=0)
-    graph_tools.grid(row=0, column=1, sticky="e")
-
-    # Colour legend now lives in the explanation panel beside the cube, so the
-    # header stays clean: just the "3D point movement" caption + Export button.
+    gui.dof_analysis_graph_header = None
+    gui.dof_analysis_export_row = None
     gui.dof_graph_legend_labels = []
-
-    gui.btn_export_analysis = ttk.Button(
-        graph_tools,
-        text="Export Data",
-        style="Compact.TButton",
-        width=11,
-        command=gui._export_analysis_data,
-        state=tk.DISABLED,
-    )
-    gui.btn_export_analysis.pack(side=tk.RIGHT)
-    gui.dof_analysis_export_row = graph_tools
 
     gui.dof_analysis_graph_inner = tk.Frame(
         gui.dof_analysis_graph_section, bg=PANEL, highlightthickness=0
@@ -1468,9 +1602,9 @@ def build_dashboard_layout(gui) -> None:
     # axis key + floor readout). Both columns carry weight so the leftover width
     # is shared — this keeps the cube area closer to square (so the cube reads
     # large) instead of stranding it in a very wide, mostly-empty band.
-    gui.dof_analysis_graph_inner.columnconfigure(0, weight=3, minsize=300)
+    gui.dof_analysis_graph_inner.columnconfigure(0, weight=3, minsize=220)
     gui.dof_analysis_graph_inner.columnconfigure(
-        1, weight=2, minsize=_ANALYSIS_EXPLAIN_WIDTH
+        1, weight=1, minsize=_ANALYSIS_EXPLAIN_WIDTH
     )
     gui.dof_analysis_graph_inner.rowconfigure(0, weight=1)
 
@@ -1484,8 +1618,9 @@ def build_dashboard_layout(gui) -> None:
     # host propagated that requested width upward it would force the cube column
     # to swallow all the spare width and strand the explainer at its minimum.
     # Pin the host so the inner grid weights (not the figure) govern the split.
-    gui.dof_analysis_graph_canvas_host.grid_propagate(False)
-    gui.dof_analysis_graph_canvas_host.pack_propagate(False)
+    # Host resizes with grid weights; figure size is driven by Configure handlers.
+    gui.dof_analysis_graph_canvas_host.grid_propagate(True)
+    gui.dof_analysis_graph_canvas_host.pack_propagate(True)
 
     _build_analysis_graph_explainer(gui, gui.dof_analysis_graph_inner)
 
@@ -1498,7 +1633,7 @@ def build_dashboard_layout(gui) -> None:
     gui.lbl_dof_analysis_tracked = None
     gui.lbl_dof_analysis_direction = None
 
-    gui.fig_dof_traj = Figure(figsize=(8.2, 5.8), dpi=100, facecolor=PANEL)
+    gui.fig_dof_traj = Figure(figsize=(7.0, 5.4), dpi=100, facecolor=PANEL)
     gui.ax_dof_traj = gui.fig_dof_traj.add_subplot(111, projection="3d")
     setup_single_dof_trajectory_axes(gui.ax_dof_traj)
     from stablewalk.ui.viewers.dof_trajectory_3d import relayout_single_dof_viewport
@@ -1530,111 +1665,83 @@ def build_dashboard_layout(gui) -> None:
         ),
     )
 
-    def _on_traj_panel_resize(event: tk.Event) -> None:
-        if event.width < 120 or event.height < 120:
-            return
+    def _on_traj_panel_resize(_event: object = None) -> None:
         if not gui.selection.selected:
             return
-        if _fit_trajectory_figure(
-            gui.canvas_dof_traj,
-            gui.fig_dof_traj,
-            gui.ax_dof_traj,
-            graph_host=gui.dof_analysis_graph_canvas_host,
-        ):
-            gui.canvas_dof_traj.draw_idle()
+        after_id = getattr(gui, "_traj_resize_after", None)
+        if after_id is not None:
+            try:
+                gui.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
 
-    def _on_viz_row_resize(event: tk.Event) -> None:
-        if event.width < 120 or event.height < 120:
-            return
-        if not hasattr(gui, "canvas_3d"):
-            return
-        host = getattr(gui, "skel_canvas_host", None)
-        if host is not None:
-            host.update_idletasks()
-            width = host.winfo_width()
-            height = host.winfo_height()
-        else:
-            width = event.width
-            height = event.height
-        pad_l, pad_t, pad_r, pad_b = _SKELETON_CANVAS_PAD
-        width = max(80, width - pad_l - pad_r)
-        height = max(80, height - pad_t - pad_b)
-        if width < 80 or height < 80:
-            return
-        try:
-            gui.canvas_3d.resize(type("E", (), {"width": width, "height": height})())
-        except (TypeError, AttributeError, tk.TclError):
-            dpi = gui.fig_3d.get_dpi()
-            gui.fig_3d.set_size_inches(width / dpi, height / dpi, forward=True)
-        relayout_skeleton_viewport(gui.ax_3d)
-        gui.canvas_3d.draw_idle()
+        def _reflow() -> None:
+            gui._traj_resize_after = None
+            if not gui.selection.selected:
+                return
+            if _fit_trajectory_figure(
+                gui.canvas_dof_traj,
+                gui.fig_dof_traj,
+                gui.ax_dof_traj,
+                graph_host=gui.dof_analysis_graph_canvas_host,
+            ):
+                gui.canvas_dof_traj.draw_idle()
 
-    def _on_skel_host_resize(event: tk.Event) -> None:
-        if event.width < 80 or event.height < 80:
-            return
-        _on_viz_row_resize(event)
+        gui._traj_resize_after = gui.root.after(80, _reflow)
+
+    def _on_viz_row_resize(_event: object = None) -> None:
+        fit = getattr(gui, "_fit_skeleton_canvas", None)
+        if fit is not None:
+            fit()
 
     traj_panel.bind("<Configure>", _on_traj_panel_resize)
-    if gui.dof_graph_chrome is not None:
-        gui.dof_graph_chrome.bind("<Configure>", _on_traj_panel_resize)
-    gui.dof_analysis_body.bind("<Configure>", _on_traj_panel_resize)
-    gui.dof_analysis_graph_section.bind("<Configure>", _on_traj_panel_resize)
-    gui.dof_analysis_graph_inner.bind("<Configure>", _on_traj_panel_resize)
-    bottom_row.bind("<Configure>", _on_traj_panel_resize)
-    body.bind("<Configure>", _on_traj_panel_resize)
-    gui.root.bind("<Configure>", _on_traj_panel_resize)
-    skel_frame.bind("<Configure>", _on_viz_row_resize)
-    gui.skel_canvas_host.bind("<Configure>", _on_skel_host_resize)
+    gui.dof_analysis_graph_canvas_host.bind("<Configure>", _on_traj_panel_resize)
+    gui.skel_canvas_host.bind("<Configure>", _on_viz_row_resize)
 
     gui.lbl_dof_traj_path = gui.dof_analysis_graph_section
 
-    table_panel = ttk.LabelFrame(
-        bottom_row,
-        text=_card_title("Position Table"),
-        style="Card.TLabelframe",
-        padding=_TABLE_PANEL_PAD,
-        width=_TABLE_PANEL_WIDTH,
-    )
-    table_panel.grid(row=0, column=1, sticky="nsew", padx=(DASHBOARD_GUTTER, 0))
-    table_panel.grid_propagate(False)
-    table_panel.columnconfigure(0, weight=1)
-    table_panel.rowconfigure(1, weight=1)
+    table_panel = ttk.Frame(gui._sidebar_hidden)
+    gui.table_panel = table_panel
+    gui._table_data_expanded = False
+    gui._collected_data_bar = None
 
-    table_tools = ttk.Frame(table_panel)
-    table_tools.grid(row=0, column=0, sticky="ew", pady=(0, PAD_SM))
     gui.dof_table_display_mode = tk.StringVar(value=DOF_TABLE_MODE_DEFAULT)
-
-    # Three evenly spaced, aligned controls on one row.
-    table_tools.columnconfigure(0, weight=1, uniform="ttool")
-    table_tools.columnconfigure(1, weight=1, uniform="ttool")
-    table_tools.columnconfigure(2, weight=1, uniform="ttool")
+    gui.lbl_table_summary = ttk.Label(
+        gui._sidebar_hidden,
+        text="Data (0 samples)",
+    )
+    gui.btn_view_table_data = ttk.Button(
+        gui._sidebar_hidden,
+        text="Data (0 samples)",
+        style="Compact.TButton",
+        command=gui._toggle_collected_data_table,
+    )
     gui.btn_clear_dof_history = ttk.Button(
-        table_tools,
+        gui._sidebar_hidden,
         text="Clear",
         style="Compact.TButton",
         command=gui._clear_dof_table_history,
         state=tk.DISABLED,
     )
-    gui.btn_clear_dof_history.grid(row=0, column=0, sticky="ew", padx=(0, PAD_XS))
     gui.btn_export_tracking = ttk.Button(
-        table_tools,
+        gui._sidebar_hidden,
         text="Export",
         style="Compact.TButton",
         command=gui._export_tracking_data,
         state=tk.DISABLED,
     )
-    gui.btn_export_tracking.grid(row=0, column=1, sticky="ew", padx=(0, PAD_XS))
     gui.btn_save_session = ttk.Button(
-        table_tools,
+        gui._sidebar_hidden,
         text="Save Session",
         style="Compact.TButton",
         command=gui._save_session_to_files,
         state=tk.DISABLED,
     )
-    gui.btn_save_session.grid(row=0, column=2, sticky="ew")
 
     table_body = ttk.Frame(table_panel)
-    table_body.grid(row=1, column=0, sticky="nsew")
+    table_body.grid(row=2, column=0, sticky="nsew")
+    table_body.grid_remove()
+    gui.table_body = table_body
     table_body.columnconfigure(0, weight=1)
     table_body.rowconfigure(0, weight=1)
 
@@ -1685,13 +1792,12 @@ def build_dashboard_layout(gui) -> None:
         text_cols=frozenset({"dof", "joint"}),
     )
 
-    # ── Utility sidebar (compact, spans both rows) ────────────────────────
+    # ── Utility sidebar (compact, spans both rows on wide screens) ────────
+    from stablewalk.ui.tk.dashboard_responsive import _install_sidebar_scroll
+
     sidebar = ttk.Frame(body, style="Card.TFrame", padding=(PAD_XS, PAD_XS))
-    sidebar.grid(row=0, column=2, rowspan=2, sticky="nsew", padx=(DASHBOARD_GUTTER, 0))
-    sidebar.columnconfigure(0, weight=1)
-    sidebar.rowconfigure(0, weight=1)
-    sidebar.rowconfigure(1, weight=0)
-    sidebar.rowconfigure(2, weight=0)
+    sidebar.grid(row=0, column=2, rowspan=1, sticky="nsew", padx=(DASHBOARD_GUTTER, 0))
+    sidebar_inner = _install_sidebar_scroll(gui, sidebar)
     gui.sidebar = sidebar
 
     _side_wrap = max(80, _SIDEBAR_MIN_WIDTH - 24)
@@ -1717,7 +1823,8 @@ def build_dashboard_layout(gui) -> None:
     sidebar.bind("<Configure>", _sync_sidebar_wrap)
     gui._sync_utility_sidebar_wrap = _sync_sidebar_wrap
 
-    gui._sidebar_hidden = ttk.Frame(gui.root)
+    if gui._sidebar_hidden.master is None:
+        gui._sidebar_hidden = ttk.Frame(gui.root)
     gui.lbl_session_status = ttk.Label(
         gui._sidebar_hidden,
         text="No session loaded",
@@ -1725,7 +1832,10 @@ def build_dashboard_layout(gui) -> None:
         wraplength=_side_wrap,
     )
     gui.lbl_summary = gui.lbl_session_status
-    gui.refresh_var = tk.StringVar(value=REFRESH_INTERVAL_DEFAULT)
+    # The visible sampling selector now lives in the playback controls bar and
+    # owns ``gui.refresh_var``; only create a fallback var if it doesn't exist.
+    if not hasattr(gui, "refresh_var"):
+        gui.refresh_var = tk.StringVar(value=REFRESH_INTERVAL_DEFAULT)
     refresh_combo = ttk.Combobox(
         gui._sidebar_hidden,
         textvariable=gui.refresh_var,
@@ -1735,12 +1845,12 @@ def build_dashboard_layout(gui) -> None:
     )
     refresh_combo.bind("<<ComboboxSelected>>", gui._on_refresh_interval)
 
-    dof_panel = ttk.LabelFrame(
-        sidebar,
-        text=_card_title("Body Points"),
-        style="Side.TLabelframe",
+    dof_panel = ttk.Frame(
+        sidebar_inner,
+        style="Card.TFrame",
         padding=DASHBOARD_SIDE_PAD,
     )
+    gui._sidebar_dof_panel = dof_panel
 
     add_row = ttk.Frame(dof_panel)
     add_row.pack(fill=tk.X, pady=(0, PAD_XS))
@@ -1761,9 +1871,25 @@ def build_dashboard_layout(gui) -> None:
         command=gui._add_point_from_combo,
     ).grid(row=0, column=1, sticky="e", padx=(PAD_XS, 0))
 
-    list_frame = ttk.Frame(dof_panel, style="Card.TFrame", padding=2)
-    list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, PAD_XS))
+    ttk.Label(dof_panel, text="Joints", style="SideMuted.TLabel").pack(
+        anchor=tk.W, pady=(0, 2)
+    )
+    gui.dof_chips_frame = tk.Frame(dof_panel, bg=PANEL, highlightthickness=0)
+    gui.dof_chips_frame.pack(fill=tk.X, pady=(0, PAD_XS))
 
+    btn_row = ttk.Frame(dof_panel)
+    btn_row.pack(fill=tk.X, pady=(0, 0))
+    ttk.Button(
+        btn_row,
+        text="Clear all",
+        style="Compact.TButton",
+        command=gui._clear_dof_selection,
+    ).pack(side=tk.LEFT)
+
+    # Full checklist kept off-screen for selection state; not shown in sidebar.
+    if not hasattr(gui, "_dof_checklist_hidden"):
+        gui._dof_checklist_hidden = ttk.Frame(gui._sidebar_hidden)
+    list_frame = ttk.Frame(gui._dof_checklist_hidden, style="Card.TFrame", padding=2)
     list_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
     list_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
@@ -1841,94 +1967,196 @@ def build_dashboard_layout(gui) -> None:
         gui._dof_checkbox_name_labels[item_id] = name_lbl
         row.pack(fill=tk.X, pady=(0, 1))
 
-    btn_row = ttk.Frame(dof_panel)
-    btn_row.pack(fill=tk.X, pady=(0, 0))
-    ttk.Button(
-        btn_row,
-        text="Clear",
-        style="Compact.TButton",
-        command=gui._clear_dof_selection,
-    ).pack(side=tk.LEFT)
-
-    stability_panel = ttk.LabelFrame(
-        sidebar,
-        text=_card_title("Stability"),
-        style="Side.TLabelframe",
+    stability_panel = ttk.Frame(
+        sidebar_inner,
+        style="Card.TFrame",
         padding=DASHBOARD_SIDE_PAD,
     )
+    gui._sidebar_stability_panel = stability_panel
 
-    gui.lbl_stab_headline = ttk.Label(
+    ttk.Label(stability_panel, text="Stability", style="SideMuted.TLabel").pack(
+        anchor=tk.W, pady=(0, 2),
+    )
+
+    score_row = tk.Frame(stability_panel, bg=PANEL, highlightthickness=0)
+    score_row.pack(fill=tk.X, pady=(0, 0))
+    gui.lbl_stab_score = tk.Label(
+        score_row,
+        text="—",
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_METRIC_VALUE_ACCENT,
+        anchor="w",
+    )
+    gui.lbl_stab_score.pack(side=tk.LEFT)
+    tk.Label(
+        score_row,
+        text="/ 100",
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_SM,
+        anchor="sw",
+    ).pack(side=tk.LEFT, padx=(2, 0), pady=(4, 0))
+    gui.lbl_stab_category = tk.Label(
         stability_panel,
         text="No walk analyzed yet",
-        style="SideAccent.TLabel",
-        wraplength=_side_wrap,
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_SM,
+        anchor="w",
     )
-    gui.lbl_stab_headline.pack(anchor=tk.W, pady=(0, 1))
+    gui.lbl_stab_category.pack(anchor=tk.W, pady=(2, 4))
+    gui.lbl_stab_headline = gui.lbl_stab_category
 
-    gui.lbl_stab_metrics = ttk.Label(
+    stab_compact = tk.Frame(stability_panel, bg=PANEL, highlightthickness=0)
+    stab_compact.pack(fill=tk.X, pady=(0, 2))
+    stab_compact.columnconfigure(0, weight=1)
+    stab_compact.columnconfigure(1, weight=1)
+
+    gui._walk_summary_slots: list[tuple[tk.Label, tk.Label]] = []
+    for index, title in enumerate(("Symmetry", "ROM", "Regularity", "Body")):
+        row, col = divmod(index, 2)
+        cell = tk.Frame(stab_compact, bg=PANEL, highlightthickness=0)
+        cell.grid(row=row, column=col, sticky="ew", padx=(0, 6), pady=1)
+        title_lbl = tk.Label(
+            cell,
+            text=title,
+            bg=PANEL,
+            fg=MUTED,
+            font=FONT_UI_XS,
+            anchor="w",
+        )
+        title_lbl.pack(side=tk.LEFT)
+        value_lbl = tk.Label(
+            cell,
+            text="—",
+            bg=PANEL,
+            fg=TEXT,
+            font=FONT_METRIC,
+            anchor="w",
+        )
+        value_lbl.pack(side=tk.LEFT, padx=(4, 0))
+        gui._walk_summary_slots.append((title_lbl, value_lbl))
+        if index in (1, 3):
+            cell.grid_remove()
+
+    gui.lbl_stab_metrics = ttk.Label(stability_panel, text="")
+    gui.lbl_stab_metrics.pack_forget()
+
+    gui.lbl_stab_steps = ttk.Label(stability_panel, text="")
+    gui.lbl_stab_steps.pack_forget()
+
+    steps_detail_row = ttk.Frame(stability_panel)
+    gui.lbl_stab_step_confidence = ttk.Label(steps_detail_row, text="")
+    gui.btn_stab_steps_details = ttk.Button(
+        steps_detail_row,
+        text="Details",
+        style="Compact.TButton",
+        command=gui._show_gait_summary_details,
+    )
+
+    gui.lbl_stab_reason = ttk.Label(stability_panel, text="")
+    gui.lbl_stab_reason.pack_forget()
+
+    gui.btn_walk_summary_details = ttk.Button(
         stability_panel,
-        text="",
-        style="SideMuted.TLabel",
-        wraplength=_side_wrap,
+        text="Details",
+        style="Compact.TButton",
+        command=gui._show_gait_summary_details,
     )
-    gui.lbl_stab_metrics.pack(anchor=tk.W, pady=(0, 1))
+    gui.btn_walk_summary_details.pack(anchor=tk.W, pady=(2, 0))
 
-    gui.lbl_stab_reason = ttk.Label(
-        stability_panel,
-        text="",
-        style="SideHint.TLabel",
-        wraplength=_side_wrap,
-    )
-    gui.lbl_stab_reason.pack(anchor=tk.W)
-
-    # ── OpenSim panel: compact status + collapsible details + actions ─────
-    opensim_panel = ttk.LabelFrame(
-        sidebar,
-        text=_card_title("OpenSim"),
-        style="Side.TLabelframe",
+    comparison_panel = ttk.Frame(
+        gui._sidebar_hidden,
+        style="Card.TFrame",
         padding=DASHBOARD_SIDE_PAD,
     )
+    gui._sidebar_comparison_panel = comparison_panel
+    gui._comparison_expanded = False
+
+    gui.btn_toggle_comparison = ttk.Button(
+        sidebar_inner,
+        text="Compare Gaits",
+        style="Compact.TButton",
+        command=gui._open_gait_comparison_dialog,
+    )
+    gui.btn_compare_gait = gui.btn_toggle_comparison
+
+    gui.comparison_body = ttk.Frame(comparison_panel)
+    gui.comparison_body.pack(fill=tk.X)
+    gui.comparison_body.pack_forget()
+
+    cmp_tools = ttk.Frame(gui.comparison_body)
+    cmp_tools.pack(fill=tk.X, pady=(0, PAD_XS))
+    ttk.Button(
+        cmp_tools,
+        text="Clear",
+        style="Compact.TButton",
+        command=gui._clear_demo_comparison,
+    ).pack(side=tk.RIGHT)
+
+    cmp_body = ttk.Frame(gui.comparison_body)
+    cmp_body.pack(fill=tk.X)
+    cmp_body.columnconfigure(0, weight=1)
+    cmp_body.rowconfigure(0, weight=1)
+
+    gui.demo_comparison_tree = _make_data_tree(
+        cmp_body,
+        ("demo_type", "joint", "max_angle", "avg_velocity"),
+        {
+            "demo_type": "Demo",
+            "joint": "Joint",
+            "max_angle": "Max °",
+            "avg_velocity": "Avg v",
+        },
+        col_widths={
+            "demo_type": 72,
+            "joint": 64,
+            "max_angle": 48,
+            "avg_velocity": 52,
+        },
+        height=4,
+        text_cols=frozenset({"demo_type", "joint"}),
+        style="Compact.Treeview",
+    )
+
+    # ── OpenSim panel: dot status + export; details on demand ─────────────
+    opensim_panel = ttk.Frame(
+        sidebar_inner,
+        style="Card.TFrame",
+        padding=DASHBOARD_SIDE_PAD,
+    )
+    gui._sidebar_opensim_panel = opensim_panel
 
     opensim_actions = ttk.Frame(opensim_panel)
     opensim_actions.pack(side=tk.BOTTOM, fill=tk.X, padx=0, pady=(2, 0))
 
     gui.btn_opensim_export = ttk.Button(
         opensim_actions,
-        text="Export",
+        text="Export OpenSim Files",
         style="CompactAccent.TButton",
         command=gui._export_opensim_session,
     )
     gui.btn_opensim_export.pack(fill=tk.X, pady=(0, 2))
 
+    # Experimental IK actions stay in the menu — the sidebar keeps export + status only.
     gui.btn_opensim_run_demo_ik = ttk.Button(
-        opensim_actions,
+        gui._sidebar_hidden,
         text="Demo IK",
         style="Compact.TButton",
         command=gui._run_opensim_demo_ik,
         state="disabled",
     )
-    gui.btn_opensim_run_demo_ik.pack(fill=tk.X, pady=(0, 2))
 
     gui.btn_opensim_run_ik = ttk.Button(
-        opensim_actions,
+        gui._sidebar_hidden,
         text="Run IK",
         style="Compact.TButton",
         command=gui._run_stablewalk_ik_experimental,
         state="disabled",
     )
-    gui.btn_opensim_run_ik.pack(fill=tk.X, pady=(0, 2))
 
-    gui.btn_opensim_open_output = ttk.Button(
-        opensim_actions,
-        text="Folder",
-        style="Compact.TButton",
-        command=gui._open_opensim_folder,
-    )
-    gui.btn_opensim_open_output.pack(fill=tk.X, pady=(0, 2))
-    gui.btn_opensim_folder = gui.btn_opensim_open_output
-
-    fmt_row = ttk.Frame(opensim_actions)
-    fmt_row.pack(fill=tk.X)
+    fmt_row = ttk.Frame(gui._sidebar_hidden)
     gui.opensim_motion_fmt = tk.StringVar(value=".mot")
     ttk.Combobox(
         fmt_row,
@@ -1940,35 +2168,35 @@ def build_dashboard_layout(gui) -> None:
 
     compact_status = ttk.Frame(opensim_panel)
     compact_status.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
+    compact_status.columnconfigure(1, weight=1)
+
+    gui.lbl_opensim_status_dot = tk.Label(
+        compact_status,
+        text="\u25cf",
+        bg=PANEL,
+        fg=MUTED,
+        font=("Segoe UI", 10),
+    )
+    gui.lbl_opensim_status_dot.grid(row=0, column=0, sticky="w", padx=(0, 4))
 
     gui.lbl_opensim_compact_ready = ttk.Label(
         compact_status,
-        text="OpenSim: —",
+        text="OpenSim",
         style="SideAccent.TLabel",
+        cursor="hand2",
     )
-    gui.lbl_opensim_compact_ready.pack(anchor=tk.W)
-    gui.lbl_opensim_compact_mode = ttk.Label(
-        compact_status,
-        text="Mode: —",
-        style="SideMuted.TLabel",
-    )
-    gui.lbl_opensim_compact_model = ttk.Label(
-        compact_status,
-        text="Model: —",
-        style="SideMuted.TLabel",
-    )
-    gui.lbl_opensim_compact_export = ttk.Label(
-        compact_status,
-        text="Export: —",
-        style="SideMuted.TLabel",
-    )
-    # Packed by _apply_opensim_compact_summary in app.py (2-line compact summary).
+    gui.lbl_opensim_compact_ready.grid(row=0, column=1, sticky="w")
+    gui.lbl_opensim_compact_ready.bind("<Button-1>", lambda _e: gui._open_opensim_details_dialog())
+
+    gui.lbl_opensim_compact_mode = ttk.Label(compact_status, text="", style="SideMuted.TLabel")
+    gui.lbl_opensim_compact_model = ttk.Label(compact_status, text="", style="SideMuted.TLabel")
+    gui.lbl_opensim_compact_export = ttk.Label(compact_status, text="", style="SideMuted.TLabel")
 
     gui.btn_opensim_toggle_details = ttk.Button(
         gui._sidebar_hidden,
-        text="Show details",
-        style="Secondary.TButton",
-        command=gui._toggle_opensim_details,
+        text="Details",
+        style="Compact.TButton",
+        command=gui._open_opensim_details_dialog,
     )
     gui._opensim_details_visible = False
 
@@ -2170,7 +2398,15 @@ def build_dashboard_layout(gui) -> None:
         command=gui._show_marker_mapping_report,
     )
     gui.btn_opensim_mapping_report.pack(fill=tk.X, pady=(0, PAD_XS))
+    gui.btn_opensim_open_output = ttk.Button(
+        opensim_inner,
+        text="Open Output Folder",
+        style="Secondary.TButton",
+        command=gui._open_opensim_folder,
+    )
+    gui.btn_opensim_open_output.pack(fill=tk.X, pady=(0, PAD_XS))
     gui.btn_opensim_view_folder = gui.btn_opensim_open_output
+    gui.btn_opensim_folder = gui.btn_opensim_open_output
     gui.btn_opensim_view_log = ttk.Button(
         opensim_inner,
         text="View OpenSim Log",
@@ -2263,10 +2499,7 @@ def build_dashboard_layout(gui) -> None:
 
     gui.dof_pos_tree._sw_host.pack_forget()  # type: ignore[attr-defined]
 
-    dof_panel.grid(row=0, column=0, sticky="nsew", pady=(0, PAD_XS))
-    stability_panel.grid(row=1, column=0, sticky="ew", pady=(0, PAD_XS))
-    opensim_panel.grid(row=2, column=0, sticky="ew")
-
+    finalize_responsive_dashboard(gui)
     _schedule_dashboard_reflow(gui)
 
 

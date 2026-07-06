@@ -16,6 +16,9 @@ VIDEOS_DIR = DATA_DIR / "videos"
 LEGACY_VIDEOS_DIR = DATA_DIR / "input"  # pre-restructure location
 INPUT_DIR = VIDEOS_DIR  # backward-compatible alias
 
+# Predefined demo/comparison gait videos for presentations (user places files here)
+DEMO_VIDEOS_DIR = DATA_DIR / "demo_videos"
+
 OUTPUT_DIR = DATA_DIR / "output"
 FRAMES_DIR = OUTPUT_DIR / "frames"
 POSES_DIR = OUTPUT_DIR / "poses"
@@ -68,8 +71,8 @@ GUI_VIDEO_VALIDATE_MODE = "quick"
 DEFAULT_MIN_VALID_FRAME_RATIO = 0.25
 DEFAULT_VIDEO_VALIDATION_SAMPLES = 20
 
-# Presentation demo (see stablewalk.ui.demo)
-DEMO_MAX_FRAMES = 50
+# Presentation demo: analyze full demo walking segment (~4.8 s @ 25 fps)
+DEMO_MAX_FRAMES = 120
 
 # Pose/frames are always regenerated on load (keyed by content hash in video_source)
 DISABLE_POSE_CACHE_REUSE = True
@@ -116,6 +119,7 @@ def ensure_output_dirs() -> None:
     for path in (
         VIDEOS_DIR,
         LEGACY_VIDEOS_DIR,
+        DEMO_VIDEOS_DIR,
         CATALOG_DIR,
         FRAMES_DIR,
         POSES_DIR,

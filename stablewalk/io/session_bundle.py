@@ -9,6 +9,7 @@ A session bundle is a folder containing:
 - ``analysis_summary.json`` — full per-point analysis time series (JSON)
 - ``selected_point_summary.json`` — compact current-frame summary for the charted point
 - ``gait_motion.json`` — optional full motion recording for offline restore
+- ``bilateral_foot_clearance.json`` — left/right foot ground distance time series
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from stablewalk.storage.models import KinematicSample
 from stablewalk.ui.dof_selection import GUI_DOF_LABELS, label_for_item
 from stablewalk.ui.selected_point_analysis import (
     analysis_mode_for_item,
+    bilateral_foot_clearance_export_rows,
     build_current_point_export_summary,
     collect_analysis_export_rows,
 )
@@ -45,6 +47,7 @@ FILE_SELECTED_POINTS = "selected_points.json"
 FILE_TRACKING_HISTORY = "tracking_history.csv"
 FILE_ANALYSIS_SUMMARY = "analysis_summary.json"
 FILE_GAIT_MOTION = "gait_motion.json"
+FILE_BILATERAL_FOOT_CLEARANCE = "bilateral_foot_clearance.json"
 
 TRACKING_HISTORY_GENERAL_COLUMNS: tuple[str, ...] = (
     "time_sec",
@@ -461,6 +464,23 @@ def export_session_bundle(
     write_json_payload(
         build_session_metadata(snapshot, bundle_dir_name=bundle_name, exported_at=exported_at),
         bundle_dir / FILE_SESSION_METADATA,
+    )
+
+    write_json_payload(
+        {
+            "schema": "stablewalk-bilateral-foot-clearance",
+            "version": BUNDLE_VERSION,
+            "exported_at": exported_at,
+            "measurement_note": (
+                "Estimated body-scale clearance from monocular pose; "
+                "centimeter values are not clinical ground truth."
+            ),
+            "rows": bilateral_foot_clearance_export_rows(
+                recording,
+                float(recording.frame_count - 1),
+            ),
+        },
+        bundle_dir / FILE_BILATERAL_FOOT_CLEARANCE,
     )
 
     if include_gait_motion:
