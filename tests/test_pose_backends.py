@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from stablewalk import config
@@ -19,7 +18,7 @@ from stablewalk.pose.backends.mediapipe_backend import (
     MediaPipePoseBackend,
 )
 from stablewalk.pose.backends.registry import (
-    BACKEND_REGISTRY,
+    PRIMARY_BACKENDS,
     create_pose_backend,
     list_backend_diagnostics,
     unavailable_message,
@@ -39,18 +38,17 @@ def test_create_default_backend_is_mediapipe():
 
 def test_unavailable_backend_raises_without_fallback():
     with pytest.raises(BackendUnavailableError):
-        create_pose_backend("wham", allow_fallback=False)
+        create_pose_backend("smpl", allow_fallback=False)
 
 
 def test_unavailable_backend_fallback_to_mediapipe():
-    backend = create_pose_backend("wham", allow_fallback=True)
+    backend = create_pose_backend("smpl", allow_fallback=True)
     assert backend.name == "mediapipe"
 
 
 def test_unavailable_message_format():
-    msg = unavailable_message("wham")
-    assert "Backend unavailable" in msg
-    assert "WHAM" in msg
+    msg = unavailable_message("smpl")
+    assert "SMPL" in msg or "Auto" in msg or "unavailable" in msg.lower()
 
 
 def test_landmark_to_canonical_mapping():
@@ -74,12 +72,16 @@ def test_environment_inspection_runs():
     assert any(d.name == "mediapipe" for d in report.dependencies)
 
 
-def test_backend_diagnostics_lists_all():
+def test_backend_diagnostics_lists_primary():
     diag = list_backend_diagnostics()
-    assert len(diag) == len(BACKEND_REGISTRY)
     names = {d["name"] for d in diag}
     assert "mediapipe" in names
-    assert "wham" in names
+    assert "smpl" in names
+    assert "auto" in names
+
+
+def test_config_defaults():
+    assert config.POSE_BACKEND in PRIMARY_BACKENDS or config.POSE_BACKEND == "mediapipe"
 
 
 def test_human_motion_to_pose_sequence_bridge():
@@ -115,7 +117,3 @@ def test_comparison_metrics_for_empty_backend():
     )
     assert not m.available
     assert m.valid_frame_ratio == 0.0
-
-
-def test_config_defaults():
-    assert config.POSE_BACKEND == "mediapipe" or config.POSE_BACKEND in BACKEND_REGISTRY

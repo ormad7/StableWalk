@@ -117,13 +117,32 @@ def inspect_runtime_environment() -> RuntimeEnvironmentReport:
         )
 
     for pkg, notes in (
-        ("romp", "ROMP / SMPL mesh recovery — separate stablewalk-hmr env recommended"),
+        ("romp", "ROMP / SMPL mesh recovery — use POSE_BACKEND=smpl in stablewalk-hmr env"),
         ("hybrik", "HybrIK — PyTorch + SMPL; see official HybrIK repo for CUDA/PyTorch pins"),
         ("wham", "WHAM — video HMR; requires PyTorch, SMPL, CUDA for practical use"),
-        ("smplx", "SMPL-X body model (often required by HMR pipelines)"),
+        ("smplx", "SMPL-X body model (set SMPLX_MODEL_DIR when using SMPL-X)"),
     ):
         ok, ver = _try_import(pkg)
         report.dependencies.append(DependencyStatus(pkg, ok, ver, notes))
+
+    try:
+        from stablewalk.pose.backends.smpl_validation import validate_smpl_assets
+
+        smpl_val = validate_smpl_assets()
+        report.dependencies.append(
+            DependencyStatus(
+                "smpl_backend",
+                smpl_val.ready,
+                None,
+                smpl_val.summary(),
+            )
+        )
+        if not smpl_val.ready:
+            report.warnings.append(
+                f"SMPL backend not ready: {smpl_val.summary()[:120]}"
+            )
+    except Exception as exc:
+        report.warnings.append(f"SMPL validation check failed: {exc}")
 
     if sys.version_info < (3, 10):
         report.warnings.append("Python 3.10+ is recommended for MediaPipe Tasks API.")

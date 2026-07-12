@@ -64,6 +64,7 @@ class VirtualForceMethod(str, Enum):
     PHYSICS_SIMULATION = "physics_simulation"  # future: Isaac Lab / MuJoCo
     LEARNED = "learned"  # future: ML estimator
     LEGACY_POSE_PROXY = "legacy_pose_proxy"  # existing GRFAnalyzer (separate module)
+    ESTIMATED_VGRF = "estimated_vgrf"  # multi-signal contact + CoM proxy
 
 
 @dataclass(frozen=True)

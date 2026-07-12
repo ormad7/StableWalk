@@ -18,13 +18,11 @@ from typing import Any
 
 from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult, analyze_gait_cycles
 from stablewalk.analysis.isaac_lab_integration import check_isaac_lab_available
-from stablewalk.analysis.virtual_grf import VirtualForceResult, estimate_virtual_grf
 from stablewalk.io.motion_reference_export import export_motion_reference_npz
 from stablewalk.models.gait_motion import GaitMotionRecording
 from stablewalk.models.pose_data import PoseSequence
 from stablewalk.real_to_sim.amp_reference_export import export_amp_reference
 from stablewalk.real_to_sim.contact_sync_reward import (
-    export_contact_sync_reward_npz,
     summarize_contact_sync,
 )
 from stablewalk.real_to_sim.gait_style_extraction import (
@@ -65,6 +63,13 @@ class RealToSimPipelineReport:
     isaac_lab_available: bool = False
     isaac_lab_note: str = ""
     report_path: Path | None = None
+    pose_backend_requested: str = "mediapipe"
+    pose_backend_used: str = "mediapipe"
+    pose_backend_fallback: bool = False
+    pose_backend_fallback_reason: str | None = None
+    smpl_motion_path: Path | None = None
+    biomechanical_report_path: Path | None = None
+    biomechanical: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +97,15 @@ class RealToSimPipelineReport:
             "isaac_lab_available": self.isaac_lab_available,
             "isaac_lab_note": self.isaac_lab_note,
             "report_path": str(self.report_path) if self.report_path else None,
+            "pose_backend_requested": self.pose_backend_requested,
+            "pose_backend_used": self.pose_backend_used,
+            "pose_backend_fallback": self.pose_backend_fallback,
+            "pose_backend_fallback_reason": self.pose_backend_fallback_reason,
+            "smpl_motion_path": str(self.smpl_motion_path) if self.smpl_motion_path else None,
+            "biomechanical_report_path": (
+                str(self.biomechanical_report_path) if self.biomechanical_report_path else None
+            ),
+            "biomechanical": self.biomechanical,
         }
 
 
@@ -103,6 +117,10 @@ def run_real_to_sim_pipeline(
     sequence: PoseSequence | None = None,
     cycles: GaitCycleAnalysisResult | None = None,
     robot_config_path: Path | None = None,
+    pose_backend_used: str = "mediapipe",
+    pose_backend_requested: str = "mediapipe",
+    pose_backend_fallback: bool = False,
+    pose_backend_fallback_reason: str | None = None,
 ) -> RealToSimPipelineReport:
     """
     Run offline Real-to-Sim pipeline stages 1–4.
@@ -116,6 +134,15 @@ def run_real_to_sim_pipeline(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     report = RealToSimPipelineReport(run_name=run_name)
+    report.pose_backend_requested = pose_backend_requested
+    report.pose_backend_used = pose_backend_used
+    report.pose_backend_fallback = pose_backend_fallback
+    report.pose_backend_fallback_reason = pose_backend_fallback_reason
+
+    smpl_candidate = run_dir / "smpl_motion.npz"
+    if smpl_candidate.is_file():
+        report.smpl_motion_path = smpl_candidate
+
     isaac_ok, isaac_msg = check_isaac_lab_available()
     report.isaac_lab_available = isaac_ok
     report.isaac_lab_note = isaac_msg
@@ -133,7 +160,11 @@ def run_real_to_sim_pipeline(
         PipelineStageStatus(
             stage="1_perception",
             status=s1_status,
-            detail=gait_style.style_summary,
+            detail=(
+                f"{gait_style.style_summary} "
+                f"[backend: {pose_backend_used}"
+                f"{', fallback from ' + pose_backend_requested if pose_backend_fallback else ''}]"
+            ),
             output_path=str(run_dir / "stablewalk_motion.npz"),
         )
     )
@@ -194,43 +225,41 @@ def run_real_to_sim_pipeline(
         )
     )
 
-    # Stage 4 — Physics / contact-sync vs virtual GRF
-    from stablewalk.analysis.virtual_grf import LegacyPoseProxyForceEstimator
+    # Stage 4 — Physics / contact-sync vs estimated virtual GRF
+    from stablewalk.io.foot_contact_export import export_foot_contact_artifacts
 
-    vgrf_result: VirtualForceResult = estimate_virtual_grf(
+    foot_exports = export_foot_contact_artifacts(
         recording,
-        cycles,
-        estimator=LegacyPoseProxyForceEstimator(),
-        sequence=sequence,
+        run_dir,
+        run_name=run_name,
+        cycles=cycles,
+        reference_left_mask=motion_data.left_contact_mask,
+        reference_right_mask=motion_data.right_contact_mask,
+        retarget_left_mask=retargeted.left_contact_mask,
+        retarget_right_mask=retargeted.right_contact_mask,
     )
-    report.virtual_grf = vgrf_result.to_dict()
+    vgrf_result = foot_exports.vgrf
+    report.virtual_grf = {
+        **vgrf_result.to_dict(),
+        "npz_path": str(foot_exports.virtual_grf_path),
+        "contact_mask_path": str(foot_exports.contact_mask_path),
+    }
 
     contact_sync_dict = None
-    if vgrf_result.available and len(vgrf_result.left_vgrf_n):
+    if foot_exports.contact_sync_path is not None:
         sync = summarize_contact_sync(
-            motion_data.left_contact_mask,
-            motion_data.right_contact_mask,
-            vgrf_result.left_vgrf_n,
-            vgrf_result.right_vgrf_n,
+            retargeted.left_contact_mask,
+            retargeted.right_contact_mask,
+            vgrf_result.left_vgrf_vertical,
+            vgrf_result.right_vgrf_vertical,
+            reference_left_mask=motion_data.left_contact_mask,
+            reference_right_mask=motion_data.right_contact_mask,
+            confidence=foot_exports.contact.left_contact_probability,
         )
         contact_sync_dict = sync.to_dict()
-        contact_sync_path = run_dir / "contact_sync_reward.npz"
-        export_contact_sync_reward_npz(
-            motion_data.left_contact_mask,
-            motion_data.right_contact_mask,
-            vgrf_result.left_vgrf_n,
-            vgrf_result.right_vgrf_n,
-            contact_sync_path,
-            timestamps=motion_data.timestamps,
-        )
-        report.contact_sync_npz_path = contact_sync_path
-        contact_sync_dict["per_frame_npz"] = str(contact_sync_path)
-        contact_sync_dict["frame_count"] = int(
-            min(
-                len(motion_data.left_contact_mask),
-                len(vgrf_result.left_vgrf_n),
-            )
-        )
+        report.contact_sync_npz_path = foot_exports.contact_sync_path
+        contact_sync_dict["per_frame_npz"] = str(foot_exports.contact_sync_path)
+        contact_sync_dict["frame_count"] = int(len(vgrf_result.left_vgrf_vertical))
         report.contact_sync = contact_sync_dict
 
     physics_detail = (
@@ -239,7 +268,7 @@ def run_real_to_sim_pipeline(
             f"(mean sync {contact_sync_dict['mean_reward']:.0%})"
         )
         if contact_sync_dict
-        else "Virtual GRF unavailable — load pose sequence for force proxy."
+        else "Estimated vGRF unavailable — insufficient contact or pose data."
     )
     report.stages.append(
         PipelineStageStatus(
@@ -251,6 +280,37 @@ def run_real_to_sim_pipeline(
                 if report.contact_sync_npz_path
                 else None
             ),
+        )
+    )
+
+    # Stage 5 — Biomechanical analysis (extends pipeline; does not replace stability)
+    from stablewalk.analysis.biomechanical import run_biomechanical_analysis
+    from stablewalk.io.biomechanical_export import export_biomechanical_artifacts
+
+    biomech = run_biomechanical_analysis(
+        recording,
+        sequence,
+        cycles=foot_exports.contact.gait_cycles or cycles,
+        contact=foot_exports.contact,
+    )
+    biomech_exports = export_biomechanical_artifacts(biomech, run_dir, run_name=run_name)
+    report.biomechanical_report_path = biomech_exports.biomechanical_report_path
+    report.biomechanical = {
+        **biomech.to_dict(),
+        "center_of_mass_npz": str(biomech_exports.center_of_mass_path),
+        "base_of_support_npz": str(biomech_exports.base_of_support_path),
+        "video_quality_json": str(biomech_exports.video_quality_path),
+        "gait_quality_score": (
+            None if biomech.gait_quality is None else biomech.gait_quality.score
+        ),
+    }
+    gq = biomech.gait_quality.score if biomech.gait_quality else 0.0
+    report.stages.append(
+        PipelineStageStatus(
+            stage="5_biomechanical",
+            status="complete" if biomech.center_of_mass else "partial",
+            detail=f"Biomechanical report — Gait Quality {gq:.0f}/100 (estimated)",
+            output_path=str(biomech_exports.biomechanical_report_path),
         )
     )
 

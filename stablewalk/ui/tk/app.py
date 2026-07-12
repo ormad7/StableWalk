@@ -52,6 +52,15 @@ from stablewalk.analysis.gait_cycle_analysis import (
     analyze_gait_cycles,
 )
 from stablewalk.analysis.gait_feature_analysis import analyze_gait_features
+from stablewalk.analysis.foot_contact_analysis import (
+    FootContactAnalysisResult,
+    analyze_foot_contact,
+)
+from stablewalk.analysis.biomechanical import BiomechanicalAnalysisResult, run_biomechanical_analysis
+from stablewalk.analysis.estimated_vgrf_analysis import (
+    EstimatedVGRFResult,
+    analyze_estimated_vgrf,
+)
 from stablewalk.analysis.virtual_grf import VirtualForceResult, estimate_virtual_grf
 from stablewalk.pose.video_source import (
     check_source_format,
@@ -316,6 +325,9 @@ class StableWalkGUI:
         self._biomech: StabilityResult | None = None
         self._gait_cycle: GaitCycleAnalysisResult | None = None
         self._gait_features = None
+        self._foot_contact: FootContactAnalysisResult | None = None
+        self._estimated_vgrf: EstimatedVGRFResult | None = None
+        self._biomech_analysis: BiomechanicalAnalysisResult | None = None
         self._virtual_grf: VirtualForceResult | None = None
         self._knee_angle_series = None
         self._knee_chart_mode_user_set = False
@@ -1594,6 +1606,16 @@ class StableWalkGUI:
             self._refresh_realtime_analysis(snapshot=snap, force_draw=force_draw)
         self._overview_video_frame_index = snap.frame_index
         self._update_gait_cycle_panel(self._gait_cycle, frame_index=snap.frame_index)
+        playhead_t = None
+        if self.sequence:
+            pf = next(
+                (f for f in self.sequence.frames if f.frame_index == snap.frame_index),
+                None,
+            )
+            if pf is not None:
+                playhead_t = pf.timestamp_s
+        self._update_contact_gait_chart(playhead_time_s=playhead_t)
+        self._update_biomechanics_chart(playhead_time_s=playhead_t)
         self._refresh_bilateral_ground_clearance(snapshot=snap)
         from stablewalk.ui.overview_frame_consistency import (
             log_overview_frame_consistency_if_enabled,
@@ -1608,6 +1630,7 @@ class StableWalkGUI:
         self._assert_overview_contact_clearance_sync_debug(snap)
         foot_skeleton_labels = self._foot_skeleton_labels_for_frame(snap.frame_index)
         self._last_skeleton_foot_labels = foot_skeleton_labels
+        com_ov, poly_ov, dir_ov, foot_c = self._biomech_overlays_for_frame(snap.frame_index)
         draw_gait_skeleton(
             self.ax_3d,
             snap,
@@ -1622,6 +1645,10 @@ class StableWalkGUI:
             display_mode=self._skeleton_display_mode_key(),
             ground_floor_y=self._ground_floor_y_for_skeleton(),
             foot_skeleton_labels=foot_skeleton_labels,
+            foot_contact=foot_c,
+            com_overlay=com_ov,
+            support_polygon=poly_ov,
+            gait_direction=dir_ov,
         )
         if force_draw or show_detail:
             self.canvas_3d.draw_idle()
@@ -1895,6 +1922,12 @@ class StableWalkGUI:
             self._set_gait_motion(pose_sequence_to_gait_motion(self.sequence))
             if self.gait_motion is not None:
                 self._gait_cycle = analyze_gait_cycles(self.gait_motion)
+                self._foot_contact = analyze_foot_contact(
+                    self.gait_motion, cycles=self._gait_cycle
+                )
+                self._estimated_vgrf = analyze_estimated_vgrf(
+                    self.gait_motion, self._foot_contact
+                )
                 ik_mot = self._opensim_ik_mot_path()
                 self._gait_features = analyze_gait_features(
                     self.gait_motion,
@@ -1908,12 +1941,26 @@ class StableWalkGUI:
                     gait_features=self._gait_features,
                     sequence=self.sequence,
                 )
+                self._biomech_analysis = run_biomechanical_analysis(
+                    self.gait_motion,
+                    self.sequence,
+                    cycles=self._gait_cycle,
+                    contact=self._foot_contact,
+                    features=self._gait_features,
+                    stability=self._biomech,
+                )
             else:
                 self._gait_cycle = None
+                self._foot_contact = None
+                self._estimated_vgrf = None
+                self._biomech_analysis = None
                 self._gait_features = None
                 self._virtual_grf = None
             self._update_gait_cycle_panel(self._gait_cycle)
             self._refresh_physics_force_panel()
+            self._update_contact_gait_chart()
+            self._update_biomechanics_panel()
+            self._update_biomechanics_chart()
             self._refresh_real_to_sim_advanced_panel()
             self._knee_chart_mode_user_set = False
             self._rebuild_knee_angle_series()
@@ -2360,6 +2407,7 @@ class StableWalkGUI:
                 max_frames=max_frames,
                 force_reprocess=True,
                 on_progress=on_progress,
+                pose_backend=self._selected_pose_backend(),
             )
             self.root.after(
                 0,
@@ -2431,6 +2479,24 @@ class StableWalkGUI:
         self._run_metadata = result
         self._active_run_name = result.run_name
         self._set_load_feedback("Video loaded successfully")
+        if result.pose_backend_fallback and result.pose_backend_fallback_reason:
+            logger.warning(
+                "Pose backend fallback (%s → %s): %s",
+                result.pose_backend_requested,
+                result.pose_backend_used,
+                result.pose_backend_fallback_reason,
+            )
+            if not self._demo_running:
+                messagebox.showwarning(
+                    "Pose backend fallback",
+                    (
+                        f"Requested: {result.pose_backend_requested}\n"
+                        f"Used: {result.pose_backend_used}\n\n"
+                        f"{result.pose_backend_fallback_reason}\n\n"
+                        "See docs/SMPL_BACKEND_SETUP.md to enable SMPL extraction."
+                    ),
+                )
+        self._refresh_pose_backend_status_label()
         detected_n = 0
         try:
             import json
@@ -3083,6 +3149,42 @@ class StableWalkGUI:
         except (OSError, json.JSONDecodeError):
             return None
 
+    def _selected_pose_backend(self) -> str:
+        var = getattr(self, "pose_backend_var", None)
+        if var is None:
+            return config.POSE_BACKEND
+        value = (var.get() or "mediapipe").strip().lower()
+        if value not in ("mediapipe", "smpl", "auto"):
+            return "mediapipe"
+        return value
+
+    def _refresh_pose_backend_status_label(self) -> None:
+        lbl = getattr(self, "lbl_pose_backend_status", None)
+        if lbl is None:
+            return
+        from stablewalk.ui.theme import MUTED as THEME_MUTED
+        from stablewalk.pose.backends.smpl_validation import validate_smpl_assets
+
+        mode = self._selected_pose_backend()
+        if mode == "mediapipe":
+            lbl.configure(text="MediaPipe (default landmark tracker)", fg=THEME_MUTED)
+            return
+        if mode == "smpl":
+            val = validate_smpl_assets()
+            lbl.configure(
+                text="SMPL ready" if val.ready else val.summary()[:120],
+                fg="#2ecc71" if val.ready else THEME_MUTED,
+            )
+            return
+        val = validate_smpl_assets()
+        if val.ready:
+            lbl.configure(text="Auto: SMPL available", fg="#2ecc71")
+        else:
+            lbl.configure(
+                text=f"Auto: will fall back — {val.summary()[:80]}…",
+                fg=THEME_MUTED,
+            )
+
     def _refresh_real_to_sim_advanced_panel(self) -> None:
         """Update Advanced tab Real-to-Sim 4-stage summary."""
         from stablewalk.ui.theme import INFO, MUTED as THEME_MUTED, SUCCESS, TEXT, WARNING
@@ -3388,8 +3490,14 @@ class StableWalkGUI:
     def _reset_gait_cycle_panel(self) -> None:
         self._gait_cycle = None
         self._gait_features = None
+        self._foot_contact = None
+        self._estimated_vgrf = None
+        self._biomech_analysis = None
         self._virtual_grf = None
         self._reset_physics_force_panel()
+        self._update_contact_gait_chart()
+        self._update_biomechanics_panel()
+        self._update_biomechanics_chart()
         phase_lbl = getattr(self, "lbl_gait_cycle_phase", None)
         if phase_lbl is not None:
             phase_lbl.configure(text="Phase: —", fg=MUTED)
@@ -3469,23 +3577,33 @@ class StableWalkGUI:
         status = getattr(self, "lbl_physics_force_status", None)
         method = getattr(self, "lbl_physics_force_method", None)
         note = getattr(self, "lbl_physics_force_note", None)
-        result = self._virtual_grf
+        result = self._estimated_vgrf
+        legacy = self._virtual_grf
 
         if status is None or method is None:
             return
 
-        if result is None or not result.available:
-            status.configure(text="Status: Not configured", fg=THEME_MUTED)
-            method.configure(text="Method: None", fg=THEME_MUTED)
-        else:
+        if result is not None and result.available:
             status.configure(
-                text=f"Status: Available ({result.confidence:.0%} confidence)",
+                text=f"Status: Available ({result.metrics.confidence:.0%} confidence)",
                 fg=TEXT,
             )
             method.configure(
-                text=f"Method: {result.estimation_method_label}",
+                text=f"Method: {result.method_name} (estimated — not force-plate)",
                 fg=TEXT,
             )
+        elif legacy is not None and legacy.available:
+            status.configure(
+                text=f"Status: Available ({legacy.confidence:.0%} confidence)",
+                fg=TEXT,
+            )
+            method.configure(
+                text=f"Method: {legacy.estimation_method_label}",
+                fg=TEXT,
+            )
+        else:
+            status.configure(text="Status: Not configured", fg=THEME_MUTED)
+            method.configure(text="Method: None", fg=THEME_MUTED)
 
         if note is not None:
             note.configure(
@@ -3546,12 +3664,141 @@ class StableWalkGUI:
     def _foot_contact_for_frame(
         self, frame_index: int
     ) -> tuple[int, int] | None:
+        if self._foot_contact is not None:
+            state = self._foot_contact.frame_at(frame_index)
+            if state is not None:
+                return (state.left_contact_binary, state.right_contact_binary)
         if self._gait_cycle is None:
             return None
         state = self._gait_cycle.frame_at(frame_index)
         if state is None:
             return None
         return (state.left_contact, state.right_contact)
+
+    def _update_contact_gait_chart(self, *, playhead_time_s: float | None = None) -> None:
+        canvas = getattr(self, "canvas_contact_gait", None)
+        fig = getattr(self, "fig_contact_gait", None)
+        if canvas is None or fig is None:
+            return
+        if playhead_time_s is None and self.sequence and self.pose_indices:
+            idx = getattr(self.skeleton_player, "current_index", None)
+            if idx is not None:
+                try:
+                    fi = self.pose_indices[idx]
+                    frame = next((f for f in self.sequence.frames if f.frame_index == fi), None)
+                    if frame is not None:
+                        playhead_time_s = frame.timestamp_s
+                except (IndexError, TypeError):
+                    pass
+        from stablewalk.ui.viewers.contact_gait_viewer import draw_contact_gait_dashboard
+
+        draw_contact_gait_dashboard(
+            fig,
+            self._foot_contact,
+            self._estimated_vgrf,
+            playhead_time_s=playhead_time_s,
+        )
+        canvas.draw_idle()
+
+    def _biomech_overlays_for_frame(
+        self, frame_index: int
+    ) -> tuple[
+        tuple[float, float, float] | None,
+        list[tuple[float, float]] | None,
+        tuple[float, float] | None,
+        tuple[int, int] | None,
+    ]:
+        com = None
+        polygon = None
+        direction = None
+        contact = self._foot_contact_for_frame(frame_index)
+        ba = self._biomech_analysis
+        if ba is None:
+            return com, polygon, direction, contact
+        if ba.center_of_mass:
+            for f in ba.center_of_mass.per_frame:
+                if f.frame_index == frame_index:
+                    com = f.position
+                    break
+        if ba.base_of_support:
+            for f in ba.base_of_support.per_frame:
+                if f.frame_index == frame_index:
+                    polygon = f.polygon_xy
+                    break
+        if ba.center_of_mass and len(ba.center_of_mass.per_frame) >= 2:
+            idx = next(
+                (
+                    i
+                    for i, f in enumerate(ba.center_of_mass.per_frame)
+                    if f.frame_index == frame_index
+                ),
+                None,
+            )
+            if idx is not None and idx > 0:
+                p0 = ba.center_of_mass.per_frame[idx - 1].position
+                p1 = ba.center_of_mass.per_frame[idx].position
+                direction = (p1[0] - p0[0], p1[2] - p0[2])
+        return com, polygon, direction, contact
+
+    def _update_biomechanics_panel(self) -> None:
+        from stablewalk.ui.theme import MUTED as THEME_MUTED, TEXT
+
+        ba = self._biomech_analysis
+        gq = getattr(self, "lbl_biomech_gait_quality", None)
+        sym = getattr(self, "lbl_biomech_symmetry", None)
+        sm = getattr(self, "lbl_biomech_stability_margin", None)
+        cad = getattr(self, "lbl_biomech_cadence", None)
+        spd = getattr(self, "lbl_biomech_walking_speed", None)
+        vq = getattr(self, "lbl_biomech_video_quality", None)
+        rom = getattr(self, "lbl_biomech_rom", None)
+        interp = getattr(self, "lbl_biomech_interpretation", None)
+        if ba is None:
+            for lbl in (gq, sym, sm, cad, spd, vq):
+                if lbl is not None:
+                    lbl.configure(text="—", fg=THEME_MUTED)
+            if rom is not None:
+                rom.configure(text="ROM: —", fg=THEME_MUTED)
+            if interp is not None:
+                interp.configure(text="")
+            return
+        if gq is not None and ba.gait_quality:
+            gq.configure(text=f"{ba.gait_quality.score:.0f}/100 (est.)", fg=TEXT)
+        if sym is not None and ba.symmetry and ba.symmetry.overall_symmetry_pct:
+            v = ba.symmetry.overall_symmetry_pct.value
+            sym.configure(text=f"{v:.0f}%" if v is not None else "—", fg=TEXT)
+        if sm is not None and ba.stability_margin:
+            sm.configure(text=f"{ba.stability_margin.stable_pct:.0f}% stable frames", fg=TEXT)
+        if cad is not None and ba.gait_metrics and ba.gait_metrics.cadence:
+            c = ba.gait_metrics.cadence.value
+            cad.configure(text=f"{c:.0f} spm" if c is not None else "—", fg=TEXT)
+        if spd is not None and ba.gait_metrics and ba.gait_metrics.walking_speed:
+            s = ba.gait_metrics.walking_speed.value
+            spd.configure(text=f"{s:.2f} m/s" if s is not None else "—", fg=TEXT)
+        if vq is not None and ba.video_quality:
+            vq.configure(text=f"{ba.video_quality.overall_quality_score:.0f}/100", fg=TEXT)
+        if rom is not None and ba.joint_rom and ba.joint_rom.joints:
+            knee = [j for j in ba.joint_rom.joints if j.joint == "knee"]
+            parts = [
+                f"{j.side[0].upper()} knee {j.rom_deg:.0f}°"
+                for j in knee
+                if j.rom_deg is not None
+            ]
+            rom.configure(text="ROM: " + ("  ".join(parts) if parts else "—"), fg=TEXT)
+        if interp is not None:
+            text = ba.gait_quality.explanation if ba.gait_quality else ""
+            if ba.abnormalities:
+                text += " Flags: " + "; ".join(ba.abnormalities[:2])
+            interp.configure(text=text[:240], fg=THEME_MUTED)
+
+    def _update_biomechanics_chart(self, *, playhead_time_s: float | None = None) -> None:
+        canvas = getattr(self, "canvas_biomech", None)
+        fig = getattr(self, "fig_biomech", None)
+        if canvas is None or fig is None:
+            return
+        from stablewalk.ui.viewers.biomechanics_charts import draw_biomechanics_dashboard
+
+        draw_biomechanics_dashboard(fig, self._biomech_analysis, playhead_time_s=playhead_time_s)
+        canvas.draw_idle()
 
     def _foot_skeleton_labels_for_frame(self, frame_index: int):
         """Skeleton foot labels from the same dashboard model as Overview foot cards."""

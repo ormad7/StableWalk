@@ -15,14 +15,15 @@ from stablewalk.ui.theme import BG, PAD_XS
 
 TAB_OVERVIEW = "Overview"
 TAB_MOTION = "Motion Analysis"
+TAB_BIOMECHANICS = "Biomechanics"
 TAB_ADVANCED = "Advanced & Export"
 
 
-def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame]:
+def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame]:
     """
-    Install a three-tab notebook as the main dashboard viewport.
+    Install a four-tab notebook as the main dashboard viewport.
 
-    Returns ``(tab_overview, tab_motion, tab_advanced_content)``.
+    Returns ``(tab_overview, tab_motion, tab_biomechanics, tab_advanced_content)``.
     Widgets are created once per tab; switching tabs never recreates children.
     """
     parent.columnconfigure(0, weight=1)
@@ -34,10 +35,12 @@ def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Fra
 
     tab_overview = ttk.Frame(notebook, padding=(PAD_XS, PAD_XS))
     tab_motion = ttk.Frame(notebook, padding=(PAD_XS, PAD_XS))
+    tab_biomechanics = ttk.Frame(notebook, padding=(PAD_XS, PAD_XS))
     tab_advanced_outer = ttk.Frame(notebook, padding=0)
 
     notebook.add(tab_overview, text=f"  {TAB_OVERVIEW}  ")
     notebook.add(tab_motion, text=f"  {TAB_MOTION}  ")
+    notebook.add(tab_biomechanics, text=f"  {TAB_BIOMECHANICS}  ")
     notebook.add(tab_advanced_outer, text=f"  {TAB_ADVANCED}  ")
 
     tab_overview.columnconfigure(0, weight=1)
@@ -48,10 +51,14 @@ def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Fra
     tab_motion.rowconfigure(0, weight=1)
     tab_motion.rowconfigure(1, weight=0)
 
+    tab_biomechanics.columnconfigure(0, weight=1)
+    tab_biomechanics.rowconfigure(0, weight=1)
+
     tab_advanced_content = _install_tab_scroll(gui, tab_advanced_outer)
 
     gui._tab_overview = tab_overview
     gui._tab_motion = tab_motion
+    gui._tab_biomechanics = tab_biomechanics
     gui._tab_advanced_outer = tab_advanced_outer
     gui._tab_advanced_content = tab_advanced_content
 
@@ -103,7 +110,7 @@ def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Fra
     notebook.bind("<<NotebookTabChanged>>", _on_tab_changed, add="+")
     gui._on_dashboard_tab_changed = _on_tab_changed
 
-    return tab_overview, tab_motion, tab_advanced_content
+    return tab_overview, tab_motion, tab_biomechanics, tab_advanced_content
 
 
 def is_advanced_tab_selected(gui) -> bool:
@@ -350,7 +357,7 @@ def select_dashboard_tab(gui, tab: str) -> None:
     notebook = getattr(gui, "_dashboard_notebook", None)
     if notebook is None:
         return
-    labels = {TAB_OVERVIEW: 0, TAB_MOTION: 1, TAB_ADVANCED: 2}
+    labels = {TAB_OVERVIEW: 0, TAB_MOTION: 1, TAB_BIOMECHANICS: 2, TAB_ADVANCED: 3}
     index = labels.get(tab)
     if index is None:
         return
@@ -405,7 +412,7 @@ def run_tab_switch_stress_test(gui, *, cycles: int = 50) -> list[tuple[str, bool
 
     from stablewalk.ui.tk.dashboard_shell import assert_dashboard_widget_singletons
 
-    tabs = (TAB_OVERVIEW, TAB_MOTION, TAB_ADVANCED, TAB_MOTION, TAB_OVERVIEW)
+    tabs = (TAB_OVERVIEW, TAB_MOTION, TAB_BIOMECHANICS, TAB_ADVANCED, TAB_MOTION, TAB_OVERVIEW)
     for i in range(cycles):
         select_dashboard_tab(gui, tabs[i % len(tabs)])
         try:

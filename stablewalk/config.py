@@ -50,13 +50,21 @@ DEFAULT_JPEG_QUALITY = 95
 # MediaPipe pose model: "lite" (fast) or "full" (accurate)
 DEFAULT_POSE_MODEL_VARIANT = "full"
 
-# Pose / HMR backend selection (experimental research extension).
-# Supported: mediapipe | romp | hybrik | wham
+# Pose / HMR backend selection.
+# Primary: mediapipe | smpl | auto
+# Legacy aliases romp/hybrik/wham resolve to the SMPL stack.
 POSE_BACKEND = os.environ.get("POSE_BACKEND", "mediapipe").strip().lower()
 POSE_BACKEND_ALLOW_FALLBACK = os.environ.get(
     "POSE_BACKEND_ALLOW_FALLBACK", "true"
 ).strip().lower() in ("1", "true", "yes", "on")
-SUPPORTED_POSE_BACKENDS = ("mediapipe", "romp", "hybrik", "wham")
+SUPPORTED_POSE_BACKENDS = ("mediapipe", "smpl", "auto")
+
+# Licensed SMPL / SMPL-X model directories (user-provided — never auto-downloaded).
+# Set SMPL_MODEL_DIR env var to folder containing SMPL_NEUTRAL.pkl.
+_smpl_dir = os.environ.get("SMPL_MODEL_DIR", "").strip()
+SMPL_MODEL_DIR: Path | None = Path(_smpl_dir).expanduser() if _smpl_dir else None
+_smplx_dir = os.environ.get("SMPLX_MODEL_DIR", "").strip()
+SMPLX_MODEL_DIR: Path | None = Path(_smplx_dir).expanduser() if _smplx_dir else None
 
 # Per-frame image mode: reliable detection on each frame (legacy two-pass pipeline)
 DEFAULT_POSE_IMAGE_MODE = True

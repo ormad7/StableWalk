@@ -1142,6 +1142,97 @@ def _draw_foot_skeleton_labels(
     return anchors
 
 
+def _draw_com_overlay(
+    ax: Axes,
+    snapshot: SkeletonSnapshot,
+    com_xyz: tuple[float, float, float],
+    height: float,
+) -> None:
+    from matplotlib.patches import Circle
+
+    cx, cy, cz = com_xyz
+    # Map COM to display coords via pelvis reference
+    pelvis = snapshot.joints.get("left_hip")
+    if pelvis is None:
+        return
+    px, py = _xy(snapshot, "left_hip") or (0, 0)
+    dx = com_xyz[0] - pelvis.position.x
+    dy = com_xyz[1] - pelvis.position.y
+    display = (px + dx, py + dy)
+    r = max(height * 0.025, 0.012)
+    ax.add_patch(
+        Circle(display, r, facecolor="#ff6b6b", edgecolor="#ffffff", alpha=0.85, zorder=12, label="COM")
+    )
+    ax.text(display[0], display[1] + r * 1.8, "COM", color="#ff6b6b", fontsize=6, ha="center", zorder=13)
+
+
+def _draw_support_polygon_overlay(
+    ax: Axes,
+    snapshot: SkeletonSnapshot,
+    polygon_xz: list[tuple[float, float]],
+    height: float,
+) -> None:
+    from matplotlib.patches import Polygon
+
+    if len(polygon_xz) < 2:
+        return
+    la = snapshot.joints.get("left_ankle")
+    if la is None:
+        return
+    la_xy = _xy(snapshot, "left_ankle")
+    if not la_xy:
+        return
+    verts = []
+    for x, z in polygon_xz:
+        dx = x - la.position.x
+        dz = z - la.position.z
+        verts.append((la_xy[0] + dx, la_xy[1] + dz * 0.35))
+    if len(verts) >= 3:
+        ax.add_patch(
+            Polygon(
+                verts,
+                closed=True,
+                facecolor="#4dabf7",
+                edgecolor="#4dabf7",
+                alpha=0.18,
+                linewidth=1.2,
+                zorder=2,
+            )
+        )
+
+
+def _draw_gait_direction_overlay(
+    ax: Axes,
+    snapshot: SkeletonSnapshot,
+    direction_xz: tuple[float, float],
+    height: float,
+) -> None:
+    from matplotlib.patches import FancyArrow
+
+    pelvis_xy = _xy(snapshot, "left_hip")
+    if not pelvis_xy:
+        return
+    dx, dz = direction_xz
+    mag = (dx * dx + dz * dz) ** 0.5
+    if mag < 1e-6:
+        return
+    scale = height * 0.35
+    ax.add_patch(
+        FancyArrow(
+            pelvis_xy[0],
+            pelvis_xy[1],
+            (dx / mag) * scale,
+            (dz / mag) * scale * 0.4,
+            width=height * 0.012,
+            head_width=height * 0.04,
+            head_length=height * 0.03,
+            color="#94d82d",
+            alpha=0.8,
+            zorder=11,
+        )
+    )
+
+
 def _draw_foot_contact_labels(
     ax: Axes,
     snapshot: SkeletonSnapshot,
@@ -1809,6 +1900,9 @@ def draw_gait_skeleton(
     foot_skeleton_labels: tuple | None = None,
     foot_contact: tuple[int, int] | None = None,
     show_opensim_markers: bool = False,
+    com_overlay: tuple[float, float, float] | None = None,
+    support_polygon: list[tuple[float, float]] | None = None,
+    gait_direction: tuple[float, float] | None = None,
 ) -> None:
     """
     Render a stick-figure skeleton from a ``SkeletonSnapshot``.
@@ -1899,6 +1993,13 @@ def draw_gait_skeleton(
         label_anchors.extend(
             _draw_opensim_marker_debug(ax, snapshot, height, display_mode=display_mode)
         )
+
+    if com_overlay is not None:
+        _draw_com_overlay(ax, snapshot, com_overlay, height)
+    if support_polygon is not None and len(support_polygon) >= 2:
+        _draw_support_polygon_overlay(ax, snapshot, support_polygon, height)
+    if gait_direction is not None:
+        _draw_gait_direction_overlay(ax, snapshot, gait_direction, height)
 
     ax._sw_label_anchors = label_anchors  # type: ignore[attr-defined]
     ax._sw_view_snapshot = snapshot  # type: ignore[attr-defined]

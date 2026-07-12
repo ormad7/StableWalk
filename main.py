@@ -170,6 +170,16 @@ def parse_args() -> argparse.Namespace:
             "AMP reference export, virtual GRF (video, run name, or latest)"
         ),
     )
+    parser.add_argument(
+        "--pose-backend",
+        choices=("mediapipe", "smpl", "auto"),
+        default=None,
+        help=(
+            "Pose extraction backend: mediapipe (default), smpl (ROMP+SMPL models), "
+            "or auto (try SMPL, fall back to MediaPipe). "
+            "Also set POSE_BACKEND env var."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -203,46 +213,61 @@ def run_step2(
     fps: float,
     max_frames: int | None,
     draw_overlays: bool,
+    pose_backend: str | None = None,
 ) -> None:
+    from stablewalk.pose.backends.pipeline_runner import extract_pose_from_frames_dir
+
+    pose_result = extract_pose_from_frames_dir(
+        frames_dir,
+        source_video=source_video,
+        fps=fps,
+        backend_name=pose_backend or config.POSE_BACKEND,
+        max_frames=max_frames,
+        enrich=True,
+    )
+    sequence = pose_result.sequence
     with PoseEstimator(
         model_variant=config.DEFAULT_POSE_MODEL_VARIANT,
-        min_detection_confidence=config.DEFAULT_MIN_DETECTION_CONFIDENCE,
-        min_tracking_confidence=config.DEFAULT_MIN_TRACKING_CONFIDENCE,
-        video_mode=not config.DEFAULT_POSE_IMAGE_MODE,
+        video_mode=True,
     ) as estimator:
-        sequence = estimator.process_directory(
-            frames_dir,
-            source_video=source_video,
-            fps=fps,
-            max_frames=max_frames,
-        )
         estimator.save_sequence(sequence, poses_path)
 
-        overlay_dir = frames_dir.parent / "overlays" / frames_dir.name
-        overlay_dir.mkdir(parents=True, exist_ok=True)
-        saved = 0
-        for pf in sequence.frames:
-            if pf.detected and pf.keypoints:
-                out = overlay_dir / f"overlay_{pf.frame_index:06d}.jpg"
-                if PoseEstimator.draw_keypoints_overlay(pf.image_path, pf.keypoints, out):
-                    saved += 1
-        if saved:
-            logger.info("Saved %d skeleton overlay images → %s", saved, overlay_dir)
+    for warning in pose_result.resolution.warnings:
+        logger.warning(warning)
 
-        detected_frames = [f for f in sequence.frames if f.detected]
-        print_sequence_summary(sequence.frames)
-        if detected_frames:
-            logger.info("%s", GaitCycleAnalyzer().event_summary(sequence))
-        if not detected_frames:
-            logger.warning(
-                "No valid full-body gait poses in this video.\n"
-                "  Try: python main.py --url\n"
-                "  Or pass a local clip: python main.py data/input/my_walk.mp4",
-            )
-        else:
-            print_frame_report(detected_frames[0])
-            if len(detected_frames) > 1:
-                print_frame_report(detected_frames[len(detected_frames) // 2])
+    from stablewalk.io.smpl_motion_export import maybe_export_smpl_motion
+
+    run_name = poses_path.stem.replace("_poses", "")
+    maybe_export_smpl_motion(
+        pose_result.unified_motion,
+        config.MOTION_REFERENCE_EXPORT_DIR / run_name,
+    )
+
+    overlay_dir = frames_dir.parent / "overlays" / frames_dir.name
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    saved = 0
+    for pf in sequence.frames:
+        if pf.detected and pf.keypoints:
+            out = overlay_dir / f"overlay_{pf.frame_index:06d}.jpg"
+            if PoseEstimator.draw_keypoints_overlay(pf.image_path, pf.keypoints, out):
+                saved += 1
+    if saved:
+        logger.info("Saved %d skeleton overlay images → %s", saved, overlay_dir)
+
+    detected_frames = [f for f in sequence.frames if f.detected]
+    print_sequence_summary(sequence.frames)
+    if detected_frames:
+        logger.info("%s", GaitCycleAnalyzer().event_summary(sequence))
+    if not detected_frames:
+        logger.warning(
+            "No valid full-body gait poses in this video.\n"
+            "  Try: python main.py --url\n"
+            "  Or pass a local clip: python main.py data/input/my_walk.mp4",
+        )
+    else:
+        print_frame_report(detected_frames[0])
+        if len(detected_frames) > 1:
+            print_frame_report(detected_frames[len(detected_frames) // 2])
 
 
 def _auto_export_opensim_after_analysis(poses_path: Path, run_name: str) -> None:
@@ -347,6 +372,7 @@ def _export_motion_reference_cli(
                     fps,
                     max_frames,
                     draw_overlays=False,
+                    pose_backend=config.POSE_BACKEND,
                 )
             result = export_motion_reference_from_poses(
                 poses_path,
@@ -428,6 +454,7 @@ def _run_real_to_sim_cli(
                         fps,
                         max_frames,
                         draw_overlays=False,
+                        pose_backend=config.POSE_BACKEND,
                     )
             else:
                 logger.error("Could not resolve --real-to-sim target: %s", target)
@@ -555,6 +582,9 @@ def _resolve_poses_path(name: str) -> Path:
 def main() -> int:
     args = parse_args()
     config.ensure_output_dirs()
+
+    if args.pose_backend:
+        config.POSE_BACKEND = args.pose_backend
 
     from stablewalk.opensim_sdk import log_opensim_startup_status
 
@@ -703,6 +733,7 @@ def main() -> int:
         fps,
         args.max_frames,
         args.draw_overlays,
+        pose_backend=config.POSE_BACKEND,
     )
 
     logger.info("Done. Frames: %s | Poses: %s", frames_dir, poses_path)

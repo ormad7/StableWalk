@@ -12,6 +12,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from stablewalk import config
 from stablewalk.ui.dashboard_interpretability import METRIC_HELP
 from stablewalk.ui.tk.metric_help import add_metric_help_icon
 from stablewalk.ui.theme import (
@@ -644,8 +645,42 @@ def build_data_export_section(gui, parent: tk.Misc) -> ttk.LabelFrame:
     )
     export_intro.grid(row=0, column=0, sticky="ew", pady=(0, 4))
 
+    backend_row = ttk.Frame(section)
+    backend_row.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+    tk.Label(
+        backend_row,
+        text="Pose backend:",
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_XS,
+    ).pack(side=tk.LEFT, padx=(0, 6))
+    if not hasattr(gui, "pose_backend_var"):
+        gui.pose_backend_var = tk.StringVar(value=config.POSE_BACKEND)
+    gui.pose_backend_combo = ttk.Combobox(
+        backend_row,
+        textvariable=gui.pose_backend_var,
+        values=("mediapipe", "smpl", "auto"),
+        state="readonly",
+        width=14,
+    )
+    gui.pose_backend_combo.pack(side=tk.LEFT)
+    gui.pose_backend_combo.bind(
+        "<<ComboboxSelected>>",
+        lambda _e: gui._refresh_pose_backend_status_label(),
+    )
+    gui.lbl_pose_backend_status = tk.Label(
+        backend_row,
+        text="",
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_XS,
+        anchor="w",
+    )
+    gui.lbl_pose_backend_status.pack(side=tk.LEFT, padx=(8, 0))
+    gui._refresh_pose_backend_status_label()
+
     btn_host = ttk.Frame(section)
-    btn_host.grid(row=1, column=0, sticky="ew")
+    btn_host.grid(row=2, column=0, sticky="ew")
     btn_host.columnconfigure(0, weight=1)
     btn_host.columnconfigure(1, weight=1)
     btn_host.columnconfigure(2, weight=1)

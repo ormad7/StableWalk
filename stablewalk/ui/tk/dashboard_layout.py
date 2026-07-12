@@ -1385,7 +1385,7 @@ def build_dashboard_layout(gui) -> None:
     main.columnconfigure(0, weight=1)
     main.rowconfigure(0, weight=1)
 
-    tab_overview, tab_motion, tab_advanced_content = install_responsive_shell(gui, main)
+    tab_overview, tab_motion, tab_biomechanics, tab_advanced_content = install_responsive_shell(gui, main)
     gui._dashboard_body = tab_overview
     gui._top_video_weight = _TOP_VIDEO_WEIGHT
 
@@ -1728,6 +1728,12 @@ def build_dashboard_layout(gui) -> None:
     tab_motion.rowconfigure(0, weight=1)
     tab_motion.columnconfigure(0, weight=1)
     gui._section_kinematic = section2
+
+    from stablewalk.ui.tk.dashboard_biomechanics import build_biomechanics_tab
+
+    build_biomechanics_tab(gui, tab_biomechanics)
+    gui._section_biomechanics = tab_biomechanics
+
     section2.columnconfigure(0, weight=1)
     section2.columnconfigure(1, weight=1)
     section2.rowconfigure(0, weight=1)
@@ -1856,6 +1862,33 @@ def build_dashboard_layout(gui) -> None:
         command=gui._show_knee_details,
     )
     gui.btn_knee_details.grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+    contact_gait_panel = ttk.LabelFrame(
+        bottom_row,
+        text=_card_title("Contact & Estimated vGRF"),
+        style="Card.TLabelframe",
+        padding=_ANALYSIS_PANEL_PAD,
+    )
+    contact_gait_panel.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(PAD_XS, 0))
+    gui.contact_gait_panel = contact_gait_panel
+    bottom_row.rowconfigure(1, weight=1, minsize=140)
+    contact_gait_panel.columnconfigure(0, weight=1)
+    contact_gait_panel.rowconfigure(0, weight=1)
+
+    gui.fig_contact_gait = Figure(figsize=(8.0, 4.8), dpi=100, facecolor=PANEL)
+    gui.ax_contact_gait = None
+    gui.contact_gait_chart_host = tk.Frame(contact_gait_panel, bg=PANEL, highlightthickness=0)
+    gui.contact_gait_chart_host.grid(row=0, column=0, sticky="nsew")
+    gui.contact_gait_chart_host.columnconfigure(0, weight=1)
+    gui.contact_gait_chart_host.rowconfigure(0, weight=1)
+    gui.canvas_contact_gait = FigureCanvasTkAgg(
+        gui.fig_contact_gait, master=gui.contact_gait_chart_host
+    )
+    cg_widget = gui.canvas_contact_gait.get_tk_widget()
+    cg_widget.configure(bg=PANEL, highlightthickness=0)
+    cg_widget.grid(row=0, column=0, sticky="nsew")
+    _bind_figure_resize(gui.canvas_contact_gait, gui.fig_contact_gait, min_px=80)
+    contact_gait_panel.bind("<Configure>", lambda _e: gui._update_contact_gait_chart())
 
     traj_panel = ttk.LabelFrame(
         bottom_row,

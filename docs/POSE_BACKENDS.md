@@ -4,6 +4,20 @@ StableWalk supports **multiple video-to-3D reconstruction backends** through a
 modular adapter layer. The default remains **MediaPipe** — no PyTorch or GPU
 research dependencies are required for the main application or OpenSim pipeline.
 
+## Primary backend modes (2026)
+
+| Mode | Behavior |
+|------|----------|
+| `mediapipe` | Default BlazePose landmark pipeline (unchanged) |
+| `smpl` | ROMP + licensed SMPL models when configured (`SMPL_MODEL_DIR`) |
+| `auto` | Try SMPL first; fall back to MediaPipe with explicit warning |
+
+Set via GUI, `POSE_BACKEND` env var, or `python main.py --pose-backend auto`.
+
+See **`docs/SMPL_BACKEND_SETUP.md`** for legal SMPL model acquisition and ROMP install.
+
+Legacy aliases `romp`, `hybrik`, `wham` resolve to the SMPL stack.
+
 ## Design goals
 
 1. **MediaPipe stays default** — existing gait analysis, GUI, and OpenSim export unchanged.
