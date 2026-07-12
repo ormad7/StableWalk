@@ -8,6 +8,12 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from stablewalk.coordinates.coordinate_map import (
+    DEPTH_LAYERS,
+    TARGET_SKELETON_HEIGHT,
+    depth_from_mediapipe_landmark,
+    mediapipe_to_canonical,
+)
 from stablewalk.pose.coordinates import hip_center
 from stablewalk.models.pose_data import Keypoint
 
@@ -47,27 +53,6 @@ SKELETON_3D_CONNECTIONS: tuple[tuple[str, str], ...] = (
     ("right_elbow", "right_wrist"),
     ("mid_shoulder", "nose"),
 )
-
-# Fixed depth layers (relative to hip plane, + = toward camera)
-DEPTH_LAYERS: dict[str, float] = {
-    "mid_hip": 0.0,
-    "left_hip": 0.0,
-    "right_hip": 0.0,
-    "left_knee": -0.06,
-    "right_knee": -0.06,
-    "left_ankle": -0.12,
-    "right_ankle": -0.12,
-    "mid_shoulder": 0.04,
-    "left_shoulder": 0.05,
-    "right_shoulder": 0.05,
-    "left_elbow": 0.08,
-    "right_elbow": 0.08,
-    "left_wrist": 0.10,
-    "right_wrist": 0.10,
-    "nose": 0.12,
-}
-
-TARGET_SKELETON_HEIGHT = 1.0
 
 # Ideal segment lengths as fraction of body height (anthropometric averages)
 LIMB_RATIOS: dict[tuple[str, str], float] = {
@@ -136,7 +121,7 @@ class Skeleton3D:
 
     def to_export_dict(self) -> dict[str, Any]:
         return {
-            "coordinate_system": "hip_centered_y_up",
+            "coordinate_system": "sw_canonical_y_up",
             "scale": self.scale,
             "joints": {name: j.to_dict() for name, j in self.joints.items()},
             "connections": list(SKELETON_3D_CONNECTIONS),
@@ -222,14 +207,8 @@ def _mid_shoulder(kp_map: dict[str, Keypoint]) -> Keypoint | None:
 
 
 def estimate_joint_depth(name: str, kp: Keypoint) -> float:
-    """
-    Heuristic depth: fixed body layer + MediaPipe relative z.
-
-    MediaPipe z is negative when closer to camera; we invert and scale.
-    """
-    layer = DEPTH_LAYERS.get(name, 0.0)
-    mp_depth = -float(kp.z) * 0.2
-    return layer + mp_depth
+    """Heuristic depth: fixed body layer + MediaPipe relative z."""
+    return depth_from_mediapipe_landmark(name, float(kp.z))
 
 
 def reconstruct_skeleton_3d(
@@ -268,9 +247,15 @@ def reconstruct_skeleton_3d(
             joints[name] = Joint3D(name=name, x=0.0, y=0.0, z=0.0, visibility=kp.visibility)
             continue
 
-        x = float(kp.x - cx)
-        y = float(-(kp.y - cy))  # image y down → 3D y up
-        z = estimate_joint_depth(name, kp)
+        x, y, z = mediapipe_to_canonical(
+            kp.x,
+            kp.y,
+            kp.z,
+            cx=cx,
+            cy=cy,
+            joint_name=name,
+            scale=1.0,
+        )
         joints[name] = Joint3D(name=name, x=x, y=y, z=z, visibility=kp.visibility)
 
     skeleton = Skeleton3D(joints=joints)

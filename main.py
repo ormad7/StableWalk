@@ -17,6 +17,7 @@ Usage:
   python main.py --view-only walk_stream        # matplotlib viewer only
   python main.py --simulate walk_stream         # robotic walk simulation
   python main.py --run-opensim-demo-ik          # run Gait2392 demo IK (requires OpenSim SDK)
+  python main.py --export-motion-reference VIDEO_PATH  # Real-to-Sim motion .npz export
   python main.py --frames-only data/output/frames/walk_stream
 """
 
@@ -148,6 +149,16 @@ def parse_args() -> argparse.Namespace:
             "(models/opensim/Gait2392_Pipeline/subject01_Setup_IK.xml)"
         ),
     )
+    parser.add_argument(
+        "--export-motion-reference",
+        metavar="VIDEO_OR_RUN",
+        nargs="?",
+        const="",
+        help=(
+            "Export stablewalk_motion.npz for Real-to-Sim retargeting "
+            "(video path, pose run name, or latest poses if omitted)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -233,6 +244,15 @@ def _auto_export_opensim_after_analysis(poses_path: Path, run_name: str) -> None
             poses_path, config.OPENSIM_DIR / run_name, name=run_name
         )
         log_post_analysis_opensim_status(written, logger)
+        from stablewalk.analysis.opensim_id_readiness import assess_opensim_id_readiness
+
+        id_report = assess_opensim_id_readiness(run_name)
+        if not id_report.ready_for_traditional_id:
+            logger.info(
+                "OpenSim Inverse Dynamics not ready for %s (missing measured external loads). "
+                "See docs/VIRTUAL_GRF.md for vGRF research architecture.",
+                run_name,
+            )
     except (OSError, ValueError) as exc:
         logger.error("OpenSim export failed: %s", exc)
         log_post_analysis_opensim_status(None, logger)
@@ -263,6 +283,94 @@ def _run_opensim_demo_ik_cli() -> int:
 
     logger.error("OpenSim Demo IK failed: %s", result.message)
     return 1
+
+
+def _export_motion_reference_cli(
+    target: str | None,
+    *,
+    max_frames: int | None = None,
+    output_name: str | None = None,
+) -> int:
+    """
+    Export ``stablewalk_motion.npz`` for Isaac Lab / imitation-learning pipelines.
+
+    Accepts a video path, pose run name, or uses the latest pose JSON when omitted.
+    """
+    from stablewalk.io.motion_reference_export import export_motion_reference_from_poses
+
+    if target:
+        # Pose run name
+        poses_candidate = config.POSES_DIR / f"{target}_poses.json"
+        if poses_candidate.is_file():
+            run_name = output_name or target
+            result = export_motion_reference_from_poses(
+                poses_candidate,
+                config.MOTION_REFERENCE_EXPORT_DIR,
+                run_name=run_name,
+            )
+            logger.info("Motion reference exported → %s", result.npz_path)
+            print(result.npz_path)
+            return 0
+
+        # Video path
+        try:
+            video_path = config.resolve_video_path(target)
+        except FileNotFoundError:
+            video_path = Path(target)
+        if video_path.is_file():
+            run_name = output_name or video_path.stem
+            frames_dir = config.FRAMES_DIR / run_name
+            poses_path = config.POSES_DIR / f"{run_name}_poses.json"
+            if not poses_path.is_file():
+                logger.info("Running pipeline for motion reference export…")
+                fps, _, source_video = run_step1(
+                    str(video_path),
+                    frames_dir,
+                    max_frames,
+                    from_url=False,
+                )
+                run_step2(
+                    frames_dir,
+                    poses_path,
+                    source_video,
+                    fps,
+                    max_frames,
+                    draw_overlays=False,
+                )
+            result = export_motion_reference_from_poses(
+                poses_path,
+                config.MOTION_REFERENCE_EXPORT_DIR,
+                run_name=run_name,
+            )
+            logger.info("Motion reference exported → %s", result.npz_path)
+            print(result.npz_path)
+            return 0
+
+        logger.error(
+            "Could not resolve --export-motion-reference target: %s "
+            "(expected video path or pose run name)",
+            target,
+        )
+        return 1
+
+    candidates = sorted(
+        config.POSES_DIR.glob("*_poses.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        logger.error("No pose JSON found. Run: python main.py --url")
+        return 1
+    poses_path = candidates[0]
+    run_name = output_name or poses_path.stem.replace("_poses", "")
+    result = export_motion_reference_from_poses(
+        poses_path,
+        config.MOTION_REFERENCE_EXPORT_DIR,
+        run_name=run_name,
+    )
+    logger.info("Motion reference exported → %s", result.npz_path)
+    print(result.npz_path)
+    return 0
 
 
 def _run_opensim_ik_cli(
@@ -363,6 +471,14 @@ def main() -> int:
 
     if args.run_opensim_demo_ik:
         return _run_opensim_demo_ik_cli()
+
+    if args.export_motion_reference is not None:
+        target = args.export_motion_reference if args.export_motion_reference else None
+        return _export_motion_reference_cli(
+            target,
+            max_frames=args.max_frames,
+            output_name=args.output_name,
+        )
 
     if args.run_ik:
         run_name = args.output_name or "walk_stream"

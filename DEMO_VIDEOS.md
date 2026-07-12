@@ -1,72 +1,39 @@
 # StableWalk Demo Gait Videos
 
-See also **Demo Video Sources** in `README.md`.
+**Research-oriented protocol:** see [data/demo_videos/DEMO_VIDEO_SOURCES.md](data/demo_videos/DEMO_VIDEO_SOURCES.md)
 
-## 1. Abnormal / Neuropathic Gait
+## Categories
 
-**GUI label:** Abnormal / Neuropathic Gait Analysis
+| UI label | Internal key | File | Source |
+|----------|--------------|------|--------|
+| Abnormal | `abnormal` | `abnormal_gait.mp4` | [GAVD](https://github.com/Rahmyyy/GAVD) |
+| Normal | `normal` | `normal_gait.mp4` | [Health&Gait](https://zenodo.org/records/14039922) UGS |
+| Performance | `athletic` | `athletic_walking.mp4` | Health&Gait FGS |
 
-**Source institution:** University of Utah  
-**Source:** NeuroLogic Examination  
-**Page:** https://neurologicexam.med.utah.edu/adult/html/gait_abnormal.html  
-**Video:** Neuropathic Gait (Utah identifier `gait_ab_10`, Kaltura `0_z1p8nsbi`)  
-**Download page:** https://neurologicexam.med.utah.edu/adult/html/download_by_exam.html#gait_ab_10
+Legacy Pexels and Utah walker-assisted clips are **deprecated** and fail the new validator.
 
-**Local file:** `data/demo_videos/abnormal_gait.mp4`
+## Workflow
 
-Clinical walking example: right distal lower-extremity weakness with compensatory
-high stepping for foot clearance. Downloaded from the official Utah MP4 mobile zip,
-transcoded to H.264, trimmed to a continuous walking segment, and validated with
-MediaPipe.
+```bash
+# Full selection report
+python scripts/demo_video_selection_workflow.py
 
-Download:
+# Abnormal: filter GAVD annotations (metadata only)
+python scripts/select_gavd_abnormal_candidate.py
 
+# Normal / Performance: inspect Health&Gait samples first
+python scripts/inspect_healthgait_samples.py
+
+# Mandatory before installing any MP4
+python scripts/validate_demo_candidate.py --video path/to/candidate.mp4 --category abnormal
 ```
-python scripts/download_utah_abnormal_demo.py
-```
 
-Metadata is written to `data/demo_videos/utah_abnormal_source.json`.
+Validator returns `ACCEPT`, `ACCEPT_WITH_LIMITATIONS`, or `REJECT`.
 
-**Presentation note:** Shows neuropathic gait pattern from the Utah clinical library.
-StableWalk does **not** diagnose pathology beyond the source description.
+## Health&Gait note
 
----
+The public Zenodo release provides silhouettes, pose, optical flow, and CSV metadata — **not raw RGB MP4**. Use metadata to select participant/trial (UGS for Normal, FGS for Performance), then supply a validated MP4 from an authorized/controlled source.
 
-## 2. Normal Gait
+## GAVD note
 
-**Source:** Pexels 5320110 — https://www.pexels.com/video/a-man-walking-towards-the-camera-5320110/  
-**Local file:** `data/demo_videos/normal_gait.mp4`
-
----
-
-## 3. Athletic Walking
-
-**GUI title:** Athletic Walking Analysis
-
-**Video title:** A man walking on a tennis court  
-**Source platform:** Pexels  
-**Creator:** Lola bertoncelli  
-**Official source page:** https://www.pexels.com/video/a-man-walking-on-a-tennis-court-27727783/  
-**Local file:** `data/demo_videos/athletic_walking.mp4`  
-**Purpose:** Athletic walking gait-analysis demo
-
-Rear-view sportswear walking on an outdoor tennis court. Replaced Pexels 5823532 on 2026-07-06
-after the Athletic vs Normal investigation confirmed the previous clip was technically marginal
-(low heel visibility, LOW step-detection confidence on front-view outdoor footage).
-
-| Metric | Previous (5823532) | Current (27727783) |
-|--------|-------------------|-------------------|
-| Pose detection | 94% | **100%** |
-| Heel visibility | 0.61 | **0.94** |
-| Step detection confidence | LOW | **HIGH** |
-| Mixkit 596 candidate | — | Rejected (feet occluded by railing) |
-
-Previous backup: `data/demo_videos/athletic_walking_pexels5823532_backup_20260706.mp4`
-
----
-
-## Validation
-
-```
-python scripts/validate_demo_videos.py
-```
+GAVD provides annotations only. Download the referenced YouTube video independently and comply with source access requirements.

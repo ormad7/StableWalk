@@ -412,9 +412,10 @@ def _contact_timing(sequence: PoseSequence, contact=None) -> ContactTimingStats:
     left_stance = right_stance = double_support = 0
     for idx in indices:
         f = sequence.frames[idx]
-        if f.foot_contact:
-            pl = f.foot_contact.get("left", False)
-            pr = f.foot_contact.get("right", False)
+        foot_contact = getattr(f, "foot_contact", None)
+        if foot_contact:
+            pl = foot_contact.get("left", False)
+            pr = foot_contact.get("right", False)
         else:
             pl = f.gait_phase.get("left") == "stance"
             pr = f.gait_phase.get("right") == "stance"

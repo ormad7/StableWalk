@@ -89,6 +89,8 @@ def load_pose_sequence(path: str | Path) -> PoseSequence:
     for fd in data.get("frames", []):
         frame_index = fd.get("frame", fd.get("frame_index", 0))
         ts_s = float(fd.get("timestamp_s", frame_index / max(fps, 1e-6)))
+        if ts_s <= 1e-9 and int(frame_index) > 0:
+            ts_s = int(frame_index) / max(fps, 1e-6)
         ts_ms = int(fd.get("timestamp_ms", round(ts_s * 1000)))
         keypoints = _parse_keypoints(fd.get("keypoints", []))
         angles_raw = fd.get("angles") or fd.get("joint_angles")

@@ -27,18 +27,19 @@ DEMO_GAIT_EXAMPLES: tuple[DemoGaitExample, ...] = (
     DemoGaitExample(
         key="abnormal",
         button_label="Abnormal",
-        display_name="Abnormal / Neuropathic Gait",
-        analysis_title="Abnormal / Neuropathic Gait Analysis",
+        display_name="Abnormal Gait",
+        analysis_title="Abnormal Gait Analysis",
         filename="abnormal_gait.mp4",
-        source_name="University of Utah – NeuroLogic Examination",
-        source_url="https://neurologicexam.med.utah.edu/adult/html/gait_abnormal.html",
+        source_name="GAVD — clinically annotated abnormal gait (pending selection)",
+        source_url="https://github.com/Rahmyyy/GAVD",
         source_attribution=(
-            "Source: University of Utah – NeuroLogic Examination\n"
-            "Neuropathic Gait – Clinical Walking Example"
+            "Source: Gait Abnormality in Video Dataset (GAVD)\n"
+            "Clinical annotation + public YouTube reference — video retrieved independently"
         ),
         note=(
-            "Abnormal gait pattern: right foot dorsiflexion weakness with compensatory "
-            "high stepping for foot clearance. Utah video identifier: gait_ab_10."
+            "Abnormal demo must be selected from GAVD metadata using "
+            "scripts/select_gavd_abnormal_candidate.py, then validated with "
+            "validate_demo_candidate.py. Do not use walker-assisted or heavily occluded clips."
         ),
     ),
     DemoGaitExample(
@@ -47,30 +48,31 @@ DEMO_GAIT_EXAMPLES: tuple[DemoGaitExample, ...] = (
         display_name="Normal Gait",
         analysis_title="Normal Gait Analysis",
         filename="normal_gait.mp4",
-        source_name="Pexels — man walking towards the camera",
-        source_url="https://www.pexels.com/video/a-man-walking-towards-the-camera-5320110/",
-        pexels_video_id=5320110,
-        trim_start_frame=87,
-        note="Steady full-body walking; trimmed to the continuous walking segment.",
+        source_name="Health&Gait — usual gait speed (UGS) trial (pending selection)",
+        source_url="https://zenodo.org/records/14039922",
+        pexels_video_id=None,
+        trim_start_frame=None,
+        note=(
+            "Normal demo uses Health&Gait UGS metadata for a controlled healthy walking trial. "
+            "Install only after validate_demo_candidate.py accepts a sourced MP4."
+        ),
     ),
     DemoGaitExample(
         key="athletic",
-        button_label="Athletic",
-        display_name="Athletic Walking",
-        analysis_title="Athletic Walking Analysis",
+        button_label="Performance",
+        display_name="Performance Gait",
+        analysis_title="Performance Gait Analysis",
         filename="athletic_walking.mp4",
-        source_name="Pexels — a man walking on a tennis court",
-        source_url="https://www.pexels.com/video/a-man-walking-on-a-tennis-court-27727783/",
+        source_name="Health&Gait — fast gait speed (FGS) trial (pending selection)",
+        source_url="https://zenodo.org/records/14039922",
         source_attribution=(
-            "Source: Pexels — Lola bertoncelli\n"
-            "Outdoor tennis-court walk in sportswear (rear view, full body)"
+            "Source: Health&Gait (Zafra-Palma et al., Scientific Data 2025)\n"
+            "Controlled higher-speed walking (FGS) — not stock footage"
         ),
-        pexels_video_id=27727783,
-        trim_start_frame=None,
         note=(
-            "Rear-view sportswear walking on a tennis court. Replaced Pexels 5823532 "
-            "(2026-07-06) after gait-quality investigation: heel visibility 0.94 vs 0.61, "
-            "HIGH step-detection confidence vs LOW, 100% pose detection."
+            "Performance demo uses Health&Gait FGS metadata to select a fast-gait trial. "
+            "The public Zenodo release does not redistribute raw RGB video; install only "
+            "after validate_demo_candidate.py accepts a sourced MP4."
         ),
     ),
 )

@@ -8,7 +8,7 @@ figure.  Selected view: one coloured XYZ path and current-position dot per joint
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -20,6 +20,7 @@ else:
     from stablewalk.models.gait_motion import Vec3
 
 from stablewalk.models.joint_registry import JOINT_DISPLAY_NAMES, ROOT_JOINT_ID
+from stablewalk.coordinates.coordinate_map import axis_labels_canonical
 from stablewalk.ui.colors import ACCENT, ACCENT_ALT, BORDER, INFO, MUTED, PANEL, TEXT, VIZ_JOINT, WARNING
 from stablewalk.ui.dof_selection import GUI_DOF_ITEM_IDS, anchor_joint_for_item, label_for_item
 
@@ -28,8 +29,8 @@ _TRAJ_ELEV = 22.0
 _TRAJ_AZIM = -62.0
 
 # Selected-point panel: oblique view; refined per-trajectory in _camera_for_single_dof_trajectory
-_SINGLE_TRAJ_ELEV = 27.0
-_SINGLE_TRAJ_AZIM = -54.0
+_SINGLE_TRAJ_ELEV = 20.0
+_SINGLE_TRAJ_AZIM = -60.0
 
 TRAJECTORY_COLORS: tuple[str, ...] = (
     ACCENT,
@@ -80,9 +81,14 @@ from stablewalk.ui.theme import (
 
 _CURRENT_DOT_COLOR = DOF_TRAJ_DOT_COLOR
 _START_DOT_COLOR = DOF_TRAJ_START_COLOR
+_END_DOT_COLOR = INFO
 _START_DOT_EDGE_COLOR = "#b8f5cc"
+_END_DOT_EDGE_COLOR = "#c8e4ff"
 _PATH_LINE_COLOR = DOF_TRAJ_PATH_COLOR
 _CUBE_EDGE_COLOR = "#7a9ab8"
+_OVERVIEW_AXIS_X_COLOR = "#5ec8e8"
+_OVERVIEW_AXIS_Y_COLOR = "#72e8a8"
+_OVERVIEW_AXIS_Z_COLOR = "#e8c070"
 _CUBE_FACE_RGBA = (0.14, 0.17, 0.22, 0.16)
 _GRID_RGBA = (0.44, 0.54, 0.66, 0.38)
 _AXIS_RGBA = (0.86, 0.90, 0.98, 0.94)
@@ -107,8 +113,19 @@ _SINGLE_TRAJ_BOX_ZOOM_SHORT = 0.78
 _SINGLE_TRAJ_CAMERA_DIST = 12.0
 _SINGLE_TRAJ_MARKER_SCALE_MAX = 1.05
 _SINGLE_TRAJ_MARKER_SCALE_MIN = 0.88
+# Overview dock: inflate thin axes so side-view / flat paths stay readable.
+_OVERVIEW_MIN_AXIS_RATIO = 0.42
 _SINGLE_TRAJ_MARKER_LABEL_START = "Start"
 _SINGLE_TRAJ_MARKER_LABEL_CURRENT = "Current"
+_SINGLE_TRAJ_MARKER_LABEL_END = "End"
+_DISPLAY_CURRENT_PROGRESS = "CURRENT PROGRESS"
+_DISPLAY_FULL_PATH = "FULL PATH"
+_DISPLAY_FULL_TRAJECTORY = "FULL TRAJECTORY"
+_COORD_ROOT_RELATIVE = "ROOT-RELATIVE"
+_COORD_GLOBAL = "GLOBAL"
+_PLANE_PROJECTION_3D = "3D"
+_PLANE_PROJECTION_FRONTAL = "Frontal Plane"
+_PLANE_PROJECTION_SAGITTAL = "Sagittal Plane"
 _PATH_DOT_SIZE_MIN = 5.0
 _PATH_DOT_SIZE_MAX = 14.0
 # Faint projection of the path on the cube floor (min-Y plane). A "shadow" gives
@@ -165,9 +182,10 @@ def setup_trajectory_axes(ax: Axes, *, elev: float = _TRAJ_ELEV, azim: float = _
     ax.set_facecolor(PANEL)
     ax.figure.patch.set_facecolor(PANEL)
     ax.view_init(elev=elev, azim=azim)
-    ax.set_xlabel("X", color=MUTED, fontsize=9, labelpad=4)
-    ax.set_ylabel("Y", color=MUTED, fontsize=9, labelpad=4)
-    ax.set_zlabel("Z", color=MUTED, fontsize=9, labelpad=4)
+    labels = axis_labels_canonical()
+    ax.set_xlabel(labels["x"], color=MUTED, fontsize=9, labelpad=4)
+    ax.set_ylabel(labels["y"], color=MUTED, fontsize=9, labelpad=4)
+    ax.set_zlabel(labels["z"], color=MUTED, fontsize=9, labelpad=4)
     ax.tick_params(colors=MUTED, labelsize=6.5, pad=1)
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.pane.fill = False
@@ -176,14 +194,105 @@ def setup_trajectory_axes(ax: Axes, *, elev: float = _TRAJ_ELEV, azim: float = _
 
 
 def _format_single_traj_tick(value: float, _pos: int) -> str:
-    """Simple axis tick labels — two or three decimal places."""
+    """Simple axis tick labels — short enough for compact Overview dock panels."""
     if abs(value) < 1e-9:
         return "0"
     if abs(value) >= 10.0:
         return f"{value:.1f}"
     if abs(value) >= 1.0:
         return f"{value:.2f}"
+    if abs(value) >= 0.05:
+        return f"{value:.2f}"
+    if abs(value) >= 0.01:
+        return f"{value:.2f}"
     return f"{value:.3f}"
+
+
+def _format_overview_cm_tick(value: float, _pos: int) -> str:
+    """Overview sidebar: show axis values in centimeters."""
+    if abs(value) < 1e-9:
+        return "0"
+    cm = value * 100.0
+    if abs(cm) >= 100.0:
+        return f"{cm:.0f}"
+    if abs(cm) >= 10.0:
+        return f"{cm:.1f}"
+    return f"{cm:.2f}"
+
+
+def _overview_tick_values(lo: float, hi: float, *, use_cm: bool = False) -> list[float]:
+    """Endpoint ticks (plus midpoint when span is readable) for Overview."""
+    if abs(hi - lo) < 1e-12:
+        return [lo]
+    fmt = _format_overview_cm_tick if use_cm else _format_single_traj_tick
+    span = hi - lo
+    if span < 0.002:
+        decimals = 4
+    elif span < 0.02:
+        decimals = 3
+    elif span < 0.2:
+        decimals = 2
+    else:
+        decimals = 2
+    lo_r = round(lo, decimals)
+    hi_r = round(hi, decimals)
+    if fmt(lo_r, 0) == fmt(hi_r, 0):
+        return [lo, hi]
+    ticks = [lo_r]
+    if use_cm and span * 100.0 >= 2.0:
+        mid_r = round((lo + hi) * 0.5, decimals)
+        mid_label = fmt(mid_r, 0)
+        if mid_label not in (fmt(lo_r, 0), fmt(hi_r, 0)):
+            ticks.append(mid_r)
+    ticks.append(hi_r)
+    return ticks
+
+
+def _apply_overview_trajectory_ticks(ax: Axes) -> None:
+    """
+    Overview dock: explicit ticks and single-sided labels.
+
+    mplot3d otherwise draws the same tick value on multiple cube edges, which
+    looks like duplicated numbers (e.g. 0.01 printed twice).
+    """
+    from matplotlib.ticker import FixedLocator, FuncFormatter
+
+    use_cm = bool(getattr(ax, "_stablewalk_overview_cm_ticks", False))
+    tick_fmt = _format_overview_cm_tick if use_cm else _format_single_traj_tick
+
+    for axis, get_lim in (
+        (ax.xaxis, ax.get_xlim),
+        (ax.yaxis, ax.get_ylim),
+        (ax.zaxis, ax.get_zlim),
+    ):
+        lo, hi = get_lim()
+        ticks = _overview_tick_values(lo, hi, use_cm=use_cm)
+        axis.set_major_locator(FixedLocator(ticks))
+        axis.set_major_formatter(FuncFormatter(tick_fmt))
+        axis.set_tick_params(
+            label1On=True,
+            label2On=False,
+            colors=TEXT,
+            labelsize=8,
+            pad=1,
+            length=3,
+            width=0.6,
+        )
+
+
+def _style_overview_trajectory_cube(ax: Axes) -> None:
+    """Lighter cube for the Overview dock — path and markers stay the focus."""
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_facecolor((0.12, 0.15, 0.19, 0.10))
+        axis.pane.fill = True
+        axis.pane.set_edgecolor(_CUBE_EDGE_COLOR)
+        axis.pane.set_alpha(0.85)
+        axis._axinfo["grid"]["color"] = (0.40, 0.50, 0.60, 0.22)
+        axis._axinfo["grid"]["linestyle"] = "-"
+        axis._axinfo["grid"]["linewidth"] = 0.30
+        axis._axinfo["axisline"]["color"] = (0.70, 0.78, 0.88, 0.70)
+        axis._axinfo["axisline"]["linewidth"] = 0.85
+    ax.grid(True, color=(0.40, 0.50, 0.60, 0.20), alpha=0.24, linestyle="-", linewidth=0.30)
 
 
 def _style_single_dof_cube(ax: Axes) -> None:
@@ -203,6 +312,10 @@ def _style_single_dof_cube(ax: Axes) -> None:
 
 def _style_single_dof_trajectory_ticks(ax: Axes) -> None:
     """Readable ticks without overcrowding the 3D axes."""
+    if bool(getattr(ax, "_stablewalk_overview_dock", False)):
+        _apply_overview_trajectory_ticks(ax)
+        return
+
     from matplotlib.ticker import FuncFormatter, MaxNLocator
 
     locator = MaxNLocator(
@@ -238,11 +351,92 @@ def setup_single_dof_trajectory_axes(
     ax.set_facecolor(PANEL)
     ax.figure.patch.set_facecolor(PANEL)
     ax.view_init(elev=elev, azim=azim)
-    ax.set_xlabel("X · left/right", color=TEXT, fontsize=8, labelpad=6, fontweight="medium")
-    ax.set_ylabel("Y · up/down", color=TEXT, fontsize=8, labelpad=6, fontweight="medium")
-    ax.set_zlabel("Z · forward/back", color=TEXT, fontsize=8, labelpad=10, fontweight="medium")
-    _style_single_dof_cube(ax)
+    overview = bool(getattr(ax, "_stablewalk_overview_dock", False))
+    use_cm = bool(getattr(ax, "_stablewalk_overview_cm_ticks", False))
+    if overview and use_cm:
+        xlab, ylab, zlab = "", "", ""
+        label_fs = 7
+        xpad, ypad, zpad = 0, 0, 0
+    elif overview:
+        xlab, ylab, zlab = "X (m)", "Y (m)", "Z (m)"
+        label_fs = 7
+        xpad, ypad, zpad = 3, 3, 5
+    else:
+        labels = axis_labels_canonical()
+        xlab, ylab, zlab = labels["x"], labels["y"], labels["z"]
+        label_fs = 8
+        xpad, ypad, zpad = 6, 6, 10
+    ax.set_xlabel(xlab, color=TEXT, fontsize=label_fs, labelpad=xpad, fontweight="medium")
+    ax.set_ylabel(ylab, color=TEXT, fontsize=label_fs, labelpad=ypad, fontweight="medium")
+    ax.set_zlabel(zlab, color=TEXT, fontsize=label_fs, labelpad=zpad, fontweight="medium")
+    if overview:
+        _style_overview_trajectory_cube(ax)
+    else:
+        _style_single_dof_cube(ax)
     _style_single_dof_trajectory_ticks(ax)
+
+
+def _ensure_trajectory_plot_legend(ax: Axes) -> None:
+    """Persistent Start / Path / Now legend on the 3D axes (recreated after ax.cla())."""
+    if getattr(ax, "_stablewalk_overview_dock", False):
+        existing = getattr(ax, "_stablewalk_plot_legend", None)
+        if existing is not None:
+            try:
+                existing.set_visible(False)
+            except Exception:
+                pass
+        return
+    if getattr(ax, "_stablewalk_plot_legend", None) is not None:
+        try:
+            ax._stablewalk_plot_legend.set_visible(True)
+        except Exception:
+            pass
+        return
+    from matplotlib.lines import Line2D
+
+    proxies = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=_START_DOT_COLOR,
+            markeredgecolor=_START_DOT_EDGE_COLOR,
+            markeredgewidth=1.0,
+            markersize=7,
+            linestyle="None",
+            label=_SINGLE_TRAJ_MARKER_LABEL_START,
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=_PATH_LINE_COLOR,
+            linewidth=_PATH_LINE_WIDTH,
+            label="Path",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=_CURRENT_DOT_COLOR,
+            markeredgecolor="#fff0f2",
+            markeredgewidth=1.0,
+            markersize=7,
+            linestyle="None",
+            label="Now",
+        ),
+    ]
+    leg = ax.legend(
+        handles=proxies,
+        loc="upper right" if getattr(ax, "_stablewalk_overview_dock", False) else "upper left",
+        fontsize=6 if getattr(ax, "_stablewalk_overview_dock", False) else 7,
+        framealpha=0.88,
+        facecolor=PANEL,
+        edgecolor=BORDER,
+        labelcolor=TEXT,
+    )
+    ax._stablewalk_plot_legend = leg
 
 
 def _single_traj_visual_scale(ax: Axes) -> float:
@@ -250,7 +444,10 @@ def _single_traj_visual_scale(ax: Axes) -> float:
     fig = ax.figure
     w_in, h_in = fig.get_size_inches()
     raw = min(w_in, h_in) / 5.4
-    return max(_SINGLE_TRAJ_MARKER_SCALE_MIN, min(_SINGLE_TRAJ_MARKER_SCALE_MAX, raw))
+    scale = max(_SINGLE_TRAJ_MARKER_SCALE_MIN, min(_SINGLE_TRAJ_MARKER_SCALE_MAX, raw))
+    if getattr(ax, "_stablewalk_overview_dock", False):
+        scale = max(scale, 1.28)
+    return scale
 
 
 def _single_dof_figure_margins(
@@ -277,15 +474,9 @@ def _single_dof_figure_margins(
     if foot_mode:
         bottom = min(bottom + 0.04, 0.30)
 
-    # Centre the axes horizontally and cap its pixel aspect so a very wide panel
-    # doesn't strand the cube to one side. On near-square/tall panels the box
-    # uses almost the full width. Reserve a little extra room on the right for
-    # the vertical "Z · forward/back" label so it isn't clipped at the edge.
     band_h = max(top - bottom, 0.2)
     target_px_ratio = 1.6  # axes width:height in pixels
     width_frac = target_px_ratio * band_h * h_in / max(w_in, 0.1)
-    # Let the cube claim most of the panel width so it reads as a large graph
-    # instead of a small box stranded in empty space on a wide, short panel.
     width_frac = max(0.78, min(0.96, width_frac))
     span = 1.0 - width_frac
     left = span * 0.42
@@ -294,10 +485,19 @@ def _single_dof_figure_margins(
     return left, bottom, right, top
 
 
+def _overview_dof_figure_margins(
+    w_in: float, h_in: float, *, dpi: float = 100.0
+) -> tuple[float, float, float, float]:
+    """Margins for the Overview trajectory panel — maximize plot area."""
+    del dpi, w_in, h_in
+    return 0.0, 0.02, 1.0, 1.0
+
+
 def _apply_single_dof_camera(ax: Axes) -> None:
     """Pull the camera back slightly so projected cube corners stay in frame."""
     try:
-        ax.dist = _SINGLE_TRAJ_CAMERA_DIST
+        overview = bool(getattr(ax, "_stablewalk_overview_dock", False))
+        ax.dist = 6.2 if overview else _SINGLE_TRAJ_CAMERA_DIST
     except AttributeError:
         pass
 
@@ -306,9 +506,14 @@ def _layout_single_dof_figure(ax: Axes, *, foot_mode: bool = False) -> None:
     """Lay out the 3D axes with generous margins so labels and cube edges fit."""
     fig = ax.figure
     w_in, h_in = fig.get_size_inches()
-    left, bottom, right, top = _single_dof_figure_margins(
-        w_in, h_in, dpi=fig.get_dpi(), foot_mode=foot_mode
-    )
+    if getattr(ax, "_stablewalk_overview_dock", False):
+        left, bottom, right, top = _overview_dof_figure_margins(
+            w_in, h_in, dpi=fig.get_dpi()
+        )
+    else:
+        left, bottom, right, top = _single_dof_figure_margins(
+            w_in, h_in, dpi=fig.get_dpi(), foot_mode=foot_mode
+        )
     fig.subplots_adjust(left=left, bottom=bottom, right=right, top=top)
     fig.patch.set_facecolor(PANEL)
     _apply_single_dof_camera(ax)
@@ -320,9 +525,20 @@ def relayout_single_dof_viewport(ax: Axes) -> None:
     _layout_single_dof_figure(ax, foot_mode=foot_mode)
 
 
-def _single_traj_box_zoom(w_in: float, h_in: float, *, dpi: float = 100.0) -> float:
+def _single_traj_box_zoom(
+    w_in: float,
+    h_in: float,
+    *,
+    dpi: float = 100.0,
+    overview_dock: bool = False,
+) -> float:
     """Shrink the 3D cube on short/wide panels so projected corners stay in view."""
+    if overview_dock:
+        return 1.0
     h_px = h_in * dpi
+    aspect = w_in / max(h_in, 0.1)
+    if aspect > 2.5:
+        return 0.68
     if h_px < 280:
         return _SINGLE_TRAJ_BOX_ZOOM_SHORT
     if h_px < 420:
@@ -419,6 +635,52 @@ def _viewport_for_single_dof_trajectory(
     )
 
 
+def _viewport_for_overview_dock(
+    xs: list[float],
+    ys: list[float],
+    zs: list[float],
+    *,
+    floor_y: float | None = None,
+) -> _SingleTrajViewport:
+    """
+    Overview sidebar: fit each axis to the path span (no cubic inflation).
+
+    Keeps axis ticks aligned with ROM metrics and makes the path fill the view
+    instead of sitting in a large empty cube offset far from the origin.
+    """
+    limits: list[tuple[float, float]] = []
+    spans: list[float] = []
+    min_span = 0.004
+    pad_frac = 0.10
+
+    for axis_idx, vals in enumerate((xs, ys, zs)):
+        lo, hi = min(vals), max(vals)
+        if axis_idx == 1 and floor_y is not None:
+            lo = min(lo, floor_y)
+        span = max(hi - lo, min_span)
+        margin = span * pad_frac
+        limits.append((lo - margin, hi + margin))
+        spans.append(span)
+
+    max_span = max(spans)
+    display_spans = tuple(
+        max(s, max_span * _OVERVIEW_MIN_AXIS_RATIO) for s in spans
+    )
+
+    elev, azim = _camera_for_single_dof_trajectory(display_spans)
+    if floor_y is not None:
+        elev, azim = _FOOT_VIEW_ELEV, _FOOT_VIEW_AZIM
+
+    return _SingleTrajViewport(
+        xlim=limits[0],
+        ylim=limits[1],
+        zlim=limits[2],
+        box_aspect=display_spans,
+        elev=elev,
+        azim=azim,
+    )
+
+
 def _path_max_span(path: list[Vec3]) -> float:
     if not path:
         return _SINGLE_TRAJ_MIN_AXIS_SPAN
@@ -479,6 +741,410 @@ def trajectory_progression_status(path: list[Vec3]) -> str:
     if _PROGRESS_LABEL_START in labels:
         return "Start → current"
     return "current"
+
+
+@dataclass(frozen=True)
+class OverviewTrajSummary:
+    """Compact metrics for the Overview 3D path sidebar."""
+
+    path_length_cm: float
+    span_x_cm: float
+    span_y_cm: float
+    span_z_cm: float
+    max_span_cm: float
+    dominant_axis: str
+    motion_level: str
+    samples: int
+    position_cm: tuple[float, float, float] | None
+    metrics_line: str
+    detail_line: str
+    motion_line: str
+    video_line: str
+
+
+def _joint_leg_side(joint_id: str | None) -> str | None:
+    if not joint_id:
+        return None
+    if joint_id.startswith("right_"):
+        return "right"
+    if joint_id.startswith("left_"):
+        return "left"
+    return None
+
+
+def _flexion_display(
+    joint_label: str,
+    current_deg: float,
+    min_deg: float,
+    max_deg: float,
+) -> tuple[str, float, float, float]:
+    """Show anatomical flexion (0=extension) for hinge joints when angles are obtuse."""
+    joint_lower = joint_label.lower()
+    if not any(token in joint_lower for token in ("knee", "hip", "elbow")):
+        return "Angle", current_deg, min_deg, max_deg
+    if max(current_deg, min_deg, max_deg) <= 90.0:
+        return "Angle", current_deg, min_deg, max_deg
+    cur = 180.0 - current_deg
+    lo = 180.0 - max_deg
+    hi = 180.0 - min_deg
+    return "Flex", cur, lo, hi
+
+
+def _is_front_facing_view(view_type: str | None) -> bool:
+    vt = (view_type or "").upper()
+    return vt in ("FRONTAL", "OBLIQUE") or (
+        vt not in ("SAGITTAL_LEFT", "SAGITTAL_RIGHT", "UNKNOWN", "")
+    )
+
+
+def _is_sagittal_view(view_type: str | None) -> bool:
+    vt = (view_type or "").upper()
+    return vt.startswith("SAGITTAL")
+
+
+def _trajectory_path_caption(
+    joint_label: str,
+    joint_id: str | None,
+    *,
+    view_type: str | None,
+    dominant_axis: str,
+    motion_level: str,
+    span_x_cm: float,
+    span_y_cm: float,
+    span_z_cm: float,
+) -> str:
+    """One-line link between path shape in the 3D box and what the video shows."""
+    joint_lower = joint_label.lower()
+    side = _joint_leg_side(joint_id)
+    leg = side.title() if side else "Joint"
+
+    if "knee" in joint_lower:
+        if (
+            span_x_cm >= max(span_z_cm * 0.85, 4.0)
+            and motion_level in ("Moderate", "Large")
+            and _is_front_facing_view(view_type)
+            and not _is_sagittal_view(view_type)
+        ):
+            return (
+                f"{leg} knee zig-zags side-to-side — each swing left/right "
+                f"matches a step in this front-view walk."
+            )
+        if dominant_axis == "Side (X)" and motion_level in ("Moderate", "Large"):
+            if _is_front_facing_view(view_type) and not _is_sagittal_view(view_type):
+                return (
+                    f"{leg} knee zig-zags side-to-side — each swing left/right "
+                    f"matches a step in this front-view walk."
+                )
+            if _is_sagittal_view(view_type):
+                return (
+                    f"{leg} knee path on side (X) — in a side-view clip, "
+                    f"forward stepping often appears along X in this box."
+                )
+        if dominant_axis == "Forward (Z)" and motion_level in ("Moderate", "Large"):
+            if _is_sagittal_view(view_type):
+                return (
+                    f"{leg} knee loops forward and up — matches flexion and "
+                    f"extension during side-view steps."
+                )
+            return (
+                f"{leg} knee path grows forward (Z) as the leg moves through "
+                f"each step."
+            )
+        if dominant_axis == "Up (Y)" and span_y_cm >= 4.0:
+            return (
+                f"{leg} knee lifts vertically during swing — up/down motion "
+                f"in the path matches the video."
+            )
+
+    if ("hip" in joint_lower or "pelvis" in joint_lower) and motion_level == "Small":
+        return (
+            "Compact hip path — small shift while stepping; typical with "
+            "walker-assisted or slow gait."
+        )
+
+    if dominant_axis == "Side (X)" and _is_front_facing_view(view_type):
+        return (
+            f"Side-to-side path is expected in front-view walking — "
+            f"the joint shifts left/right relative to the pelvis each step."
+        )
+
+    if dominant_axis == "Forward (Z)" and _is_sagittal_view(view_type):
+        return (
+            "Forward path in side-view video — stepping toward/away from "
+            "the camera shows mainly along Z here."
+        )
+
+    return (
+        "Blue path = movement so far vs pelvis; green = start, red = now "
+        "in the current video frame."
+    )
+
+
+def _video_explanation(
+    joint_label: str,
+    joint_id: str | None,
+    *,
+    gait_phase: str | None,
+    left_contact: str | None,
+    right_contact: str | None,
+    motion_level: str,
+    dominant_axis: str,
+    view_type: str | None = None,
+    span_x_cm: float = 0.0,
+    span_y_cm: float = 0.0,
+    span_z_cm: float = 0.0,
+) -> str:
+    """Plain-language link between path metrics and what the video shows."""
+    caption = _trajectory_path_caption(
+        joint_label,
+        joint_id,
+        view_type=view_type,
+        dominant_axis=dominant_axis,
+        motion_level=motion_level,
+        span_x_cm=span_x_cm,
+        span_y_cm=span_y_cm,
+        span_z_cm=span_z_cm,
+    )
+    if caption and "Blue path =" not in caption:
+        return caption
+
+    joint_lower = joint_label.lower()
+    side = _joint_leg_side(joint_id)
+    phase_upper = (gait_phase or "").upper()
+
+    if "hip" in joint_lower or "pelvis" in joint_lower:
+        if motion_level == "Small":
+            return "Matches video: hip stays near pelvis (typical with walker/slow gait)."
+        return "Matches video: hip shifting while stepping."
+
+    if "knee" in joint_lower and side is not None:
+        contact = right_contact if side == "right" else left_contact
+        contact_upper = (contact or "").upper()
+        leg = side.title()
+        if "SWING" in contact_upper:
+            if "Forward" in dominant_axis:
+                return f"Matches video: {leg} knee swinging — path grows forward (Z)."
+            return f"Matches video: {leg} leg swinging through step."
+        if "CONTACT" in contact_upper:
+            return f"Matches video: {leg} knee on stance leg — smaller path while foot supports."
+
+    if "DOUBLE" in phase_upper:
+        return "Matches video: both feet on ground — joint path stays compact."
+
+    if "STANCE" in phase_upper:
+        return "Matches video: weight on one leg — path reflects stance vs swing motion."
+
+    return "Blue path = joint movement so far; red dot = position in current video frame."
+
+
+def _motion_level_for_joint(joint_label: str, max_span_cm: float) -> str:
+    """Joint-aware ROM size — hips move less than knees in pelvis-relative space."""
+    joint_lower = joint_label.lower()
+    if "hip" in joint_lower or "pelvis" in joint_lower:
+        small, moderate = 3.0, 8.0
+    elif any(
+        token in joint_lower
+        for token in ("knee", "ankle", "foot", "heel", "toe")
+    ):
+        small, moderate = 6.0, 18.0
+    else:
+        small, moderate = 3.0, 15.0
+    if max_span_cm < small:
+        return "Small"
+    if max_span_cm < moderate:
+        return "Moderate"
+    return "Large"
+
+
+def _joint_angle_window_stats(
+    recording: GaitMotionRecording | None,
+    joint_id: str,
+    end_frame_float: float,
+) -> tuple[float, float, float] | None:
+    """Current, min, and max joint angle (deg) from clip start through playback."""
+    if recording is None or recording.frame_count <= 0:
+        return None
+    ts = recording.build_time_series()
+    series = ts.angles.get(joint_id, [])
+    if not series:
+        return None
+    last_i = int(min(max(0, end_frame_float), len(series) - 1))
+    window = [float(a) for a in series[: last_i + 1] if a is not None]
+    if not window:
+        return None
+    return (window[-1], min(window), max(window))
+
+
+def _format_delta_cm(delta: tuple[float, float, float]) -> str:
+    dx, dy, dz = delta
+    return (
+        f"Move side {dx:+.1f} · up {dy:+.1f} · fwd {dz:+.1f} cm from start"
+    )
+
+
+def _path_speed_stats_cm_s(
+    path_with_times: list[tuple[Vec3, float]],
+) -> tuple[float | None, float | None]:
+    """Average and peak segment speed along the path (cm/s)."""
+    if len(path_with_times) < 2:
+        return None, None
+    speeds: list[float] = []
+    for i in range(1, len(path_with_times)):
+        p0, t0 = path_with_times[i - 1]
+        p1, t1 = path_with_times[i]
+        dt = t1 - t0
+        if dt <= 1e-9:
+            continue
+        dist_cm = _point_distance(p0, p1) * 100.0
+        speeds.append(dist_cm / dt)
+    if not speeds:
+        return None, None
+    return sum(speeds) / len(speeds), max(speeds)
+
+
+def summarize_overview_trajectory(
+    path_with_times: list[tuple[Vec3, float]],
+    *,
+    joint_label: str = "Joint",
+    recording: GaitMotionRecording | None = None,
+    joint_id: str | None = None,
+    end_frame_float: float = 0.0,
+    gait_mode: str | None = None,
+    gait_phase: str | None = None,
+    left_contact: str | None = None,
+    right_contact: str | None = None,
+    progress_pct: float | None = None,
+    elapsed_s: float | None = None,
+    frame_index: int | None = None,
+    frame_count: int | None = None,
+    view_type: str | None = None,
+) -> OverviewTrajSummary | None:
+    """Build readable Overview metrics from a pelvis-relative joint path."""
+    if not path_with_times:
+        return None
+    from stablewalk.ui.dashboard_interpretability import (
+        evaluate_trajectory_readiness,
+        format_trajectory_confidence,
+    )
+
+    positions = [p for p, _t in path_with_times]
+    xs = [p.x for p in positions]
+    ys = [p.y for p in positions]
+    zs = [p.z for p in positions]
+    span_x = (max(xs) - min(xs)) * 100.0
+    span_y = (max(ys) - min(ys)) * 100.0
+    span_z = (max(zs) - min(zs)) * 100.0
+    spans = {"Side (X)": span_x, "Up (Y)": span_y, "Forward (Z)": span_z}
+    dominant_axis = max(spans, key=spans.get)
+    max_span = max(span_x, span_y, span_z)
+    path_len = sum(
+        _point_distance(positions[i - 1], positions[i])
+        for i in range(1, len(positions))
+    ) * 100.0
+    avg_speed, max_speed = _path_speed_stats_cm_s(path_with_times)
+    readiness = evaluate_trajectory_readiness(positions, min_samples=2)
+    traj_metrics = readiness.metrics
+    max_dev_cm = (
+        traj_metrics.max_deviation_m * 100.0 if traj_metrics is not None else max_span
+    )
+    smooth_label = traj_metrics.smoothness if traj_metrics is not None else "—"
+    conf_label = format_trajectory_confidence(readiness.confidence)
+    motion_level = _motion_level_for_joint(joint_label, max_span)
+    start = positions[0]
+    current = positions[-1]
+    pos_cm = (current.x * 100.0, current.y * 100.0, current.z * 100.0)
+    delta_cm = (
+        (current.x - start.x) * 100.0,
+        (current.y - start.y) * 100.0,
+        (current.z - start.z) * 100.0,
+    )
+    speed_bits: list[str] = []
+    if avg_speed is not None:
+        speed_bits.append(f"Avg {avg_speed:.0f} cm/s")
+    if max_speed is not None:
+        speed_bits.append(f"Max {max_speed:.0f} cm/s")
+    if speed_bits:
+        quality_line = (
+            f"Smooth {smooth_label} · Conf {conf_label} · "
+            f"{' · '.join(speed_bits)}"
+        )
+    else:
+        quality_line = (
+            f"Smooth {smooth_label} · Conf {conf_label} · {len(positions)} pts"
+        )
+    metrics_line = (
+        f"Travel {path_len:.1f} cm  ·  ROM max {max_span:.1f} cm  ·  "
+        f"side {span_x:.1f} · up {span_y:.1f} · fwd {span_z:.1f} cm"
+    )
+    sync_bits: list[str] = []
+    if frame_index is not None and frame_count is not None and frame_count > 0:
+        sync_bits.append(f"Frame {frame_index + 1}/{frame_count}")
+    if elapsed_s is not None:
+        sync_bits.append(f"{elapsed_s:.2f}s")
+    if progress_pct is not None:
+        sync_bits.append(f"{progress_pct:.0f}%")
+    angle_stats = (
+        _joint_angle_window_stats(recording, joint_id, end_frame_float)
+        if joint_id
+        else None
+    )
+    angle_part = ""
+    if angle_stats is not None:
+        current_deg, min_deg, max_deg = angle_stats
+        label, cur, lo, hi = _flexion_display(
+            joint_label, current_deg, min_deg, max_deg
+        )
+        angle_part = f" · {label} {cur:.0f}° ({lo:.0f}–{hi:.0f}°)"
+    explanation = _video_explanation(
+        joint_label,
+        joint_id,
+        gait_phase=gait_phase,
+        left_contact=left_contact,
+        right_contact=right_contact,
+        motion_level=motion_level,
+        dominant_axis=dominant_axis,
+        view_type=view_type,
+        span_x_cm=span_x,
+        span_y_cm=span_y,
+        span_z_cm=span_z,
+    )
+    context_bits: list[str] = []
+    if gait_mode:
+        context_bits.append(gait_mode)
+    if gait_phase and gait_phase not in ("—", ""):
+        context_bits.append(gait_phase)
+    side = _joint_leg_side(joint_id)
+    if side == "right" and right_contact:
+        context_bits.append(f"R {right_contact}")
+    elif side == "left" and left_contact:
+        context_bits.append(f"L {left_contact}")
+    motion_bits = [
+        f"Now ({pos_cm[0]:.1f}, {pos_cm[1]:.1f}, {pos_cm[2]:.1f}) cm",
+        motion_level,
+        dominant_axis,
+        _format_delta_cm(delta_cm),
+    ]
+    if angle_part:
+        motion_bits.append(angle_part.strip(" ·"))
+    detail_parts = sync_bits + context_bits + motion_bits + [quality_line]
+    detail_line = " · ".join(detail_parts)
+    video_line = explanation
+    motion_line = "● Start (green)  —  blue path  —  ● Now (red)  ·  cm vs pelvis"
+    return OverviewTrajSummary(
+        path_length_cm=path_len,
+        span_x_cm=span_x,
+        span_y_cm=span_y,
+        span_z_cm=span_z,
+        max_span_cm=max_span,
+        dominant_axis=dominant_axis,
+        motion_level=motion_level,
+        samples=len(positions),
+        position_cm=pos_cm,
+        metrics_line=metrics_line,
+        detail_line=detail_line,
+        motion_line=motion_line,
+        video_line=video_line,
+    )
 
 
 def _tangent_at_index(path: list[Vec3], index: int) -> tuple[float, float, float]:
@@ -624,6 +1290,183 @@ def _draw_spatial_cube_frame(
         _edge(bottom[index], top[index])
 
 
+def _draw_overview_trajectory_explainers(
+    ax: Axes,
+    *,
+    path: list[Vec3],
+    start: Vec3,
+    current: Vec3,
+    caption: str | None = None,
+    metrics_line: str | None = None,
+) -> list[object]:
+    """
+    Overview dock: wireframe cube, corner axis hints, and one caption line.
+
+    Travel, ROM, and coordinates are shown in the text panel below the graph
+    so values stay readable (especially on athletic / side-view clips).
+    """
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    zlim = ax.get_zlim()
+    x0, x1 = xlim
+    y0, y1 = ylim
+    z0, z1 = zlim
+
+    line_before = len(ax.lines)
+    text_before = len(ax.texts)
+
+    _draw_spatial_cube_frame(ax, xlim, ylim, zlim)
+
+    ax.text(
+        x0,
+        y0,
+        z1,
+        " side → X",
+        color=_OVERVIEW_AXIS_X_COLOR,
+        fontsize=8.5,
+        ha="left",
+        va="bottom",
+        zorder=3,
+        fontweight="bold",
+    )
+    ax.text(
+        x0,
+        y1,
+        z0,
+        " ↑ Y up",
+        color=_OVERVIEW_AXIS_Y_COLOR,
+        fontsize=8.5,
+        ha="left",
+        va="bottom",
+        zorder=3,
+        fontweight="bold",
+    )
+    ax.text(
+        x1,
+        y0,
+        z0,
+        " fwd → Z",
+        color=_OVERVIEW_AXIS_Z_COLOR,
+        fontsize=8.5,
+        ha="right",
+        va="bottom",
+        zorder=3,
+        fontweight="bold",
+    )
+
+    artists: list[object] = []
+    if metrics_line:
+        metrics_artist = ax.text2D(
+            0.5,
+            0.97,
+            metrics_line,
+            transform=ax.transAxes,
+            ha="center",
+            va="top",
+            fontsize=8,
+            color=ACCENT,
+            fontweight="bold",
+            zorder=12,
+            bbox=dict(
+                boxstyle="round,pad=0.25",
+                facecolor=PANEL,
+                edgecolor=BORDER,
+                alpha=0.92,
+                linewidth=0.5,
+            ),
+        )
+        artists.append(metrics_artist)
+    if caption:
+        caption_artist = ax.text2D(
+            0.5,
+            0.03,
+            caption,
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=7.5,
+            color=TEXT,
+            linespacing=1.25,
+            wrap=True,
+            zorder=12,
+            bbox=dict(
+                boxstyle="round,pad=0.3",
+                facecolor=PANEL,
+                edgecolor=BORDER,
+                alpha=0.92,
+                linewidth=0.5,
+            ),
+        )
+        artists.append(caption_artist)
+
+    artists.extend(ax.lines[line_before:])
+    artists.extend(ax.texts[text_before:])
+    return artists
+
+
+def _stable_viewport_for_joint(
+    recording: GaitMotionRecording,
+    joint_id: str,
+    *,
+    coord_mode: str = _COORD_ROOT_RELATIVE,
+    motion_series: object | None = None,
+    floor_y: float | None = None,
+) -> _SingleTrajViewport | None:
+    """Axis limits from the full valid trajectory (stable during playback)."""
+    full_path = _joint_path_with_times(
+        recording,
+        joint_id,
+        float(recording.frame_count - 1),
+        coord_mode=coord_mode,
+        motion_series=motion_series,
+    )
+    if len(full_path) < 2:
+        return None
+    xs = [p.x for p, _t in full_path]
+    ys = [p.y for p, _t in full_path]
+    zs = [p.z for p, _t in full_path]
+    limit_ys = list(ys)
+    if floor_y is not None:
+        limit_ys.append(floor_y)
+    return _viewport_for_single_dof_trajectory(xs, limit_ys, zs, floor_y=floor_y)
+
+
+def _get_cached_stable_viewport(
+    ax: Axes,
+    recording: GaitMotionRecording,
+    joint_id: str,
+    *,
+    coord_mode: str,
+    motion_series: object | None,
+    floor_y: float | None,
+) -> _SingleTrajViewport | None:
+    key = (joint_id, coord_mode, floor_y)
+    cached = getattr(ax, "_stablewalk_stable_viewport", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    full_path = _joint_path_with_times(
+        recording,
+        joint_id,
+        float(recording.frame_count - 1),
+        coord_mode=coord_mode,
+        motion_series=motion_series,
+    )
+    if len(full_path) < 2:
+        return None
+    xs = [p.x for p, _t in full_path]
+    ys = [p.y for p, _t in full_path]
+    zs = [p.z for p, _t in full_path]
+    limit_ys = list(ys)
+    if floor_y is not None:
+        limit_ys.append(floor_y)
+    if bool(getattr(ax, "_stablewalk_overview_dock", False)):
+        viewport = _viewport_for_overview_dock(xs, limit_ys, zs, floor_y=floor_y)
+    else:
+        viewport = _viewport_for_single_dof_trajectory(xs, limit_ys, zs, floor_y=floor_y)
+    ax._stablewalk_stable_viewport = (key, viewport)
+    return viewport
+
+
 def _apply_single_dof_limits(
     ax: Axes,
     xs: list[float],
@@ -631,13 +1474,44 @@ def _apply_single_dof_limits(
     zs: list[float],
     *,
     floor_y: float | None = None,
+    stable_viewport: _SingleTrajViewport | None = None,
 ) -> None:
     """
-    Fit each axis to the visible trajectory (start through current frame).
+    Set axis limits for the 3D trajectory panel.
 
-    Limits follow the drawn path so motion fills the view instead of sitting
-    inside an oversized empty cube or a tiny segment of a large volume.
+    When ``stable_viewport`` is provided, limits stay fixed to the full
+    recording trajectory so playback growth is visible instead of re-zooming
+    every frame to the partial path.
     """
+    if stable_viewport is not None:
+        ax.set_xlim(*stable_viewport.xlim)
+        ax.set_ylim(*stable_viewport.ylim)
+        ax.set_zlim(*stable_viewport.zlim)
+        w_in, h_in = ax.figure.get_size_inches()
+        box_zoom = _single_traj_box_zoom(
+            w_in,
+            h_in,
+            dpi=ax.figure.get_dpi(),
+            overview_dock=bool(getattr(ax, "_stablewalk_overview_dock", False)),
+        )
+        try:
+            ax.set_box_aspect(stable_viewport.box_aspect, zoom=box_zoom)
+        except TypeError:
+            try:
+                ax.set_box_aspect(stable_viewport.box_aspect)
+            except (AttributeError, ValueError):
+                pass
+        except (AttributeError, ValueError):
+            pass
+        ax.view_init(elev=stable_viewport.elev, azim=stable_viewport.azim)
+        _apply_single_dof_camera(ax)
+        try:
+            ax.set_proj_type("persp")
+        except (AttributeError, ValueError):
+            pass
+        _style_single_dof_cube(ax)
+        return
+
     if not xs:
         xlim = (-0.1, 0.1)
         ylim = (0.0, 0.2)
@@ -650,13 +1524,22 @@ def _apply_single_dof_limits(
         _style_single_dof_cube(ax)
         return
 
-    viewport = _viewport_for_single_dof_trajectory(xs, ys, zs, floor_y=floor_y)
+    overview_dock = bool(getattr(ax, "_stablewalk_overview_dock", False))
+    if overview_dock:
+        viewport = _viewport_for_overview_dock(xs, ys, zs, floor_y=floor_y)
+    else:
+        viewport = _viewport_for_single_dof_trajectory(xs, ys, zs, floor_y=floor_y)
     ax.set_xlim(*viewport.xlim)
     ax.set_ylim(*viewport.ylim)
     ax.set_zlim(*viewport.zlim)
 
     w_in, h_in = ax.figure.get_size_inches()
-    box_zoom = _single_traj_box_zoom(w_in, h_in, dpi=ax.figure.get_dpi())
+    box_zoom = _single_traj_box_zoom(
+        w_in,
+        h_in,
+        dpi=ax.figure.get_dpi(),
+        overview_dock=overview_dock,
+    )
     try:
         ax.set_box_aspect(viewport.box_aspect, zoom=box_zoom)
     except TypeError:
@@ -677,10 +1560,69 @@ def _apply_single_dof_limits(
     _style_single_dof_cube(ax)
 
 
+def _transform_position_for_coord_mode(
+    position: Vec3,
+    frame_index: int,
+    *,
+    coord_mode: str,
+    motion_series: object | None,
+) -> Vec3:
+    """Pelvis-relative positions stay as-is; GLOBAL adds per-frame pelvis offset."""
+    if coord_mode != _COORD_GLOBAL or motion_series is None:
+        return position
+    frame_indices = getattr(motion_series, "frame_indices", None)
+    global_pelvis = getattr(motion_series, "global_pelvis", None)
+    if not frame_indices or not global_pelvis:
+        return position
+    try:
+        idx = frame_indices.index(frame_index)
+    except ValueError:
+        return position
+    if idx < 0 or idx >= len(global_pelvis):
+        return position
+    pelvis = global_pelvis[idx]
+    if pelvis is None:
+        return position
+    return Vec3(
+        position.x + float(pelvis[0]),
+        position.y + float(pelvis[1]),
+        position.z + float(pelvis[2]),
+    )
+
+
+def _display_end_frame(
+    display_mode: str,
+    playback_frame_float: float,
+    recording: GaitMotionRecording | None,
+) -> float:
+    """Frame index used for the drawn path extent."""
+    full_modes = (_DISPLAY_FULL_PATH, _DISPLAY_FULL_TRAJECTORY)
+    if display_mode in full_modes and recording and recording.frame_count > 0:
+        return float(recording.frame_count - 1)
+    return playback_frame_float
+
+
+def _view_angles_for_projection(
+    projection_mode: str,
+    spans: tuple[float, float, float] | None = None,
+) -> tuple[float, float]:
+    """Camera angles for 3D axis — frontal/sagittal are fixed viewpoints, not 2D axes."""
+    if projection_mode == _PLANE_PROJECTION_FRONTAL:
+        return 0.0, -90.0
+    if projection_mode == _PLANE_PROJECTION_SAGITTAL:
+        return 0.0, 0.0
+    if spans is not None:
+        return _camera_for_single_dof_trajectory(spans)
+    return _SINGLE_TRAJ_ELEV, _SINGLE_TRAJ_AZIM
+
+
 def _joint_path_with_times(
     recording: GaitMotionRecording,
     joint_id: str,
     end_frame_float: float,
+    *,
+    coord_mode: str = _COORD_ROOT_RELATIVE,
+    motion_series: object | None = None,
 ) -> list[tuple[Vec3, float]]:
     """Joint positions from frame 0 through ``end_frame_float`` with timestamps."""
     if recording.frame_count <= 0:
@@ -694,8 +1636,69 @@ def _joint_path_with_times(
         sample = snap.joints.get(joint_id)
         if sample is None:
             continue
-        out.append((sample.position, float(snap.time_s)))
+        position = _transform_position_for_coord_mode(
+            sample.position,
+            index,
+            coord_mode=coord_mode,
+            motion_series=motion_series,
+        )
+        out.append((position, float(snap.time_s)))
     return out
+
+
+def _resolve_trajectory_points(
+    recording: GaitMotionRecording,
+    joint_id: str,
+    *,
+    playback_frame_float: float,
+    tip_snapshot: SkeletonSnapshot | None,
+    display_mode: str,
+    coord_mode: str,
+    motion_series: object | None,
+) -> tuple[list[tuple[Vec3, float]], Vec3 | None, Vec3 | None]:
+    """
+    Build the displayed path plus current and full-recording end markers.
+
+    Returns (path_with_times, current_position, end_position).
+    """
+    path_end = _display_end_frame(display_mode, playback_frame_float, recording)
+    path_with_times = _joint_path_with_times(
+        recording,
+        joint_id,
+        path_end,
+        coord_mode=coord_mode,
+        motion_series=motion_series,
+    )
+
+    current: Vec3 | None = None
+    if tip_snapshot and joint_id in tip_snapshot.joints:
+        current = _transform_position_for_coord_mode(
+            tip_snapshot.joints[joint_id].position,
+            int(tip_snapshot.frame_index),
+            coord_mode=coord_mode,
+            motion_series=motion_series,
+        )
+        if current is not None and (
+            not path_with_times
+            or abs(path_with_times[-1][0].x - current.x) > 1e-5
+            or abs(path_with_times[-1][0].y - current.y) > 1e-5
+            or abs(path_with_times[-1][0].z - current.z) > 1e-5
+        ):
+            path_with_times = list(path_with_times) + [
+                (current, float(tip_snapshot.time_s))
+            ]
+    elif path_with_times:
+        current = path_with_times[-1][0]
+
+    full_end_path = _joint_path_with_times(
+        recording,
+        joint_id,
+        float(recording.frame_count - 1),
+        coord_mode=coord_mode,
+        motion_series=motion_series,
+    )
+    end_point = full_end_path[-1][0] if full_end_path else None
+    return path_with_times, current, end_point
 
 
 def _foot_bones(snapshot: SkeletonSnapshot, side: str) -> list[tuple[str, str]]:
@@ -1029,19 +2032,26 @@ def _draw_single_dof_trajectory_path(
         segments = np.concatenate([pts[:-1], pts[1:]], axis=1)
         base = mcolors.to_rgb(_PATH_LINE_COLOR)
         seg_count = len(segments)
+        overview = bool(getattr(ax, "_stablewalk_overview_dock", False))
+        alpha_min = _PATH_FADE_ALPHA_MIN
+        if overview and seg_count > 18:
+            alpha_min = max(0.12, _PATH_FADE_ALPHA_MIN * 0.45)
         colors = [
             (
                 base[0],
                 base[1],
                 base[2],
-                _PATH_FADE_ALPHA_MIN
-                + (_PATH_FADE_ALPHA_MAX - _PATH_FADE_ALPHA_MIN)
+                alpha_min
+                + (_PATH_FADE_ALPHA_MAX - alpha_min)
                 * (i / max(seg_count - 1, 1)),
             )
             for i in range(seg_count)
         ]
+        line_w = _PATH_LINE_WIDTH
+        if overview:
+            line_w = max(line_w, 2.8)
         widths = [
-            _PATH_LINE_WIDTH * (0.72 + 0.5 * (i / max(seg_count - 1, 1)))
+            line_w * (0.65 + 0.55 * (i / max(seg_count - 1, 1)))
             for i in range(seg_count)
         ]
         collection = Line3DCollection(
@@ -1259,6 +2269,37 @@ def _draw_single_dof_start_marker(
     )
 
 
+def _draw_single_dof_end_marker(
+    ax: Axes,
+    end: Vec3,
+    *,
+    marker_size: float,
+) -> None:
+    """Blue marker at the latest analyzed position in the full recording."""
+    ax.scatter(
+        [end.x],
+        [end.y],
+        [end.z],
+        facecolors="none",
+        edgecolors=_END_DOT_COLOR,
+        s=marker_size * 1.22,
+        linewidths=1.25,
+        zorder=6,
+        depthshade=False,
+    )
+    ax.scatter(
+        [end.x],
+        [end.y],
+        [end.z],
+        color=_END_DOT_COLOR,
+        s=marker_size * 0.82,
+        edgecolors=_END_DOT_EDGE_COLOR,
+        linewidths=0.9,
+        zorder=7,
+        depthshade=False,
+    )
+
+
 def _format_graph_clearance_label(clearance_m: float) -> str:
     """Short in-graph clearance label (cm, one decimal)."""
     return f"{clearance_m * 100.0:.1f} cm"
@@ -1432,6 +2473,138 @@ def _draw_foot_ground_drop_line(
     )
 
 
+@dataclass
+class _SingleTrajArtists:
+    """Persistent Matplotlib artists for playback updates (no canvas recreation)."""
+
+    path_line: object | None = None
+    start_ring: object | None = None
+    start_dot: object | None = None
+    current_ring: object | None = None
+    current_dot: object | None = None
+    decorations: list = field(default_factory=list)
+
+
+def _traj_artists(ax: Axes) -> _SingleTrajArtists:
+    state = getattr(ax, "_stablewalk_traj_artists", None)
+    if state is None:
+        state = _SingleTrajArtists()
+        ax._stablewalk_traj_artists = state
+    return state
+
+
+def _clear_traj_decorations(ax: Axes) -> None:
+    state = _traj_artists(ax)
+    for artist in state.decorations:
+        try:
+            artist.remove()
+        except Exception:
+            pass
+    state.decorations.clear()
+
+
+def _update_scatter3d(scatter, x: float, y: float, z: float) -> None:
+    if scatter is None:
+        return
+    scatter._offsets3d = ([x], [y], [z])  # type: ignore[attr-defined]
+
+
+def _ensure_trajectory_path_line(ax: Axes, xs: list[float], ys: list[float], zs: list[float]) -> None:
+    """Create or update the main path line without recreating the canvas."""
+    state = _traj_artists(ax)
+    if len(xs) < 2:
+        if state.path_line is not None:
+            try:
+                state.path_line.remove()
+            except Exception:
+                pass
+            state.path_line = None
+        return
+    if state.path_line is None:
+        line_w = _PATH_LINE_WIDTH
+        if getattr(ax, "_stablewalk_overview_dock", False):
+            line_w = max(line_w, 3.2)
+        (state.path_line,) = ax.plot(
+            xs,
+            ys,
+            zs,
+            color=_PATH_LINE_COLOR,
+            linewidth=line_w,
+            alpha=_PATH_ALPHA,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            zorder=4,
+        )
+    else:
+        state.path_line.set_data(xs, ys)
+        state.path_line.set_3d_properties(zs)
+
+
+def _ensure_start_marker(ax: Axes, start: Vec3, *, marker_size: float) -> None:
+    """Persistent green Start marker — updated via set_data during playback."""
+    state = _traj_artists(ax)
+    if state.start_ring is None:
+        state.start_ring = ax.scatter(
+            [start.x],
+            [start.y],
+            [start.z],
+            facecolors="none",
+            edgecolors=_START_DOT_COLOR,
+            s=marker_size * 1.28,
+            linewidths=1.35,
+            zorder=6,
+            depthshade=False,
+        )
+    else:
+        _update_scatter3d(state.start_ring, start.x, start.y, start.z)
+    if state.start_dot is None:
+        state.start_dot = ax.scatter(
+            [start.x],
+            [start.y],
+            [start.z],
+            color=_START_DOT_COLOR,
+            s=marker_size * 0.88,
+            edgecolors=_START_DOT_EDGE_COLOR,
+            linewidths=1.0,
+            zorder=7,
+            depthshade=False,
+        )
+    else:
+        _update_scatter3d(state.start_dot, start.x, start.y, start.z)
+
+
+def _ensure_current_marker(ax: Axes, point: Vec3, *, marker_size: float) -> None:
+    state = _traj_artists(ax)
+    if state.current_ring is None:
+        state.current_ring = ax.scatter(
+            [point.x],
+            [point.y],
+            [point.z],
+            facecolors="none",
+            edgecolors=_CURRENT_DOT_COLOR,
+            s=marker_size * 1.32,
+            linewidths=1.35,
+            zorder=8,
+            depthshade=False,
+        )
+    else:
+        _update_scatter3d(state.current_ring, point.x, point.y, point.z)
+    if state.current_dot is None:
+        state.current_dot = ax.scatter(
+            [point.x],
+            [point.y],
+            [point.z],
+            color=_CURRENT_DOT_COLOR,
+            s=marker_size * 0.88,
+            edgecolors="#fff0f2",
+            linewidths=1.0,
+            zorder=9,
+            depthshade=False,
+        )
+    else:
+        _update_scatter3d(state.current_dot, point.x, point.y, point.z)
+
+
 def draw_single_dof_trajectory_3d(
     ax: Axes,
     recording: GaitMotionRecording | None,
@@ -1440,6 +2613,10 @@ def draw_single_dof_trajectory_3d(
     end_frame_float: float = 0.0,
     tip_snapshot: SkeletonSnapshot | None = None,
     clear: bool = True,
+    display_mode: str = _DISPLAY_CURRENT_PROGRESS,
+    coord_mode: str = _COORD_ROOT_RELATIVE,
+    motion_series: object | None = None,
+    projection_mode: str = _PLANE_PROJECTION_3D,
 ) -> tuple[bool, str]:
     """
     Plot one selected body point in a 3D coordinate system.
@@ -1451,14 +2628,20 @@ def draw_single_dof_trajectory_3d(
     """
     if clear:
         ax.cla()
+        if hasattr(ax, "_stablewalk_traj_artists"):
+            del ax._stablewalk_traj_artists
+        if hasattr(ax, "_stablewalk_stable_viewport"):
+            del ax._stablewalk_stable_viewport
+        ax._stablewalk_plot_legend = None
     ax._stablewalk_foot_view = False
-    setup_single_dof_trajectory_axes(ax)
+    if clear:
+        setup_single_dof_trajectory_axes(ax)
 
     if not item_id:
         ax.text2D(
             0.5,
             0.5,
-            "Select a body point",
+            "Select a joint to view its 3D movement path",
             transform=ax.transAxes,
             ha="center",
             va="center",
@@ -1466,6 +2649,7 @@ def draw_single_dof_trajectory_3d(
             fontsize=10,
         )
         relayout_single_dof_viewport(ax)
+        _ensure_trajectory_plot_legend(ax)
         return False, ""
 
     if not recording or not recording.snapshots:
@@ -1497,20 +2681,15 @@ def draw_single_dof_trajectory_3d(
         relayout_single_dof_viewport(ax)
         return False, ""
 
-    path_with_times = _joint_path_with_times(recording, joint_id, end_frame_float)
-    current: Vec3 | None = None
-    current_time_s: float | None = None
-    if tip_snapshot and joint_id in tip_snapshot.joints:
-        current = tip_snapshot.joints[joint_id].position
-        current_time_s = float(tip_snapshot.time_s)
-        if not path_with_times or (
-            abs(path_with_times[-1][0].x - current.x) > 1e-5
-            or abs(path_with_times[-1][0].y - current.y) > 1e-5
-            or abs(path_with_times[-1][0].z - current.z) > 1e-5
-        ):
-            path_with_times = list(path_with_times) + [(current, current_time_s)]
-    elif path_with_times:
-        current, current_time_s = path_with_times[-1]
+    path_with_times, current, end_point = _resolve_trajectory_points(
+        recording,
+        joint_id,
+        playback_frame_float=end_frame_float,
+        tip_snapshot=tip_snapshot,
+        display_mode=display_mode,
+        coord_mode=coord_mode,
+        motion_series=motion_series,
+    )
 
     if not path_with_times:
         dof_label = label_for_item(item_id)
@@ -1541,12 +2720,33 @@ def draw_single_dof_trajectory_3d(
         max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)) if xs else 0.0
     )
     start = path[0]
+    state = _traj_artists(ax)
 
-    # Path line plus progressive dots and a direction arrow, so the trail and its
-    # direction read clearly even when the point only moves a little.
-    _draw_single_dof_trajectory_path(ax, xs, ys, zs)
-    _draw_path_progress_dots(ax, path, marker_scale=marker_scale)
-    _draw_single_dof_direction_arrow(ax, path, span=span)
+    _clear_traj_decorations(ax)
+    overview_dock = bool(getattr(ax, "_stablewalk_overview_dock", False))
+    if overview_dock:
+        if state.path_line is not None:
+            try:
+                state.path_line.remove()
+            except Exception:
+                pass
+            state.path_line = None
+        coll_before = len(ax.collections)
+        _draw_single_dof_trajectory_path(ax, xs, ys, zs)
+        state.decorations.extend(ax.collections[coll_before:])
+    else:
+        _ensure_trajectory_path_line(ax, xs, ys, zs)
+    if overview_dock:
+        patch_before = len(ax.patches)
+        _draw_single_dof_direction_arrow(ax, path, span=span)
+        state.decorations.extend(ax.patches[patch_before:])
+    else:
+        coll_before = len(ax.collections)
+        _draw_path_progress_dots(ax, path, marker_scale=marker_scale)
+        state.decorations.extend(ax.collections[coll_before:])
+        patch_before = len(ax.patches)
+        _draw_single_dof_direction_arrow(ax, path, span=span)
+        state.decorations.extend(ax.patches[patch_before:])
 
     from stablewalk.analysis.ground_reference import FOOT_POINT_IDS, estimate_ground_plane
 
@@ -1564,13 +2764,31 @@ def draw_single_dof_trajectory_3d(
     if floor_y is not None:
         limit_ys.append(floor_y)
 
-    _apply_single_dof_limits(ax, xs, limit_ys, zs, floor_y=floor_y)
+    stable_viewport = None
+    if not getattr(ax, "_stablewalk_overview_use_progress_viewport", False):
+        stable_viewport = _get_cached_stable_viewport(
+            ax,
+            recording,
+            joint_id,
+            coord_mode=coord_mode,
+            motion_series=motion_series,
+            floor_y=floor_y,
+        )
+    _apply_single_dof_limits(
+        ax,
+        xs,
+        limit_ys,
+        zs,
+        floor_y=floor_y,
+        stable_viewport=stable_viewport,
+    )
     _style_single_dof_trajectory_ticks(ax)
 
-    # Floor shadow for non-foot points (foot points already get a real ground
-    # plane + drop line below). The shadow is a pure depth aid for the 3D path.
+    # Floor shadow helps depth reading on Overview and Motion tabs.
     if not foot_view:
+        shadow_before = len(ax.collections)
         _draw_path_floor_shadow(ax, xs, ys, zs)
+        state.decorations.extend(ax.collections[shadow_before:])
 
     if foot_view and floor_y is not None and current is not None:
         _draw_ground_plane_reference(
@@ -1583,46 +2801,28 @@ def draw_single_dof_trajectory_3d(
         drop_plane = plane if plane is not None else floor_y
         _draw_foot_ground_drop_line(ax, current, drop_plane, span=span)
 
-    # Treat a point that ends roughly where it began (relative to its own travel
-    # range) as stationary, so it gets one clean label instead of two labels
-    # spread apart with leaders — the latter looked like motion that isn't there.
-    close_threshold = max(span * 0.18, 1e-4)
-    coincident = current is not None and (
-        _positions_match(start, current)
-        or _point_distance(start, current) < close_threshold
-    )
-    _draw_single_dof_start_marker(
-        ax,
-        start,
-        marker_size=start_size,
-        ring_only=coincident,
-    )
+    _ensure_start_marker(ax, start, marker_size=start_size)
 
     if current is not None:
-        ax.scatter(
-            [current.x],
-            [current.y],
-            [current.z],
-            facecolors="none",
-            edgecolors=_CURRENT_DOT_COLOR,
-            s=current_size * 1.32,
-            linewidths=1.35,
-            zorder=8,
-            depthshade=False,
-        )
-        ax.scatter(
-            [current.x],
-            [current.y],
-            [current.z],
-            color=_CURRENT_DOT_COLOR,
-            s=current_size * 0.88,
-            edgecolors="#fff0f2",
-            linewidths=1.0,
-            zorder=9,
-            depthshade=False,
-        )
+        _ensure_current_marker(ax, current, marker_size=current_size)
     else:
         ax._stablewalk_foot_view = False
+        for attr in ("current_ring", "current_dot"):
+            artist = getattr(state, attr, None)
+            if artist is not None:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+                setattr(state, attr, None)
+
+    if (
+        end_point is not None
+        and current is not None
+        and not _positions_match(end_point, current)
+        and not _positions_match(end_point, start)
+    ):
+        _draw_single_dof_end_marker(ax, end_point, marker_size=start_size * 0.92)
 
     # No in-cube "Start"/"Now" text boxes: on the small magnified path they sat
     # on top of the line and hid it. The colours are explained by the side
@@ -1631,7 +2831,9 @@ def draw_single_dof_trajectory_3d(
     # When travel is small the cube auto-zooms in, so the path is visible but the
     # scale is tiny. Surface the true travel (as ~% of body height) so the
     # magnified view is read honestly rather than as large motion.
-    if raw_motion < _SINGLE_TRAJ_SMALL_MOTION:
+    if raw_motion < _SINGLE_TRAJ_SMALL_MOTION and not getattr(
+        ax, "_stablewalk_overview_dock", False
+    ):
         ax.text2D(
             0.5,
             0.99,
@@ -1645,8 +2847,68 @@ def draw_single_dof_trajectory_3d(
             zorder=11,
         )
 
+    span_tuple = (
+        max(xs) - min(xs) if xs else 0.0,
+        max(ys) - min(ys) if ys else 0.0,
+        max(zs) - min(zs) if zs else 0.0,
+    )
+    elev, azim = _view_angles_for_projection(projection_mode, span_tuple)
+    ax.view_init(elev=elev, azim=azim)
+    _ensure_trajectory_plot_legend(ax)
     relayout_single_dof_viewport(ax)
-    return True, trajectory_progression_status(path)
+    if getattr(ax, "_stablewalk_overview_dock", False):
+        _apply_overview_trajectory_ticks(ax)
+        if overview_dock and current is not None and len(path) >= 2:
+            span_x_cm = (max(xs) - min(xs)) * 100.0 if xs else 0.0
+            span_y_cm = (max(ys) - min(ys)) * 100.0 if ys else 0.0
+            span_z_cm = (max(zs) - min(zs)) * 100.0 if zs else 0.0
+            spans_map = {"Side (X)": span_x_cm, "Up (Y)": span_y_cm, "Forward (Z)": span_z_cm}
+            dom_axis = max(spans_map, key=spans_map.get)
+            joint_label = label_for_item(item_id) or "Joint"
+            motion_lvl = _motion_level_for_joint(joint_label, max(spans_map.values()))
+            path_caption = _trajectory_path_caption(
+                joint_label,
+                joint_id,
+                view_type=getattr(ax, "_stablewalk_view_type", None),
+                dominant_axis=dom_axis,
+                motion_level=motion_lvl,
+                span_x_cm=span_x_cm,
+                span_y_cm=span_y_cm,
+                span_z_cm=span_z_cm,
+            )
+            path_len_cm = (
+                sum(_point_distance(path[i - 1], path[i]) for i in range(1, len(path)))
+                * 100.0
+            )
+            rom_max_cm = max(span_x_cm, span_y_cm, span_z_cm)
+            hud_metrics = (
+                f"Travel {path_len_cm:.1f} cm  ·  ROM {rom_max_cm:.1f} cm  ·  "
+                f"side {span_x_cm:.1f} · up {span_y_cm:.1f} · fwd {span_z_cm:.1f} cm"
+            )
+            state.decorations.extend(
+                _draw_overview_trajectory_explainers(
+                    ax,
+                    path=path,
+                    start=start,
+                    current=current,
+                    caption=path_caption,
+                    metrics_line=hud_metrics,
+                )
+            )
+    status = trajectory_progression_status(path)
+    if len(path) < 5:
+        ax.text2D(
+            0.5,
+            0.08,
+            f"Insufficient 3D trajectory samples\n\nValid samples: {len(path)}",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color=MUTED,
+            fontsize=9,
+        )
+        return True, f"valid_samples={len(path)}"
+    return True, status
 
 
 def draw_dof_trajectories(
@@ -1820,3 +3082,169 @@ def draw_dof_trajectories(
         )
 
     return TrajectoryDrawResult(joint_paths=drawn, has_motion=True)
+
+
+# ── Legacy 2D plane helpers (retained for tests; dashboard uses 3D camera views) ─
+
+
+def setup_plane_trajectory_axes(ax: Axes, mode: str) -> None:
+    """2D plane axes with descriptive labels (no clipping)."""
+    ax.set_facecolor(PANEL)
+    ax.figure.patch.set_facecolor(PANEL)
+    if mode == _PLANE_PROJECTION_FRONTAL:
+        ax.set_xlabel("X — Mediolateral (m)", color=TEXT, fontsize=8, labelpad=4)
+        ax.set_ylabel("Y — Vertical (m)", color=TEXT, fontsize=8, labelpad=4)
+    else:
+        ax.set_xlabel("Z — Forward (m)", color=TEXT, fontsize=8, labelpad=4)
+        ax.set_ylabel("Y — Vertical (m)", color=TEXT, fontsize=8, labelpad=4)
+    ax.tick_params(colors=MUTED, labelsize=7, pad=2)
+    ax.grid(True, color=BORDER, alpha=0.35, linestyle="--", linewidth=0.6)
+    for spine in ax.spines.values():
+        spine.set_color(BORDER)
+
+
+def _plane_coords(path: list[Vec3], mode: str) -> tuple[list[float], list[float]]:
+    if mode == _PLANE_PROJECTION_FRONTAL:
+        return [p.x for p in path], [p.y for p in path]
+    return [p.z for p in path], [p.y for p in path]
+
+
+def _apply_plane_limits(ax: Axes, xs: list[float], ys: list[float]) -> None:
+    if not xs:
+        return
+    x_lo, x_hi = min(xs), max(xs)
+    y_lo, y_hi = min(ys), max(ys)
+    x_span = max(x_hi - x_lo, 0.02)
+    y_span = max(y_hi - y_lo, 0.02)
+    pad_x = max(x_span * 0.15, 0.015)
+    pad_y = max(y_span * 0.15, 0.015)
+    ax.set_xlim(x_lo - pad_x, x_hi + pad_x)
+    ax.set_ylim(y_lo - pad_y, y_hi + pad_y)
+    ax.set_aspect("equal", adjustable="box")
+
+
+def draw_single_dof_trajectory_plane(
+    ax: Axes,
+    recording: GaitMotionRecording | None,
+    item_id: str | None,
+    *,
+    mode: str,
+    end_frame_float: float = 0.0,
+    tip_snapshot: SkeletonSnapshot | None = None,
+    clear: bool = True,
+    display_mode: str = _DISPLAY_CURRENT_PROGRESS,
+    coord_mode: str = _COORD_ROOT_RELATIVE,
+    motion_series: object | None = None,
+) -> tuple[bool, str, list[Vec3]]:
+    """Plot joint path projected onto frontal (X-Y) or sagittal (Z-Y) plane."""
+    if clear:
+        ax.cla()
+    setup_plane_trajectory_axes(ax, mode)
+
+    if not item_id or not recording or not recording.snapshots:
+        ax.text(
+            0.5,
+            0.5,
+            "Select a joint to view its 3D movement path",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color=MUTED,
+            fontsize=10,
+        )
+        return False, "", []
+
+    joint_id = anchor_joint_for_item(item_id)
+    if not joint_id:
+        return False, "", []
+
+    path_with_times, current, end_point = _resolve_trajectory_points(
+        recording,
+        joint_id,
+        playback_frame_float=end_frame_float,
+        tip_snapshot=tip_snapshot,
+        display_mode=display_mode,
+        coord_mode=coord_mode,
+        motion_series=motion_series,
+    )
+    if not path_with_times:
+        return False, "", []
+
+    path = [point for point, _time in path_with_times]
+    xs, ys = _plane_coords(path, mode)
+    ax.plot(xs, ys, color=_PATH_LINE_COLOR, linewidth=2.2, alpha=0.9, zorder=4)
+    ax.scatter([xs[0]], [ys[0]], color=_START_DOT_COLOR, s=42, zorder=6, edgecolors=TEXT, linewidths=0.5)
+    if current is not None:
+        cx, cy = _plane_coords([current], mode)
+        ax.scatter(
+            [cx[0]],
+            [cy[0]],
+            color=_CURRENT_DOT_COLOR,
+            s=48,
+            zorder=8,
+            edgecolors=TEXT,
+            linewidths=0.6,
+        )
+    if (
+        end_point is not None
+        and current is not None
+        and not _positions_match(end_point, current)
+        and not _positions_match(end_point, path[0])
+    ):
+        ex, ey = _plane_coords([end_point], mode)
+        ax.scatter(
+            [ex[0]],
+            [ey[0]],
+            color=_END_DOT_COLOR,
+            s=40,
+            zorder=7,
+            edgecolors=TEXT,
+            linewidths=0.5,
+        )
+    _apply_plane_limits(ax, xs, ys)
+    ax.figure.tight_layout(pad=1.4)
+    return True, trajectory_progression_status(path), path
+
+
+def draw_dof_trajectory_panel(
+    ax: Axes,
+    recording: GaitMotionRecording | None,
+    item_id: str | None,
+    *,
+    projection_mode: str = _PLANE_PROJECTION_3D,
+    end_frame_float: float = 0.0,
+    tip_snapshot: SkeletonSnapshot | None = None,
+    clear: bool = True,
+    display_mode: str = _DISPLAY_CURRENT_PROGRESS,
+    coord_mode: str = _COORD_ROOT_RELATIVE,
+    motion_series: object | None = None,
+) -> tuple[bool, str, list[Vec3]]:
+    """Unified entry: always renders on a true 3D axis; view selector adjusts camera."""
+    ok, status = draw_single_dof_trajectory_3d(
+        ax,
+        recording,
+        item_id,
+        end_frame_float=end_frame_float,
+        tip_snapshot=tip_snapshot,
+        clear=clear,
+        display_mode=display_mode,
+        coord_mode=coord_mode,
+        motion_series=motion_series,
+        projection_mode=projection_mode,
+    )
+    path: list[Vec3] = []
+    if ok and item_id and recording:
+        joint_id = anchor_joint_for_item(item_id)
+        if joint_id:
+            path_end = _display_end_frame(display_mode, end_frame_float, recording)
+            path = [
+                p
+                for p, _t in _joint_path_with_times(
+                    recording,
+                    joint_id,
+                    path_end,
+                    coord_mode=coord_mode,
+                    motion_series=motion_series,
+                )
+            ]
+    return ok, status, path

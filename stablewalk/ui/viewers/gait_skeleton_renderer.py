@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
 
 from stablewalk.models.gait_motion import SkeletonSnapshot, Vec3
+from stablewalk.coordinates.coordinate_map import canonical_to_visualization_oblique
 from stablewalk.models.joint_registry import JOINT_DISPLAY_NAMES, ROOT_JOINT_ID
 from stablewalk.ui.dof_selection import PICKABLE_JOINTS
 from stablewalk.ui.colors import ACCENT, ACCENT_ALT, BORDER, MUTED, PANEL, TEXT, WARNING
@@ -421,8 +422,11 @@ def _build_display_oblique(snapshot: SkeletonSnapshot) -> dict[str, tuple[float,
     """Oblique front view from hip-centered 3D coords (mild depth cue, no stretch)."""
     out: dict[str, tuple[float, float]] = {}
     for jid, sample in snapshot.joints.items():
-        x, y, z = sample.position.x, sample.position.y, sample.position.z
-        out[jid] = (x + 0.22 * z, y)
+        out[jid] = canonical_to_visualization_oblique(
+            sample.position.x,
+            sample.position.y,
+            sample.position.z,
+        )
     _refine_trunk(out)
     return out
 
@@ -449,8 +453,11 @@ def _build_display_3d_normalized(snapshot: SkeletonSnapshot) -> dict[str, tuple[
     """Oblique projection of hip-centered 3D coordinates (uniform scale, no shear)."""
     out: dict[str, tuple[float, float]] = {}
     for jid, sample in snapshot.joints.items():
-        x, y, z = sample.position.x, sample.position.y, sample.position.z
-        out[jid] = (x + 0.22 * z, y)
+        out[jid] = canonical_to_visualization_oblique(
+            sample.position.x,
+            sample.position.y,
+            sample.position.z,
+        )
 
     _refine_trunk(out)
     return out
@@ -1043,6 +1050,215 @@ def _draw_inline_joint_labels(
     return anchors
 
 
+def _draw_foot_skeleton_labels(
+    ax: Axes,
+    snapshot: SkeletonSnapshot,
+    foot_labels: tuple["FootSkeletonLabel", "FootSkeletonLabel"],
+    height: float,
+    *,
+    avoid_anchors: list[tuple[float, float]] | None = None,
+) -> list[tuple[float, float]]:
+    """Compact L/R foot-to-floor distance + contact labels near each foot."""
+    from stablewalk.ui.foot_clearance_display import FootSkeletonLabel
+    from stablewalk.ui.theme import ACCENT, MUTED, ORANGE, PANEL
+
+    anchors: list[tuple[float, float]] = []
+    offset = max(height * 0.035, 0.022)
+    min_sep = max(height * 0.07, 0.035)
+    existing = list(avoid_anchors or [])
+
+    foot_targets = (
+        ("left", foot_labels[0], ("left_ankle", "left_heel", "left_toe")),
+        ("right", foot_labels[1], ("right_ankle", "right_heel", "right_toe")),
+    )
+    min_x, max_x, _min_y, _max_y = _body_bbox(snapshot, height=height)
+
+    clearance_values: list[float | None] = [None, None]
+
+    for idx, (side, label, joints) in enumerate(foot_targets):
+        if not isinstance(label, FootSkeletonLabel):
+            continue
+        pt = None
+        for jid in joints:
+            pt = _xy(snapshot, jid)
+            if pt:
+                break
+        if not pt:
+            continue
+
+        clearance_values[idx] = label.clearance_cm
+        text = label.compact_text()
+        if side == "left":
+            tx = min(min_x - offset * 0.18, pt[0] - offset * 0.42)
+            ha = "right"
+        else:
+            tx = max(max_x + offset * 0.18, pt[0] + offset * 0.42)
+            ha = "left"
+        ty = pt[1] - offset * 0.85
+
+        for _ in range(6):
+            too_close = False
+            for ax_pt, ay_pt in existing:
+                if math.hypot(tx - ax_pt, ty - ay_pt) < min_sep:
+                    too_close = True
+                    break
+            if not too_close:
+                break
+            ty -= min_sep * 0.55
+            if side == "left":
+                tx -= min_sep * 0.25
+            else:
+                tx += min_sep * 0.25
+
+        edge_color = ACCENT if label.contact else MUTED
+        text_color = ORANGE if label.clearance_cm is not None else MUTED
+        anchors.append((tx, ty))
+        existing.append((tx, ty))
+        ax.text(
+            tx,
+            ty,
+            text,
+            ha=ha,
+            va="center",
+            fontsize=7.0,
+            fontweight="medium",
+            color=text_color,
+            linespacing=1.15,
+            bbox=dict(
+                boxstyle="round,pad=0.20",
+                facecolor=PANEL,
+                edgecolor=edge_color,
+                linewidth=0.8,
+                alpha=0.94,
+            ),
+            zorder=18,
+            clip_on=False,
+        )
+
+    ax._sw_foot_skeleton_clearance_cm = (  # type: ignore[attr-defined]
+        clearance_values[0],
+        clearance_values[1],
+    )
+    return anchors
+
+
+def _draw_foot_contact_labels(
+    ax: Axes,
+    snapshot: SkeletonSnapshot,
+    foot_contact: tuple[int, int],
+    height: float,
+) -> list[tuple[float, float]]:
+    """Deprecated — use ``_draw_foot_skeleton_labels`` (kept for imports)."""
+    from stablewalk.ui.foot_clearance_display import FootSkeletonLabel
+
+    left_on, right_on = foot_contact
+    labels = (
+        FootSkeletonLabel("left", None, bool(left_on)),
+        FootSkeletonLabel("right", None, bool(right_on)),
+    )
+    return _draw_foot_skeleton_labels(ax, snapshot, labels, height)
+
+
+_COLOR_OSIM_DIRECT = "#4ade80"
+_COLOR_OSIM_DERIVED = "#fbbf24"
+_COLOR_OSIM_LOW_CONF = "#f87171"
+
+
+def _draw_opensim_marker_debug(
+    ax: Axes,
+    snapshot: SkeletonSnapshot,
+    height: float,
+    *,
+    display_mode: str,
+) -> list[tuple[float, float]]:
+    """
+    Overlay reconstructed OpenSim markers (disabled by default).
+
+    Styles: DIRECT = green diamond, DERIVED_ANATOMICAL = amber triangle,
+    LOW_CONFIDENCE = red hollow circle.
+    """
+    from matplotlib.lines import Line2D
+
+    from stablewalk.biomechanics.marker_reconstruction import (
+        DEFAULT_RECONSTRUCTION_CONFIG,
+        landmarks_from_skeleton_joints,
+        project_marker_to_display_xy,
+        reconstruct_markers_single_frame,
+    )
+
+    joints = {
+        jid: (sample.position.x, sample.position.y, sample.position.z)
+        for jid, sample in snapshot.joints.items()
+    }
+    landmarks = landmarks_from_skeleton_joints(joints)
+    if len(landmarks) < 6:
+        return []
+
+    markers = reconstruct_markers_single_frame(landmarks)
+    anchors: list[tuple[float, float]] = []
+    thr = DEFAULT_RECONSTRUCTION_CONFIG.high_confidence_threshold
+    size = max(height * 0.012, 0.018)
+
+    for name, result in markers.items():
+        if result.position is None:
+            continue
+        pt = project_marker_to_display_xy(result.position, display_mode=display_mode)
+        anchors.append(pt)
+        low_conf = result.confidence < thr
+        if low_conf:
+            color = _COLOR_OSIM_LOW_CONF
+            marker_style = "o"
+            mfc = "none"
+            mew = 1.4
+        elif result.mapping_type == "DIRECT":
+            color = _COLOR_OSIM_DIRECT
+            marker_style = "D"
+            mfc = color
+            mew = 0.8
+        else:
+            color = _COLOR_OSIM_DERIVED
+            marker_style = "^"
+            mfc = color
+            mew = 0.8
+
+        ax.plot(
+            pt[0],
+            pt[1],
+            marker=marker_style,
+            markersize=size * 42,
+            markerfacecolor=mfc,
+            markeredgecolor=color,
+            markeredgewidth=mew,
+            linestyle="None",
+            zorder=22,
+            clip_on=False,
+        )
+
+    legend_handles = [
+        Line2D(
+            [0], [0], marker="D", color="w", markerfacecolor=_COLOR_OSIM_DIRECT,
+            markersize=6, label="OpenSim DIRECT",
+        ),
+        Line2D(
+            [0], [0], marker="^", color="w", markerfacecolor=_COLOR_OSIM_DERIVED,
+            markersize=6, label="OpenSim DERIVED",
+        ),
+        Line2D(
+            [0], [0], marker="o", color=_COLOR_OSIM_LOW_CONF, markerfacecolor="none",
+            markersize=6, markeredgewidth=1.2, label="OpenSim LOW_CONF",
+        ),
+    ]
+    ax.legend(
+        handles=legend_handles,
+        loc="upper right",
+        fontsize=6.5,
+        framealpha=0.85,
+        facecolor=PANEL,
+        edgecolor=BORDER,
+    )
+    return anchors
+
+
 def _draw_joint_callouts(
     ax: Axes,
     snapshot: SkeletonSnapshot,
@@ -1590,6 +1806,9 @@ def draw_gait_skeleton(
     motion_arrows: dict[str, tuple[Vec3, Vec3]] | None = None,
     display_mode: str = DEFAULT_SKELETON_DISPLAY_MODE,
     ground_floor_y: float | None = None,
+    foot_skeleton_labels: tuple | None = None,
+    foot_contact: tuple[int, int] | None = None,
+    show_opensim_markers: bool = False,
 ) -> None:
     """
     Render a stick-figure skeleton from a ``SkeletonSnapshot``.
@@ -1660,6 +1879,26 @@ def draw_gait_skeleton(
     label_anchors: list[tuple[float, float]] = []
     if labels:
         label_anchors = _draw_inline_joint_labels(ax, snapshot, labels, height)
+
+    if foot_skeleton_labels is not None:
+        label_anchors.extend(
+            _draw_foot_skeleton_labels(
+                ax,
+                snapshot,
+                foot_skeleton_labels,
+                height,
+                avoid_anchors=label_anchors,
+            )
+        )
+    elif foot_contact is not None:
+        label_anchors.extend(
+            _draw_foot_contact_labels(ax, snapshot, foot_contact, height)
+        )
+
+    if show_opensim_markers:
+        label_anchors.extend(
+            _draw_opensim_marker_debug(ax, snapshot, height, display_mode=display_mode)
+        )
 
     ax._sw_label_anchors = label_anchors  # type: ignore[attr-defined]
     ax._sw_view_snapshot = snapshot  # type: ignore[attr-defined]

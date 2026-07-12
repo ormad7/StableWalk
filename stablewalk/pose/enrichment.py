@@ -65,21 +65,14 @@ def enrich_pose_sequence(sequence: PoseSequence) -> tuple[list[GaitEvent], dict[
 
     attach_sequence_velocities(sequence.frames, sequence.fps)
 
-    from stablewalk.pose.contact import ContactDetector, attach_foot_contact_to_frames
+    from stablewalk.analysis.gait_cycle_analysis import (
+        analyze_gait_cycles_from_pose_sequence,
+        attach_gait_cycle_to_sequence,
+    )
 
-    contact_result = ContactDetector().detect(sequence)
-    attach_foot_contact_to_frames(sequence, contact_result)
+    cycle_result = analyze_gait_cycles_from_pose_sequence(sequence)
+    attach_gait_cycle_to_sequence(sequence, cycle_result)
 
     events, annotations = analyze_gait_sequence(sequence.frames, fps=sequence.fps)
     attach_gait_phases_to_frames(sequence, annotations)
-    # Contact-based stance/swing kept on foot_contact; gait_phase may refine from HS/TO
-    for frame in sequence.frames:
-        if frame.foot_contact:
-            fl = frame.foot_contact.get("left", False)
-            fr = frame.foot_contact.get("right", False)
-            if fl or fr:
-                frame.gait_phase = {
-                    "left": "stance" if fl else frame.gait_phase.get("left", "swing"),
-                    "right": "stance" if fr else frame.gait_phase.get("right", "swing"),
-                }
     return events, annotations

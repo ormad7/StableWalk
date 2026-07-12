@@ -8,6 +8,7 @@ This module handles **only** video I/O (OpenCV). Pose estimation lives in
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -58,15 +59,17 @@ class VideoReader:
         self._source = str(source).strip()
         self._cap: cv2.VideoCapture | None = None
         self._metadata: VideoMetadata | None = None
+        self._decode_guard: threading.Lock | None = None
 
     def open(self) -> VideoMetadata:
-        from stablewalk.core.pipeline_reset import register_capture, release_all_captures
+        from stablewalk.core.pipeline_reset import register_capture
 
-        release_all_captures()
+        if self._cap is not None:
+            self.close()
         self._cap = cv2.VideoCapture(self._source)
         register_capture(self._cap)
         if not self._cap.isOpened():
-            release_all_captures()
+            self.close()
             raise RuntimeError(f"Could not open video: {self._source}")
 
         fps = float(self._cap.get(cv2.CAP_PROP_FPS) or 30.0)
@@ -85,17 +88,32 @@ class VideoReader:
         return self._metadata
 
     def close(self) -> None:
-        from stablewalk.core.pipeline_reset import release_all_captures
+        from stablewalk.core.pipeline_reset import unregister_capture
 
-        release_all_captures()
-        self._cap = None
+        if self._cap is not None:
+            try:
+                if self._cap.isOpened():
+                    self._cap.release()
+            except Exception:
+                pass
+            unregister_capture(self._cap)
+            self._cap = None
 
     def __enter__(self) -> VideoReader:
+        from stablewalk.core.pipeline_reset import video_decode_lock
+
+        self._decode_guard = video_decode_lock()
+        self._decode_guard.acquire()
         self.open()
         return self
 
     def __exit__(self, *args: object) -> None:
-        self.close()
+        try:
+            self.close()
+        finally:
+            if self._decode_guard is not None:
+                self._decode_guard.release()
+                self._decode_guard = None
 
     @property
     def metadata(self) -> VideoMetadata:
@@ -211,49 +229,54 @@ class VideoProcessor:
         for old in output_dir.glob(f"{prefix}_*.jpg"):
             old.unlink()
 
-        from stablewalk.core.pipeline_reset import register_capture, release_all_captures
+        from stablewalk.core.pipeline_reset import register_capture, unregister_capture, video_decode_lock
 
-        release_all_captures()
-        cap = cv2.VideoCapture(source)
-        register_capture(cap)
-        if not cap.isOpened():
-            release_all_captures()
-            raise RuntimeError(f"Could not open video source: {source_label}")
+        with video_decode_lock():
+            cap = cv2.VideoCapture(source)
+            register_capture(cap)
+            if not cap.isOpened():
+                unregister_capture(cap)
+                raise RuntimeError(f"Could not open video source: {source_label}")
 
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        frame_paths: list[str] = []
-        index = 0
-        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
+            frame_paths: list[str] = []
+            index = 0
+            encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
 
-        try:
-            while True:
-                if max_frames is not None and index >= max_frames:
-                    break
+            try:
+                while True:
+                    if max_frames is not None and index >= max_frames:
+                        break
 
-                out_path = output_dir / f"{prefix}_{index:06d}.jpg"
-                if skip_existing and out_path.exists():
+                    out_path = output_dir / f"{prefix}_{index:06d}.jpg"
+                    if skip_existing and out_path.exists():
+                        frame_paths.append(str(out_path))
+                        index += 1
+                        cap.grab()
+                        continue
+
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+
+                    if not cv2.imwrite(str(out_path), frame, encode_params):
+                        raise RuntimeError(f"Failed to write frame: {out_path}")
+
                     frame_paths.append(str(out_path))
                     index += 1
-                    cap.grab()
-                    continue
 
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                if not cv2.imwrite(str(out_path), frame, encode_params):
-                    raise RuntimeError(f"Failed to write frame: {out_path}")
-
-                frame_paths.append(str(out_path))
-                index += 1
-
-                if index % 100 == 0:
-                    logger.info("Extracted %d frames...", index)
-        finally:
-            release_all_captures()
+                    if index % 100 == 0:
+                        logger.info("Extracted %d frames...", index)
+            finally:
+                try:
+                    if cap.isOpened():
+                        cap.release()
+                except Exception:
+                    pass
+                unregister_capture(cap)
 
         display_name = source_label if len(source_label) < 80 else source_label[:77] + "..."
         logger.info(

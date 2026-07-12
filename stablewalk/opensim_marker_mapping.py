@@ -2,9 +2,9 @@
 OpenSim marker mapping and StableWalk IK readiness validation.
 
 Maps MediaPipe-exported TRC marker names (``L_KNEE``, ``R_HIP``, …) to OpenSim
-Gait2392 marker names (``L.Shank.Upper``, ``R.ASIS``, …), generates synthetic
-markers where MediaPipe landmarks are insufficient, writes a mapped TRC, and
-compares against the OpenSim demo model/setup markers.
+Gait2392 marker names (``L.Shank.Upper``, ``R.ASIS``, …), reconstructs missing
+markers using subject-scaled anatomical segment frames, applies temporal
+filtering, and compares against the OpenSim demo model/setup markers.
 """
 
 from __future__ import annotations
@@ -17,6 +17,18 @@ from pathlib import Path
 from typing import Any, Callable
 
 from stablewalk import config
+from stablewalk.biomechanics.marker_reconstruction import (
+    DEFAULT_RECONSTRUCTION_CONFIG,
+    GAIT2392_MARKER_NAMES,
+    CATALOG_BY_NAME,
+    IkReadinessLevel,
+    MarkerReconstructionConfig,
+    MarkerReconstructionResult,
+    format_mapping_catalog_table,
+    mapping_catalog_csv,
+    reconstruct_markers_from_trc_frames,
+    write_mapped_trc_from_reconstruction,
+)
 from stablewalk.opensim_integration import MEDIAPIPE_TO_OPENSIM_MARKERS
 from stablewalk.opensim_sdk import _read_trc_marker_names
 
@@ -46,9 +58,10 @@ STABLEWALK_IK_EXPERIMENTAL_WARNING = (
 STABLEWALK_IK_SETUP_FILENAME = "stablewalk_setup_ik.xml"
 
 MEDIAPIPE_LIMITATION_EXPLANATION = (
-    "MediaPipe pose landmarks are approximated for OpenSim IK. Direct mappings use "
-    "exported landmarks; synthetic markers are interpolated from hips, knees, ankles, "
-    "and feet. This improves coverage versus raw export but is not clinical-grade mocap."
+    "MediaPipe pose landmarks are approximated for OpenSim IK. Reliable landmarks "
+    "are mapped directly; additional Gait2392 markers are reconstructed using "
+    "subject-scaled anatomical segment frames (pelvis, thigh, shank, foot, torso) "
+    "with temporal filtering and confidence scoring. This is not clinical-grade mocap."
 )
 
 # Direct StableWalk → OpenSim mappings (names must exist on Gait2392).
@@ -69,38 +82,16 @@ DEFAULT_STABLEWALK_TO_OPENSIM: dict[str, str] = {
 
 PROPOSED_MEDIAPIPE_TO_GAIT2392: dict[str, str] = {
     **DEFAULT_STABLEWALK_TO_OPENSIM,
-    "L_KNEE": "(synthetic → L.Shank.Upper / L.Thigh.Upper)",
-    "R_KNEE": "(synthetic → R.Shank.Upper / R.Thigh.Upper)",
+    "L_KNEE": "(derived anatomical → L.Shank.Upper / L.Thigh.*)",
+    "R_KNEE": "(derived anatomical → R.Shank.Upper / R.Thigh.*)",
     "L_ELBOW": "(optional — not on Gait2392 lower-body IK set)",
     "R_ELBOW": "(optional — not on Gait2392 lower-body IK set)",
     "L_WRIST": "(optional — not on Gait2392 lower-body IK set)",
     "R_WRIST": "(optional — not on Gait2392 lower-body IK set)",
 }
 
-# Preferred column order in mapped TRC (matches Gait2392 demo layout where possible).
-PREFERRED_MAPPED_MARKER_ORDER: list[str] = [
-    "Sternum",
-    "R.Acromium",
-    "L.Acromium",
-    "Top.Head",
-    "R.ASIS",
-    "L.ASIS",
-    "V.Sacral",
-    "R.Thigh.Upper",
-    "L.Thigh.Upper",
-    "R.Shank.Upper",
-    "L.Shank.Upper",
-    "R.Shank.Front",
-    "L.Shank.Front",
-    "R.Heel",
-    "L.Heel",
-    "R.Midfoot.Sup",
-    "L.Midfoot.Sup",
-    "R.Midfoot.Lat",
-    "L.Midfoot.Lat",
-    "R.Toe.Tip",
-    "L.Toe.Tip",
-]
+# Full Gait2392 IK marker order for mapped TRC export.
+PREFERRED_MAPPED_MARKER_ORDER: list[str] = list(GAIT2392_MARKER_NAMES)
 
 MIN_EXPERIMENTAL_IK_MARKERS = 5
 MIN_REASONABLY_USABLE_MARKERS = 12
@@ -122,12 +113,15 @@ MARKER_WEIGHT_BASE: dict[str, float] = {
     "Sternum": 1.0,
 }
 MARKER_WEIGHT_DEFAULT = 1.0
-SYNTHETIC_WEIGHT_SCALE = 0.5
+DERIVED_ANATOMICAL_WEIGHT_SCALE = 0.55
+TEMPORAL_ESTIMATED_WEIGHT_SCALE = 0.35
+# Backward-compatible alias
+SYNTHETIC_WEIGHT_SCALE = DERIVED_ANATOMICAL_WEIGHT_SCALE
 
 
 @dataclass
 class SyntheticMarkerSpec:
-    """Rule for generating one OpenSim marker from MediaPipe landmarks."""
+    """Legacy rule type — retained for backward compatibility only."""
 
     opensim_name: str
     description: str
@@ -135,158 +129,8 @@ class SyntheticMarkerSpec:
     compute: Callable[[dict[str, tuple[float, float, float]]], tuple[float, float, float] | None]
 
 
-def _lerp3(
-    a: tuple[float, float, float],
-    b: tuple[float, float, float],
-    t: float,
-) -> tuple[float, float, float]:
-    return (
-        a[0] + t * (b[0] - a[0]),
-        a[1] + t * (b[1] - a[1]),
-        a[2] + t * (b[2] - a[2]),
-    )
-
-
-def _centroid3(
-    *points: tuple[float, float, float],
-) -> tuple[float, float, float]:
-    n = len(points)
-    return (
-        sum(p[0] for p in points) / n,
-        sum(p[1] for p in points) / n,
-        sum(p[2] for p in points) / n,
-    )
-
-
-def _compute_v_sacral(
-    lm: dict[str, tuple[float, float, float]],
-) -> tuple[float, float, float] | None:
-    left, right = lm.get("L_HIP"), lm.get("R_HIP")
-    if left is None or right is None:
-        return None
-    mid = _lerp3(left, right, 0.5)
-    return (mid[0], mid[1] * 0.98, mid[2])
-
-
-def _compute_sternum(
-    lm: dict[str, tuple[float, float, float]],
-) -> tuple[float, float, float] | None:
-    left, right, head = lm.get("L_SHOULDER"), lm.get("R_SHOULDER"), lm.get("HEAD")
-    if left is None or right is None:
-        return None
-    shoulder_mid = _lerp3(left, right, 0.5)
-    if head is not None:
-        return _lerp3(shoulder_mid, head, 0.25)
-    return shoulder_mid
-
-
-def _compute_thigh_upper(side: str):
-    def _fn(lm: dict[str, tuple[float, float, float]]) -> tuple[float, float, float] | None:
-        hip, knee = lm.get(f"{side}_HIP"), lm.get(f"{side}_KNEE")
-        if hip is None or knee is None:
-            return None
-        return _lerp3(hip, knee, 0.35)
-
-    return _fn
-
-
-def _compute_shank_upper(side: str):
-    def _fn(lm: dict[str, tuple[float, float, float]]) -> tuple[float, float, float] | None:
-        knee, ankle = lm.get(f"{side}_KNEE"), lm.get(f"{side}_ANKLE")
-        if knee is None or ankle is None:
-            return None
-        return _lerp3(knee, ankle, 0.35)
-
-    return _fn
-
-
-def _compute_midfoot_sup(side: str):
-    def _fn(lm: dict[str, tuple[float, float, float]]) -> tuple[float, float, float] | None:
-        ankle, heel, toe = (
-            lm.get(f"{side}_ANKLE"),
-            lm.get(f"{side}_HEEL"),
-            lm.get(f"{side}_TOE"),
-        )
-        pts = [p for p in (ankle, heel, toe) if p is not None]
-        if len(pts) < 2:
-            return None
-        return _centroid3(*pts)
-
-    return _fn
-
-
-def _compute_midfoot_lat(side: str):
-    def _fn(lm: dict[str, tuple[float, float, float]]) -> tuple[float, float, float] | None:
-        ankle, heel = lm.get(f"{side}_ANKLE"), lm.get(f"{side}_HEEL")
-        if ankle is None or heel is None:
-            return None
-        return _lerp3(ankle, heel, 0.5)
-
-    return _fn
-
-
-SYNTHETIC_MARKER_SPECS: list[SyntheticMarkerSpec] = [
-    SyntheticMarkerSpec(
-        "V.Sacral",
-        "Midpoint of L_HIP and R_HIP (approximate sacral marker)",
-        ["L_HIP", "R_HIP"],
-        _compute_v_sacral,
-    ),
-    SyntheticMarkerSpec(
-        "Sternum",
-        "Between shoulder midpoint and HEAD (approximate sternum)",
-        ["L_SHOULDER", "R_SHOULDER"],
-        _compute_sternum,
-    ),
-    SyntheticMarkerSpec(
-        "R.Thigh.Upper",
-        "35% from R_HIP toward R_KNEE",
-        ["R_HIP", "R_KNEE"],
-        _compute_thigh_upper("R"),
-    ),
-    SyntheticMarkerSpec(
-        "L.Thigh.Upper",
-        "35% from L_HIP toward L_KNEE",
-        ["L_HIP", "L_KNEE"],
-        _compute_thigh_upper("L"),
-    ),
-    SyntheticMarkerSpec(
-        "R.Shank.Upper",
-        "35% from R_KNEE toward R_ANKLE",
-        ["R_KNEE", "R_ANKLE"],
-        _compute_shank_upper("R"),
-    ),
-    SyntheticMarkerSpec(
-        "L.Shank.Upper",
-        "35% from L_KNEE toward L_ANKLE",
-        ["L_KNEE", "L_ANKLE"],
-        _compute_shank_upper("L"),
-    ),
-    SyntheticMarkerSpec(
-        "R.Midfoot.Sup",
-        "Centroid of R_ANKLE, R_HEEL, R_TOE",
-        ["R_ANKLE", "R_HEEL", "R_TOE"],
-        _compute_midfoot_sup("R"),
-    ),
-    SyntheticMarkerSpec(
-        "L.Midfoot.Sup",
-        "Centroid of L_ANKLE, L_HEEL, L_TOE",
-        ["L_ANKLE", "L_HEEL", "L_TOE"],
-        _compute_midfoot_sup("L"),
-    ),
-    SyntheticMarkerSpec(
-        "R.Midfoot.Lat",
-        "Midpoint of R_ANKLE and R_HEEL",
-        ["R_ANKLE", "R_HEEL"],
-        _compute_midfoot_lat("R"),
-    ),
-    SyntheticMarkerSpec(
-        "L.Midfoot.Lat",
-        "Midpoint of L_ANKLE and L_HEEL",
-        ["L_ANKLE", "L_HEEL"],
-        _compute_midfoot_lat("L"),
-    ),
-]
+# Legacy naive synthetic specs (superseded by marker_reconstruction.MARKER_CATALOG).
+SYNTHETIC_MARKER_SPECS: list[SyntheticMarkerSpec] = []
 
 
 @dataclass
@@ -301,6 +145,9 @@ class MarkerComparison:
     extra_in_opensim: list[str] = field(default_factory=list)
     mapped_opensim_markers: list[str] = field(default_factory=list)
     direct_mapped_markers: list[str] = field(default_factory=list)
+    derived_anatomical_markers: list[str] = field(default_factory=list)
+    temporal_estimated_markers: list[str] = field(default_factory=list)
+    unavailable_markers: list[str] = field(default_factory=list)
     synthetic_markers: list[str] = field(default_factory=list)
     synthetic_marker_details: dict[str, str] = field(default_factory=dict)
     mapped_matching_markers: list[str] = field(default_factory=list)
@@ -308,8 +155,14 @@ class MarkerComparison:
     missing_for_ik: list[str] = field(default_factory=list)
     mapping_status: str = "missing"  # missing | experimental | partial | improved
     ik_readiness_tier: str = "not ready"
+    ik_readiness_level: str = "NOT READY"
+    ik_readiness_score: float = 0.0
     reliability: str = "limited"
     coverage_percent: float = 0.0
+    raw_coverage_percent: float = 0.0
+    high_confidence_coverage_percent: float = 0.0
+    low_confidence_markers: list[str] = field(default_factory=list)
+    reconstruction: MarkerReconstructionResult | None = None
     stablewalk_ik_ready: bool = False
     ik_experimental_ready: bool = False
     ik_reasonably_usable: bool = False
@@ -327,6 +180,9 @@ class MarkerComparison:
             "matching_markers_direct": self.matching_markers,
             "mapped_opensim_markers": self.mapped_opensim_markers,
             "direct_mapped_markers": self.direct_mapped_markers,
+            "derived_anatomical_markers": self.derived_anatomical_markers,
+            "temporal_estimated_markers": self.temporal_estimated_markers,
+            "unavailable_markers": self.unavailable_markers,
             "synthetic_markers": self.synthetic_markers,
             "synthetic_marker_details": self.synthetic_marker_details,
             "mapped_matching_markers": self.mapped_matching_markers,
@@ -339,8 +195,13 @@ class MarkerComparison:
             "mediapipe_export_markers": sorted(set(MEDIAPIPE_TO_OPENSIM_MARKERS.values())),
             "mapping_status": self.mapping_status,
             "ik_readiness_tier": self.ik_readiness_tier,
+            "ik_readiness_level": self.ik_readiness_level,
+            "ik_readiness_score": self.ik_readiness_score,
             "reliability": self.reliability,
             "coverage_percent": self.coverage_percent,
+            "raw_coverage_percent": self.raw_coverage_percent,
+            "high_confidence_coverage_percent": self.high_confidence_coverage_percent,
+            "low_confidence_markers": self.low_confidence_markers,
             "stablewalk_ik_ready": self.stablewalk_ik_ready,
             "ik_experimental_ready": self.ik_experimental_ready,
             "ik_reasonably_usable": self.ik_reasonably_usable,
@@ -355,11 +216,19 @@ class MarkerComparison:
         }
 
 
-def get_marker_weight(opensim_name: str, *, is_synthetic: bool = False) -> float:
-    """Return IK task weight for a marker (synthetic markers weighted lower)."""
+def get_marker_weight(
+    opensim_name: str,
+    *,
+    is_synthetic: bool = False,
+    is_derived_anatomical: bool = False,
+    is_temporal_estimated: bool = False,
+) -> float:
+    """Return IK task weight for a marker (derived/temporal markers weighted lower)."""
     base = MARKER_WEIGHT_BASE.get(opensim_name, MARKER_WEIGHT_DEFAULT)
-    if is_synthetic:
-        return max(base * SYNTHETIC_WEIGHT_SCALE, 0.05)
+    if is_temporal_estimated:
+        return max(base * TEMPORAL_ESTIMATED_WEIGHT_SCALE, 0.03)
+    if is_synthetic or is_derived_anatomical:
+        return max(base * DERIVED_ANATOMICAL_WEIGHT_SCALE, 0.05)
     return base
 
 
@@ -490,106 +359,74 @@ def create_mapped_trc(
     source_trc: Path,
     output_trc: Path,
     mapping: dict[str, str] | None = None,
-) -> tuple[Path, list[str], list[str], dict[str, str]]:
+    *,
+    reconstruction_config: MarkerReconstructionConfig | None = None,
+) -> tuple[Path, list[str], list[str], dict[str, str], MarkerReconstructionResult]:
     """
-    Create a mapped TRC with OpenSim marker names (direct + synthetic).
+    Create a mapped TRC with OpenSim marker names (direct + anatomical reconstruction).
 
-    Returns ``(path, direct_marker_names, synthetic_marker_names, synthetic_details)``.
+    Returns ``(path, direct_names, derived_names, derived_details, reconstruction)``.
+    The third return value is kept as ``derived_names`` for backward compatibility
+    (formerly ``synthetic_marker_names``).
     """
     source_trc = Path(source_trc)
     output_trc = Path(output_trc)
-    mapping = mapping or load_stablewalk_to_opensim_mapping()
+    _ = mapping or load_stablewalk_to_opensim_mapping()
 
-    source_markers, frames, rate, units = _read_trc_frame_data(source_trc)
+    _, frames, rate, _units = _read_trc_frame_data(source_trc)
     if not frames:
         raise ValueError(f"No frame data in TRC: {source_trc}")
 
-    # Direct mappings: StableWalk name → OpenSim name (skip duplicate OpenSim targets).
-    direct_pairs: list[tuple[str, str]] = []
-    used_opensim: set[str] = set()
-    for sw_name in source_markers:
-        osim_name = mapping.get(sw_name)
-        if osim_name and osim_name not in used_opensim:
-            direct_pairs.append((sw_name, osim_name))
-            used_opensim.add(osim_name)
-
-    if not direct_pairs and not SYNTHETIC_MARKER_SPECS:
-        raise ValueError("No StableWalk markers could be mapped to OpenSim names.")
-
-    direct_opensim_names = [osim for _, osim in direct_pairs]
-    synthetic_details: dict[str, str] = {}
-    synthetic_names: list[str] = []
-
-    for spec in SYNTHETIC_MARKER_SPECS:
-        if spec.opensim_name in used_opensim:
-            continue
-        synthetic_names.append(spec.opensim_name)
-        synthetic_details[spec.opensim_name] = spec.description
-        used_opensim.add(spec.opensim_name)
-
-    all_marker_names = _order_mapped_markers(set(direct_opensim_names) | set(synthetic_names))
-    n_frames = len(frames)
-
-    out_lines: list[str] = []
-    out_lines.append(f"PathFileType\t4\t(X/Y/Z)\t{output_trc.name}")
-    out_lines.append(
-        "DataRate\tCameraRate\tNumFrames\tNumMarkers\tUnits\t"
-        "OrigDataRate\tOrigDataStartFrame\tOrigNumFrames"
+    fps = float(rate) if rate else 30.0
+    reconstruction = reconstruct_markers_from_trc_frames(
+        frames,
+        fps=fps,
+        config=reconstruction_config or DEFAULT_RECONSTRUCTION_CONFIG,
     )
-    out_lines.append(
-        f"{rate}\t{rate}\t{n_frames}\t{len(all_marker_names)}\t{units}\t"
-        f"{rate}\t1\t{n_frames}"
+    write_mapped_trc_from_reconstruction(
+        reconstruction,
+        output_trc,
+        data_rate=str(rate),
     )
-    out_lines.append("Frame#\tTime\t" + "\t\t\t".join(all_marker_names) + "\t\t")
-    out_lines.append(
-        "\t\t" + "\t".join(f"X{i}\tY{i}\tZ{i}" for i in range(1, len(all_marker_names) + 1))
-    )
-    out_lines.append("")
 
-    spec_by_name = {s.opensim_name: s for s in SYNTHETIC_MARKER_SPECS}
-
-    for frame_num, time_val, landmarks in frames:
-        cells = [str(frame_num), f"{time_val:.6f}"]
-        computed: dict[str, tuple[float, float, float]] = {}
-
-        for sw_name, osim_name in direct_pairs:
-            pos = landmarks.get(sw_name)
-            if pos is not None:
-                computed[osim_name] = pos
-
-        for osim_name in synthetic_names:
-            spec = spec_by_name[osim_name]
-            pos = spec.compute(landmarks)
-            if pos is not None:
-                computed[osim_name] = pos
-
-        for osim_name in all_marker_names:
-            pos = computed.get(osim_name)
-            if pos is not None:
-                cells.extend([f"{pos[0]:.6f}", f"{pos[1]:.6f}", f"{pos[2]:.6f}"])
-            else:
-                cells.extend(["", "", ""])
-
-        out_lines.append("\t".join(cells))
-
-    output_trc.parent.mkdir(parents=True, exist_ok=True)
-    output_trc.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
-
-    # Filter synthetic list to those actually present in output (computed at least once).
-    actual_synthetic = [
-        n for n in synthetic_names
-        if n in _read_trc_marker_names(output_trc)
+    direct_names = [
+        n for n in reconstruction.marker_names
+        if CATALOG_BY_NAME.get(n)
+        and CATALOG_BY_NAME[n].mapping_type == "DIRECT"
+        and any(
+            reconstruction.frames[i][2][n].position is not None
+            for i in range(len(reconstruction.frames))
+        )
     ]
-    actual_direct = [osim for _, osim in direct_pairs]
+    derived_names = [
+        n for n in reconstruction.marker_names
+        if n not in direct_names
+        and any(
+            reconstruction.frames[i][2][n].position is not None
+            for i in range(len(reconstruction.frames))
+        )
+    ]
+    derived_details = {
+        n: next(
+            (
+                row["Calculation"]
+                for row in reconstruction.catalog_rows
+                if row.get("OpenSim Marker") == n
+            ),
+            "Anatomical segment-frame reconstruction",
+        )
+        for n in derived_names
+    }
 
     logger.info("Wrote mapped TRC for OpenSim IK -> %s", output_trc)
     logger.info(
-        "  %d direct + %d synthetic marker(s): %s",
-        len(actual_direct),
-        len(actual_synthetic),
-        ", ".join(all_marker_names),
+        "  %d direct + %d derived anatomical marker(s); IK readiness %s (%.1f)",
+        len(direct_names),
+        len(derived_names),
+        reconstruction.ik_readiness.value,
+        reconstruction.ik_readiness_score,
     )
-    return output_trc, actual_direct, actual_synthetic, synthetic_details
+    return output_trc, direct_names, derived_names, derived_details, reconstruction
 
 
 def configure_stablewalk_ik_setup(
@@ -597,6 +434,8 @@ def configure_stablewalk_ik_setup(
     trc_marker_names: list[str],
     *,
     synthetic_markers: set[str] | None = None,
+    derived_markers: set[str] | None = None,
+    temporal_markers: set[str] | None = None,
 ) -> None:
     """
     Post-process IK setup XML: disable missing marker tasks, apply weights.
@@ -604,7 +443,8 @@ def configure_stablewalk_ik_setup(
     OpenSim ``printToXML`` includes all model markers; this enables only markers
     present in the mapped TRC and sets reasonable weights.
     """
-    synthetic = synthetic_markers or set()
+    derived = derived_markers or synthetic_markers or set()
+    temporal = temporal_markers or set()
     trc_set = set(trc_marker_names)
     text = setup_path.read_text(encoding="utf-8")
 
@@ -616,7 +456,12 @@ def configure_stablewalk_ik_setup(
         name = name_match.group(1)
         if name not in trc_set:
             return re.sub(r"<apply>true</apply>", "<apply>false</apply>", block)
-        weight = get_marker_weight(name, is_synthetic=name in synthetic)
+        weight = get_marker_weight(
+            name,
+            is_derived_anatomical=name in derived,
+            is_temporal_estimated=name in temporal,
+            is_synthetic=name in derived,
+        )
         return re.sub(
             r"<weight>[^<]*</weight>",
             f"<weight>{weight:g}</weight>",
@@ -674,49 +519,69 @@ def _compute_readiness(comparison: MarkerComparison) -> None:
     n_match = len(comparison.mapped_matching_markers)
     comparison.coverage_percent = round(100.0 * n_match / ref_count, 1)
 
+    recon = comparison.reconstruction
+    if recon is not None:
+        comparison.raw_coverage_percent = recon.raw_coverage_percent
+        comparison.high_confidence_coverage_percent = recon.high_confidence_coverage_percent
+        comparison.ik_readiness_level = recon.ik_readiness.value
+        comparison.ik_readiness_score = recon.ik_readiness_score
+        comparison.low_confidence_markers = list(recon.low_confidence_markers)
+    else:
+        comparison.raw_coverage_percent = comparison.coverage_percent
+        comparison.high_confidence_coverage_percent = comparison.coverage_percent * 0.85
+
     comparison.ik_experimental_ready = n_match >= MIN_EXPERIMENTAL_IK_MARKERS
     comparison.ik_reasonably_usable = n_match >= MIN_REASONABLY_USABLE_MARKERS
     comparison.ik_reliable_ready = n_match >= MIN_RELIABLE_IK_MARKERS
     comparison.stablewalk_ik_ready = comparison.ik_reasonably_usable
 
-    if not comparison.ik_experimental_ready:
-        comparison.ik_readiness_tier = "not ready"
-    elif comparison.ik_reliable_ready:
-        comparison.ik_readiness_tier = "reliable"
-    elif comparison.ik_reasonably_usable:
-        comparison.ik_readiness_tier = "reasonably usable"
-    else:
+    score = comparison.ik_readiness_score
+    if score >= DEFAULT_RECONSTRUCTION_CONFIG.ik_readiness_high:
+        comparison.ik_readiness_tier = "high quality"
+    elif score >= DEFAULT_RECONSTRUCTION_CONFIG.ik_readiness_moderate:
+        comparison.ik_readiness_tier = "moderate quality"
+    elif comparison.ik_experimental_ready:
         comparison.ik_readiness_tier = "experimental"
+    else:
+        comparison.ik_readiness_tier = "not ready"
 
-    synth_ratio = (
-        len(comparison.synthetic_markers) / max(len(comparison.mapped_opensim_markers), 1)
+    derived_ratio = (
+        len(comparison.derived_anatomical_markers)
+        / max(len(comparison.mapped_opensim_markers), 1)
     )
-    if comparison.coverage_percent >= 65 and synth_ratio <= 0.55:
+    if comparison.high_confidence_coverage_percent >= 55 and derived_ratio <= 0.65:
         comparison.reliability = "high"
-    elif comparison.coverage_percent >= 40:
+    elif comparison.raw_coverage_percent >= 40:
         comparison.reliability = "moderate"
     else:
         comparison.reliability = "limited"
 
     if not comparison.stablewalk_trc_markers:
         comparison.mapping_status = "missing"
-    elif comparison.ik_reasonably_usable and n_match >= 18:
+    elif comparison.raw_coverage_percent >= 90 and score >= 60:
         comparison.mapping_status = "improved"
     elif comparison.ik_experimental_ready:
-        comparison.mapping_status = "partial" if comparison.ik_reasonably_usable else "experimental"
+        comparison.mapping_status = (
+            "partial" if comparison.ik_reasonably_usable else "experimental"
+        )
     else:
         comparison.mapping_status = "experimental"
 
     if comparison.mapping_status == "improved":
         comparison.message = (
-            f"Improved marker mapping: {n_match}/{ref_count} OpenSim markers covered "
-            f"({comparison.coverage_percent}%) via direct + synthetic markers. "
+            f"Anatomical marker reconstruction: {n_match}/{ref_count} OpenSim markers "
+            f"({comparison.raw_coverage_percent}% raw, "
+            f"{comparison.high_confidence_coverage_percent}% high-confidence). "
+            f"IK readiness: {comparison.ik_readiness_level}. "
             f"{MEDIAPIPE_LIMITATION_EXPLANATION}"
         )
     elif comparison.ik_experimental_ready:
         comparison.message = (
             f"Partial marker mapping: {n_match}/{ref_count} OpenSim markers "
-            f"({comparison.coverage_percent}%). {MEDIAPIPE_LIMITATION_EXPLANATION}"
+            f"(raw {comparison.raw_coverage_percent}%, "
+            f"high-confidence {comparison.high_confidence_coverage_percent}%). "
+            f"IK readiness: {comparison.ik_readiness_level}. "
+            f"{MEDIAPIPE_LIMITATION_EXPLANATION}"
         )
     elif comparison.stablewalk_trc_markers:
         comparison.message = (
@@ -781,14 +646,26 @@ def compare_stablewalk_trc_to_opensim(
 
     mapped_path = mapped_trc_path_for(stablewalk_trc)
     try:
-        _, direct_names, synthetic_names, synthetic_details = create_mapped_trc(
+        _, direct_names, derived_names, derived_details, reconstruction = create_mapped_trc(
             stablewalk_trc, mapped_path, mapping
         )
         result.mapped_trc_path = str(mapped_path.resolve())
         result.mapped_opensim_markers = _read_trc_marker_names(mapped_path)
         result.direct_mapped_markers = direct_names
-        result.synthetic_markers = synthetic_names
-        result.synthetic_marker_details = synthetic_details
+        result.derived_anatomical_markers = derived_names
+        result.synthetic_markers = derived_names
+        result.synthetic_marker_details = derived_details
+        result.reconstruction = reconstruction
+        result.temporal_estimated_markers = [
+            n for n in reconstruction.marker_names
+            if any(
+                reconstruction.frames[i][2][n].mapping_type == "TEMPORAL_ESTIMATED"
+                for i in range(len(reconstruction.frames))
+            )
+        ]
+        ref_set_full = set(GAIT2392_MARKER_NAMES)
+        present = set(result.mapped_opensim_markers)
+        result.unavailable_markers = sorted(ref_set_full - present)
     except (OSError, ValueError) as exc:
         result.mapping_status = "missing"
         result.message = f"Failed to create mapped TRC: {exc}"
@@ -815,17 +692,37 @@ def log_ik_validation_summary(comparison: MarkerComparison) -> None:
     logger.info("--- StableWalk IK validation (pre-run) ---")
     logger.info("Original MediaPipe markers: %d", len(comparison.stablewalk_trc_markers))
     logger.info("Mapped OpenSim markers (total): %d", len(comparison.mapped_opensim_markers))
-    logger.info("  Direct mappings: %d", len(comparison.direct_mapped_markers))
-    logger.info("  Synthetic markers: %d", len(comparison.synthetic_markers))
-    for name in comparison.synthetic_markers:
-        detail = comparison.synthetic_marker_details.get(name, "")
-        logger.info("    [synthetic] %s — %s", name, detail)
+    logger.info("  Direct markers: %d", len(comparison.direct_mapped_markers))
     logger.info(
-        "Markers matching OpenSim model: %d / %d (%.1f%% coverage)",
+        "  Derived anatomical markers: %d",
+        len(comparison.derived_anatomical_markers),
+    )
+    logger.info(
+        "  Temporal estimated markers: %d",
+        len(comparison.temporal_estimated_markers),
+    )
+    logger.info("  Unavailable markers: %d", len(comparison.unavailable_markers))
+    logger.info(
+        "Raw coverage: %.1f%% | High-confidence coverage: %.1f%%",
+        comparison.raw_coverage_percent,
+        comparison.high_confidence_coverage_percent,
+    )
+    logger.info(
+        "Markers matching OpenSim model: %d / %d (%.1f%% name overlap)",
         len(comparison.mapped_matching_markers),
         ref_n,
         comparison.coverage_percent,
     )
+    logger.info(
+        "IK readiness: %s (score %.1f)",
+        comparison.ik_readiness_level,
+        comparison.ik_readiness_score,
+    )
+    if comparison.low_confidence_markers:
+        logger.warning(
+            "Low-confidence markers before IK (not blocking): %s",
+            ", ".join(comparison.low_confidence_markers),
+        )
     logger.info("IK readiness tier: %s", comparison.ik_readiness_tier)
     logger.info("Marker mapping status: %s", comparison.mapping_status)
     logger.info("Reliability: %s (not clinical-grade)", comparison.reliability)
@@ -852,9 +749,14 @@ def log_marker_comparison(comparison: MarkerComparison) -> None:
         ", ".join(comparison.direct_mapped_markers) or "(none)",
     )
     logger.info(
-        "  Synthetic (%d): %s",
-        len(comparison.synthetic_markers),
-        ", ".join(comparison.synthetic_markers) or "(none)",
+        "  Derived anatomical (%d): %s",
+        len(comparison.derived_anatomical_markers),
+        ", ".join(comparison.derived_anatomical_markers) or "(none)",
+    )
+    logger.info(
+        "  Temporal estimated (%d): %s",
+        len(comparison.temporal_estimated_markers),
+        ", ".join(comparison.temporal_estimated_markers) or "(none)",
     )
     logger.info(
         "OpenSim demo/model markers (%d): %s",
@@ -868,7 +770,16 @@ def log_marker_comparison(comparison: MarkerComparison) -> None:
         ", ".join(comparison.mapped_matching_markers) or "(none)",
     )
     logger.info("Coverage: %.1f%%", comparison.coverage_percent)
-    logger.info("IK readiness tier: %s", comparison.ik_readiness_tier)
+    logger.info(
+        "Raw coverage: %.1f%% | High-confidence: %.1f%%",
+        comparison.raw_coverage_percent,
+        comparison.high_confidence_coverage_percent,
+    )
+    logger.info(
+        "IK readiness: %s (score %.1f)",
+        comparison.ik_readiness_level,
+        comparison.ik_readiness_score,
+    )
     logger.info("Reliability: %s", comparison.reliability)
     logger.info("IK experimental possible: %s", comparison.ik_experimental_ready)
     logger.info("IK reasonably usable: %s", comparison.ik_reasonably_usable)
@@ -885,6 +796,7 @@ def log_marker_comparison(comparison: MarkerComparison) -> None:
 def _write_marker_mapping_report(comparison: MarkerComparison) -> Path:
     """Write human-readable marker comparison to marker_mapping_report.txt."""
     mapping = load_stablewalk_to_opensim_mapping()
+    catalog = format_mapping_catalog_table()
     lines = [
         "StableWalk ↔ OpenSim Marker Mapping Report",
         "=" * 50,
@@ -892,6 +804,17 @@ def _write_marker_mapping_report(comparison: MarkerComparison) -> Path:
         f"StableWalk TRC path: {comparison.stablewalk_trc_path or '(not exported)'}",
         f"Mapped TRC path: {comparison.mapped_trc_path or '(not created)'}",
         f"OpenSim reference: {comparison.opensim_reference_source or '(not found)'}",
+        "",
+        "Reconstruction summary",
+        "-" * 30,
+        f"Direct markers: {len(comparison.direct_mapped_markers)}",
+        f"Derived anatomical markers: {len(comparison.derived_anatomical_markers)}",
+        f"Temporal estimated markers: {len(comparison.temporal_estimated_markers)}",
+        f"Unavailable markers: {len(comparison.unavailable_markers)}",
+        "",
+        f"Raw coverage: {comparison.raw_coverage_percent}%",
+        f"High-confidence coverage: {comparison.high_confidence_coverage_percent}%",
+        f"IK readiness: {comparison.ik_readiness_level} (score {comparison.ik_readiness_score:.1f})",
         "",
         f"Original MediaPipe markers ({len(comparison.stablewalk_trc_markers)}):",
         ", ".join(comparison.stablewalk_trc_markers) or "(none)",
@@ -902,13 +825,25 @@ def _write_marker_mapping_report(comparison: MarkerComparison) -> Path:
         f"Direct mappings ({len(comparison.direct_mapped_markers)}):",
         ", ".join(comparison.direct_mapped_markers) or "(none)",
         "",
-        f"Synthetic markers ({len(comparison.synthetic_markers)}):",
+        f"Derived anatomical markers ({len(comparison.derived_anatomical_markers)}):",
     ]
-    for name in comparison.synthetic_markers:
+    for name in comparison.derived_anatomical_markers:
         detail = comparison.synthetic_marker_details.get(name, "")
-        lines.append(f"  [SYNTHETIC] {name} — {detail}")
-    if not comparison.synthetic_markers:
+        lines.append(f"  [DERIVED_ANATOMICAL] {name} — {detail}")
+    if not comparison.derived_anatomical_markers:
         lines.append("(none)")
+    if comparison.temporal_estimated_markers:
+        lines.extend([
+            "",
+            f"Temporal estimated markers ({len(comparison.temporal_estimated_markers)}):",
+            ", ".join(comparison.temporal_estimated_markers),
+        ])
+    if comparison.low_confidence_markers:
+        lines.extend([
+            "",
+            f"Low-confidence markers ({len(comparison.low_confidence_markers)}):",
+            ", ".join(comparison.low_confidence_markers),
+        ])
     lines.extend([
         "",
         f"OpenSim demo/model markers ({len(comparison.opensim_reference_markers)}):",
@@ -917,7 +852,7 @@ def _write_marker_mapping_report(comparison: MarkerComparison) -> Path:
         f"Matching markers after mapping ({len(comparison.mapped_matching_markers)}):",
         ", ".join(comparison.mapped_matching_markers) or "(none)",
         "",
-        f"Coverage: {comparison.coverage_percent}%",
+        f"Name overlap coverage: {comparison.coverage_percent}%",
         f"IK readiness tier: {comparison.ik_readiness_tier}",
         f"Reliability: {comparison.reliability} (not clinical-grade)",
         "",
@@ -936,13 +871,22 @@ def _write_marker_mapping_report(comparison: MarkerComparison) -> Path:
         "",
         MEDIAPIPE_LIMITATION_EXPLANATION,
         "",
+        "Complete mapping catalog",
+        "-" * 30,
+    ])
+    header = ["OpenSim Marker", "Mapping Type", "Source MediaPipe Landmarks", "Calculation", "Confidence", "Biomechanical Risk"]
+    lines.append("\t".join(header))
+    for row in catalog:
+        lines.append("\t".join(str(row.get(h, "")) for h in header))
+    lines.extend([
+        "",
         "StableWalk → OpenSim direct mapping (marker_mapping.json):",
     ])
     for sw, osim_name in mapping.items():
         lines.append(f"  {sw} -> {osim_name}")
     lines.extend([
         "",
-        "Landmarks used only for synthetic generation:",
+        "Landmarks used for derived anatomical reconstruction:",
     ])
     for sw, note in PROPOSED_MEDIAPIPE_TO_GAIT2392.items():
         if sw not in mapping:
@@ -950,6 +894,9 @@ def _write_marker_mapping_report(comparison: MarkerComparison) -> Path:
 
     MARKER_MAPPING_REPORT.parent.mkdir(parents=True, exist_ok=True)
     MARKER_MAPPING_REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    catalog_path = MARKER_MAPPING_REPORT.with_name("marker_mapping_catalog.csv")
+    catalog_path.write_text(mapping_catalog_csv(catalog), encoding="utf-8")
     return MARKER_MAPPING_REPORT
 
 
@@ -1019,9 +966,14 @@ __all__ = [
     "DEMO_IK_MODEL",
     "DEMO_IK_OUTPUT_MOT",
     "PROPOSED_MEDIAPIPE_TO_GAIT2392",
+    "GAIT2392_MARKER_NAMES",
+    "DERIVED_ANATOMICAL_WEIGHT_SCALE",
+    "TEMPORAL_ESTIMATED_WEIGHT_SCALE",
+    "SYNTHETIC_WEIGHT_SCALE",
     "PREFERRED_MAPPED_MARKER_ORDER",
     "SYNTHETIC_MARKER_SPECS",
-    "MIN_EXPERIMENTAL_IK_MARKERS",
+    "MarkerReconstructionConfig",
+    "MarkerReconstructionResult",
     "MIN_REASONABLY_USABLE_MARKERS",
     "MIN_RELIABLE_IK_MARKERS",
     "get_marker_weight",

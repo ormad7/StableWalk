@@ -6,6 +6,7 @@ from stablewalk.adapters.opensim_schema import (
     opensim_column_name,
 )
 from stablewalk.adapters.pose_adapter import pose_frame_to_snapshot, pose_sequence_to_gait_motion
+from stablewalk.pose.backends.canonical import human_motion_sequence_to_gait_motion
 
 __all__ = [
     "canonical_from_opensim",
@@ -13,6 +14,7 @@ __all__ = [
     "opensim_column_name",
     "pose_frame_to_snapshot",
     "pose_sequence_to_gait_motion",
+    "human_motion_sequence_to_gait_motion",
 ]
 
 # Biomechanics / OpenSim service layer lives in ``stablewalk.biomechanics`` to

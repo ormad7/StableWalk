@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # Repository root (parent of the stablewalk package)
@@ -30,6 +31,7 @@ OPENSIM_DIR = OUTPUT_DIR / "opensim"  # OpenSim-compatible exports (.trc/.mot/.j
 TRACKING_EXPORT_DIR = OUTPUT_DIR / "tracking"  # Playback DOF tracking CSV/JSON exports
 ANALYSIS_EXPORT_DIR = OUTPUT_DIR / "analysis"  # Selected-point analysis CSV/JSON exports
 SESSION_EXPORT_DIR = OUTPUT_DIR / "sessions"  # Full session bundle folders (CSV + JSON)
+MOTION_REFERENCE_EXPORT_DIR = OUTPUT_DIR / "motion_reference"  # Real-to-Sim retargeting .npz
 OPENSIM_MODELS_DIR = PROJECT_ROOT / "models" / "opensim"  # user-provided .osim models
 SESSIONS_DB_PATH = OUTPUT_DIR / "sessions" / "stablewalk_sessions.db"
 
@@ -47,6 +49,14 @@ DEFAULT_JPEG_QUALITY = 95
 
 # MediaPipe pose model: "lite" (fast) or "full" (accurate)
 DEFAULT_POSE_MODEL_VARIANT = "full"
+
+# Pose / HMR backend selection (experimental research extension).
+# Supported: mediapipe | romp | hybrik | wham
+POSE_BACKEND = os.environ.get("POSE_BACKEND", "mediapipe").strip().lower()
+POSE_BACKEND_ALLOW_FALLBACK = os.environ.get(
+    "POSE_BACKEND_ALLOW_FALLBACK", "true"
+).strip().lower() in ("1", "true", "yes", "on")
+SUPPORTED_POSE_BACKENDS = ("mediapipe", "romp", "hybrik", "wham")
 
 # Per-frame image mode: reliable detection on each frame (legacy two-pass pipeline)
 DEFAULT_POSE_IMAGE_MODE = True
@@ -131,6 +141,7 @@ def ensure_output_dirs() -> None:
         TRACKING_EXPORT_DIR,
         ANALYSIS_EXPORT_DIR,
         SESSION_EXPORT_DIR,
+        MOTION_REFERENCE_EXPORT_DIR,
         OPENSIM_MODELS_DIR,
         SESSIONS_DB_PATH.parent,
     ):

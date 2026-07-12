@@ -1,5 +1,9 @@
 """
 Unified gait analysis report: metrics, forces, stability, simulation hook.
+
+Note: ``StabilityAnalyzer`` here uses a legacy penalty-based score. The Tk GUI
+and demo validation scripts use ``analyze_biomech_stability`` instead — see
+``stablewalk.analysis.biomech_stability``.
 """
 
 from __future__ import annotations

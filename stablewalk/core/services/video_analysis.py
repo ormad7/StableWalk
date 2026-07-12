@@ -2,6 +2,8 @@
 Single entry point for video → pose → enrichment → gait/advanced analysis.
 
 Avoids duplicating pipeline logic across Streamlit, scripts, and future APIs.
+The GUI stability panel uses ``biomech_stability``; ``gait.stability`` is the
+legacy penalty-based report kept for ``analyze_gait_advanced`` compatibility.
 """
 
 from __future__ import annotations
@@ -10,6 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stablewalk.analysis.advanced.pipeline import AdvancedGaitReport, analyze_gait_advanced
+from stablewalk.analysis.biomech_stability import StabilityResult, analyze_biomech_stability
+from stablewalk.analysis.gait_cycle_analysis import (
+    GaitCycleAnalysisResult,
+    analyze_gait_cycles_from_pose_sequence,
+)
 from stablewalk.pose.enrichment import enrich_pose_sequence
 from stablewalk.analysis.report import GaitAnalysisReport
 from stablewalk.models.pose_data import PoseSequence
@@ -22,6 +29,8 @@ class VideoAnalysisResult:
     overlay_path: Path | None
     gait: GaitAnalysisReport
     advanced: AdvancedGaitReport
+    biomech_stability: StabilityResult
+    gait_cycles: GaitCycleAnalysisResult
 
 
 def analyze_video_file(
@@ -57,10 +66,14 @@ def analyze_video_file(
 
     sid = source_id or video_path.name
     advanced = analyze_gait_advanced(sequence, body_mass_kg=body_mass_kg, source_id=sid)
+    biomech = analyze_biomech_stability(sequence)
+    gait_cycles = analyze_gait_cycles_from_pose_sequence(sequence)
 
     return VideoAnalysisResult(
         sequence=sequence,
         overlay_path=overlay_path if overlay_path and overlay_path.is_file() else None,
         gait=advanced.gait,
         advanced=advanced,
+        biomech_stability=biomech,
+        gait_cycles=gait_cycles,
     )

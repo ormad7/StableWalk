@@ -1,14 +1,25 @@
 # Demo gait video files
 
-Place your presentation demo clips here:
+Research-oriented demo protocol — see **`DEMO_VIDEO_SOURCES.md`** in this folder.
 
-| File | Category |
-|------|----------|
-| `abnormal_gait.mp4` | Abnormal / Neuropathic Gait |
-| `normal_gait.mp4` | Normal Gait |
-| `athletic_walking.mp4` | Athletic Walking |
+| File | UI category | Internal key | Target source |
+|------|-------------|--------------|---------------|
+| `abnormal_gait.mp4` | Abnormal | `abnormal` | GAVD (YouTube URL from annotations) |
+| `normal_gait.mp4` | Normal | `normal` | Health&Gait UGS |
+| `athletic_walking.mp4` | Performance | `athletic` | Health&Gait FGS |
 
-See **`DEMO_VIDEOS.md`** in the project root for download sources, attribution,
-and usage notes.
+**Do not install videos without running:**
 
-StableWalk does not download these files automatically.
+```bash
+python scripts/validate_demo_candidate.py --video <candidate.mp4>
+```
+
+Selection workflow:
+
+```bash
+python scripts/demo_video_selection_workflow.py
+python scripts/select_gavd_abnormal_candidate.py
+python scripts/inspect_healthgait_samples.py
+```
+
+Legacy Pexels / Utah stock demos are **deprecated** — see `DEMO_VIDEO_SOURCES.md`.

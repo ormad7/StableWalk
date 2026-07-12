@@ -183,7 +183,7 @@ def main() -> int:
         _assert(not traj, f"trajectory not empty: {traj}")
         _assert(not app._dof_step_previews, "step previews remain")
 
-    # Case 5: skeleton joint toggles checkbox
+    # Case 5: skeleton joint selects joint and shows trajectory on Overview
     def case5() -> None:
         item_id = item_for_joint("right_knee")
         _assert(item_id == "right_knee", f"item_for_joint={item_id}")
@@ -191,15 +191,23 @@ def main() -> int:
         app._on_skeleton_pick(_mock_pick("right_knee"))
         _assert("right_knee" in app.selection.selected, "pick did not select")
         _assert(app._dof_checkbox_vars["right_knee"].get(), "checkbox not checked")
+        from stablewalk.ui.tk.dashboard_notebook import TAB_OVERVIEW
+        tab = app._dashboard_notebook.tab(app._dashboard_notebook.select(), "text").strip()
+        _assert(tab == TAB_OVERVIEW, f"expected Overview tab, got {tab!r}")
+        _assert(getattr(app, "_overview_traj_dock_visible", False), "trajectory dock not shown")
+        canvas = getattr(app, "canvas_dof_traj_overview", None)
+        _assert(canvas is not None, "overview trajectory canvas missing")
+        w = canvas.get_tk_widget()
+        _assert(w.winfo_ismapped(), "overview trajectory canvas not mapped")
 
         app._on_skeleton_pick(_mock_pick("right_knee"))
-        _assert("right_knee" not in app.selection.selected, "pick did not deselect")
-        _assert(not app._dof_checkbox_vars["right_knee"].get(), "checkbox still checked")
+        _assert("right_knee" in app.selection.selected, "re-pick should keep selected")
+        _assert(app._dof_checkbox_vars["right_knee"].get(), "checkbox still checked")
 
         app._on_skeleton_pick(_mock_pick("left_shoulder"))
         _assert(
-            app.selection.selected == {"left_shoulder"},
-            f"shoulder pick should select left_shoulder, got {app.selection.selected}",
+            {"right_knee", "left_shoulder"} <= app.selection.selected,
+            f"shoulder pick should add left_shoulder, got {app.selection.selected}",
         )
         _assert(app._dof_checkbox_vars["left_shoulder"].get(), "left_shoulder checkbox off")
 

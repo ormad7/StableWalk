@@ -7,6 +7,7 @@ Kept separate from ``gui_theme`` so analysis and 3D plotting do not depend on Tk
 ACCENT = "#2ee59d"
 ACCENT_ALT = "#4dabf7"
 BORDER = "#303d55"
+ELEVATED = "#263348"
 INFO = "#74c0fc"
 PANEL = "#1c2433"
 TEXT = "#f0f4f8"

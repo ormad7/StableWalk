@@ -7,6 +7,11 @@ Primary API: ``GRFAnalyzer`` — vertical forces from CoM/hip acceleration::
     F_norm = F_z / (m * g)       body-weight units (BW)
 
 See ``WHY_APPROXIMATION`` and ``REAL_GRF_REQUIRES`` for scope and limits.
+
+For the research-oriented **Estimated Virtual Ground Reaction Force** architecture
+(physics simulation / learned estimators, Isaac Lab pipeline), see
+``stablewalk.analysis.virtual_grf`` and ``docs/VIRTUAL_GRF.md``.
+This module remains a separate legacy pose-based vertical proxy — not instrumented vGRF.
 """
 
 from __future__ import annotations
@@ -260,9 +265,10 @@ def _contact_masks_from_frames(frames: list[PoseFrame]) -> tuple[np.ndarray, np.
     left: list[bool] = []
     right: list[bool] = []
     for f in frames:
-        if f.foot_contact:
-            left.append(bool(f.foot_contact.get("left", False)))
-            right.append(bool(f.foot_contact.get("right", False)))
+        foot_contact = getattr(f, "foot_contact", None)
+        if foot_contact:
+            left.append(bool(foot_contact.get("left", False)))
+            right.append(bool(foot_contact.get("right", False)))
         else:
             left.append(f.gait_phase.get("left") == "stance")
             right.append(f.gait_phase.get("right") == "stance")

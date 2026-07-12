@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -13,8 +14,16 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
+# Serialize FFmpeg/OpenCV decode — concurrent VideoCapture use can crash libavcodec.
+_video_decode_lock = threading.Lock()
+
 # Track captures opened during validation (released on reset)
 _active_captures: list[cv2.VideoCapture] = []
+
+
+def video_decode_lock() -> threading.Lock:
+    """Return the global lock for video decode / VideoCapture operations."""
+    return _video_decode_lock
 
 
 def register_capture(cap: cv2.VideoCapture | None) -> None:
@@ -22,16 +31,26 @@ def register_capture(cap: cv2.VideoCapture | None) -> None:
         _active_captures.append(cap)
 
 
+def unregister_capture(cap: cv2.VideoCapture | None) -> None:
+    if cap is None:
+        return
+    try:
+        _active_captures.remove(cap)
+    except ValueError:
+        pass
+
+
 def release_all_captures() -> None:
     """Release any VideoCapture instances still held."""
     global _active_captures
-    for cap in _active_captures:
-        try:
-            if cap.isOpened():
-                cap.release()
-        except Exception:
-            pass
-    _active_captures = []
+    with _video_decode_lock:
+        for cap in _active_captures:
+            try:
+                if cap.isOpened():
+                    cap.release()
+            except Exception:
+                pass
+        _active_captures = []
     logger.debug("Released all video captures")
 
 

@@ -78,20 +78,11 @@ def initial_window_geometry(root: tk.Tk) -> str:
     return f"{w}x{h}+{x}+{y}"
 
 
-def install_responsive_shell(gui, parent: tk.Misc) -> ttk.Frame:
-    """Dashboard body host that fills the viewport."""
-    parent.columnconfigure(0, weight=1)
-    parent.rowconfigure(0, weight=1)
+def install_responsive_shell(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame]:
+    """Fixed-viewport dashboard notebook (three tabs; no full-page scroll)."""
+    from stablewalk.ui.tk.dashboard_notebook import install_dashboard_notebook
 
-    inner = ttk.Frame(parent)
-    inner.grid(row=0, column=0, sticky="nsew")
-    gui._dash_scroll_outer = None
-    gui._dash_scroll_canvas = None
-    gui._dash_scrollbar = None
-    gui._dash_scroll_inner = inner
-    gui._dash_scroll_window_id = None
-    gui._sync_dashboard_scroll = lambda _event=None: None
-    return inner
+    return install_dashboard_notebook(gui, parent)
 
 
 def _install_sidebar_scroll(gui, sidebar: tk.Misc) -> tk.Misc:
@@ -107,7 +98,7 @@ def _install_sidebar_scroll(gui, sidebar: tk.Misc) -> tk.Misc:
 
 
 def setup_compact_sidebar(gui) -> None:
-    """Flat sidebar: stability card, joints, action buttons."""
+    """Section 1 summary column — compact gait scores only."""
     inner: tk.Misc = gui._sidebar_scroll_inner
     for child in inner.winfo_children():
         try:
@@ -115,11 +106,31 @@ def setup_compact_sidebar(gui) -> None:
         except tk.TclError:
             pass
 
-    gui._sidebar_stability_panel.pack(in_=inner, fill=tk.X, pady=(0, PAD_XS))
-    gui._sidebar_dof_panel.pack(in_=inner, fill=tk.X, pady=(0, PAD_XS))
+    ttk.Label(
+        inner,
+        text="Gait Analysis Summary",
+        style="Heading.TLabel",
+    ).pack(anchor=tk.W, pady=(0, PAD_XS))
+
+    gui._sidebar_stability_panel.pack(in_=inner, fill=tk.X, pady=(0, 0))
+
+    for attr in (
+        "_sidebar_gait_cycle_panel",
+        "_sidebar_physics_force_panel",
+        "_sidebar_dof_panel",
+        "_sidebar_opensim_panel",
+    ):
+        panel = getattr(gui, attr, None)
+        if panel is not None:
+            try:
+                panel.pack_forget()
+            except tk.TclError:
+                pass
     if hasattr(gui, "btn_toggle_comparison"):
-        gui.btn_toggle_comparison.pack(in_=inner, fill=tk.X, pady=(0, PAD_XS))
-    gui._sidebar_opensim_panel.pack(in_=inner, fill=tk.X, pady=(0, 0))
+        try:
+            gui.btn_toggle_comparison.pack_forget()
+        except tk.TclError:
+            pass
     gui._sidebar_sections = ()
 
 
@@ -168,7 +179,7 @@ def _apply_visual_layout(gui, wmode: WidthMode) -> None:
     if host is None or video is None or skel is None:
         return
 
-    from stablewalk.ui.tk.dashboard_layout import DASHBOARD_GUTTER, _TOP_SKELETON_WEIGHT, _TOP_VIDEO_WEIGHT
+    from stablewalk.ui.tk.dashboard_layout import DASHBOARD_GUTTER
 
     use_tabs = wmode is WidthMode.SMALL
     prev_tabs = getattr(gui, "_viz_tabs_active", False)
@@ -180,144 +191,113 @@ def _apply_visual_layout(gui, wmode: WidthMode) -> None:
         if tab_bar is not None:
             tab_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, PAD_XS))
         host.rowconfigure(0, weight=0, minsize=0)
-        host.rowconfigure(1, weight=1)
+        host.rowconfigure(1, weight=0)
+        host.rowconfigure(2, weight=0, minsize=0)
         host.columnconfigure(0, weight=1)
         host.columnconfigure(1, weight=0, minsize=0)
+        host.columnconfigure(2, weight=0, minsize=0)
         apply_viz_tab_visibility(gui)
     else:
         content_row = 0
         gui._primary_viz_content_row = content_row
         if tab_bar is not None:
             tab_bar.grid_remove()
-        host.rowconfigure(0, weight=1)
+        host.rowconfigure(0, weight=0)
         host.rowconfigure(1, weight=0, minsize=0)
-        host.columnconfigure(0, weight=_TOP_VIDEO_WEIGHT, uniform="viz")
-        host.columnconfigure(1, weight=_TOP_SKELETON_WEIGHT, uniform="viz")
+        host.rowconfigure(2, weight=0, minsize=0)
+        from stablewalk.ui.tk.dashboard_sections import (
+            SEC1_SKELETON_WEIGHT,
+            SEC1_VIDEO_WEIGHT,
+        )
+
+        host.columnconfigure(0, weight=SEC1_VIDEO_WEIGHT, uniform="sec1")
+        host.columnconfigure(1, weight=SEC1_SKELETON_WEIGHT, uniform="sec1")
+        host.columnconfigure(2, weight=0, minsize=0)
         video.grid(row=content_row, column=0, sticky="nsew", padx=(0, DASHBOARD_GUTTER), pady=(0, 0))
-        skel.grid(row=content_row, column=1, sticky="nsew", padx=(0, 0), pady=(0, 0))
+        skel.grid(row=content_row, column=1, sticky="nsew", padx=(0, DASHBOARD_GUTTER), pady=(0, 0))
 
     if use_tabs != prev_tabs:
         gui._visuals_stacked = use_tabs
 
 
 def _apply_sidebar_layout(gui, wmode: WidthMode, width: int) -> None:
-    body = gui._dashboard_body
-    sidebar = gui.sidebar
-    analysis_outer = getattr(gui, "_analysis_scroll_outer", None)
-    primary_viz = getattr(gui, "_primary_viz_host", None)
-    inline = _sidebar_inline(wmode, width)
-
-    if inline:
-        if primary_viz is not None:
-            primary_viz.grid(row=0, column=0, columnspan=2, sticky="nsew")
-        sidebar.grid(
-            row=0,
-            column=2,
-            rowspan=1,
-            sticky="nsew",
-            padx=(8, 0),
-            pady=(0, 0),
-        )
-        if analysis_outer is not None:
-            analysis_outer.grid(row=1, column=0, columnspan=3, sticky="nsew")
-            gui._analysis_scroll_row = 1
-        try:
-            body.rowconfigure(0, weight=52)
-            body.rowconfigure(1, weight=48)
-            body.rowconfigure(2, weight=0, minsize=0)
-            cap = max(_SIDEBAR_MIN, min(_SIDEBAR_MAX, int(width * _SIDEBAR_FRAC_LARGE)))
-            body.columnconfigure(2, weight=18, minsize=cap)
-        except tk.TclError:
-            pass
-    else:
-        if primary_viz is not None:
-            primary_viz.grid(row=0, column=0, columnspan=3, sticky="nsew")
-        sidebar.grid(
-            row=1,
-            column=0,
-            columnspan=3,
-            rowspan=1,
-            sticky="ew",
-            padx=(0, 0),
-            pady=(PAD_XS, 0),
-        )
-        if analysis_outer is not None:
-            analysis_outer.grid(row=2, column=0, columnspan=3, sticky="nsew")
-            gui._analysis_scroll_row = 2
-        try:
-            body.rowconfigure(0, weight=52)
-            body.rowconfigure(1, weight=0, minsize=0)
-            body.rowconfigure(2, weight=48)
-            body.columnconfigure(2, weight=0, minsize=0)
-        except tk.TclError:
-            pass
-
-    gui._sidebar_was_compact = not inline
-
-
-def _apply_height_layout(gui, hmode: HeightMode, height: int, width: int) -> None:
-    body = getattr(gui, "_dashboard_body", None)
-    if body is None:
+    """Overview tab keeps video | 3D | summary at desktop widths."""
+    section1 = getattr(gui, "_section_visual", None)
+    sidebar = getattr(gui, "sidebar", None)
+    if section1 is None or sidebar is None:
         return
 
-    wmode, _ = classify_layout(width, height)
-    inline = _sidebar_inline(wmode, width)
-    chrome = 230
-    avail = max(360, height - chrome)
+    from stablewalk.ui.tk.dashboard_sections import (
+        SEC1_SKELETON_WEIGHT,
+        SEC1_SUMMARY_WEIGHT,
+        SEC1_VIDEO_WEIGHT,
+    )
 
-    if hmode is HeightMode.SHORT:
-        viz_share = 0.46
-        analysis_share = 0.54
-        viz_min = max(180, int(avail * viz_share))
-        analysis_min = max(160, int(avail * analysis_share))
+    use_tabs = getattr(gui, "_viz_tabs_active", False)
+    if use_tabs:
+        section1.columnconfigure(0, weight=1, uniform="sec1")
+        section1.columnconfigure(1, weight=0, minsize=0)
+        section1.columnconfigure(2, weight=0, minsize=0)
     else:
-        viz_share = 0.52
-        analysis_share = 0.48
-        viz_min = max(200, int(avail * viz_share))
-        analysis_min = max(180, int(avail * analysis_share))
+        section1.columnconfigure(0, weight=SEC1_VIDEO_WEIGHT, uniform="sec1")
+        section1.columnconfigure(1, weight=SEC1_SKELETON_WEIGHT, uniform="sec1")
+        section1.columnconfigure(2, weight=SEC1_SUMMARY_WEIGHT, uniform="sec1")
+    section1.rowconfigure(0, weight=1)
+    section1.rowconfigure(1, weight=0, minsize=0)
 
-    wmode, _ = classify_layout(width, height)
-    if wmode is WidthMode.SMALL:
-        viz_min = max(160, int(viz_min * 0.92))
+    if not use_tabs:
+        sidebar.grid(row=0, column=2, sticky="nsew", padx=(8, 0), pady=(0, 0))
 
+    motion = getattr(gui, "_tab_motion", None)
+    if motion is not None:
+        try:
+            motion.rowconfigure(0, weight=1)
+            motion.rowconfigure(1, weight=0)
+        except tk.TclError:
+            pass
+
+
+def _reflow_analysis_panel_stack(gui, width: int) -> None:
+    """Side-by-side knee + joint path panels; both expand vertically (nsew)."""
+    bottom = getattr(gui, "_dashboard_bottom_row", None)
+    traj = getattr(gui, "traj_panel", None)
+    knee = getattr(gui, "knee_panel", None)
+    if bottom is None or traj is None or knee is None:
+        return
+
+    from stablewalk.ui.tk.dashboard_layout import DASHBOARD_GUTTER
+
+    stack = width < 1180
     try:
-        body.rowconfigure(0, weight=52, minsize=viz_min)
-        if inline:
-            body.rowconfigure(1, weight=48, minsize=analysis_min)
+        bottom.columnconfigure(0, weight=1, minsize=0)
+        bottom.columnconfigure(1, weight=1, minsize=0)
+        if stack:
+            bottom.rowconfigure(0, weight=1)
+            bottom.rowconfigure(1, weight=1)
+            knee.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=(0, 0), pady=(0, PAD_XS))
+            traj.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=(0, 0), pady=(0, 0))
         else:
-            body.rowconfigure(1, weight=0, minsize=0)
-            body.rowconfigure(2, weight=48, minsize=analysis_min)
+            bottom.rowconfigure(0, weight=1)
+            bottom.rowconfigure(1, weight=0)
+            knee.grid(
+                row=0,
+                column=0,
+                columnspan=1,
+                sticky="nsew",
+                padx=(0, DASHBOARD_GUTTER),
+                pady=(0, 0),
+            )
+            traj.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=(0, 0), pady=(0, 0))
     except tk.TclError:
         pass
 
-    traj = getattr(gui, "traj_panel", None)
-    if traj is not None:
-        graph_min = max(140, int(analysis_min * 0.68))
-        try:
-            traj.rowconfigure(1, weight=1, minsize=graph_min)
-        except tk.TclError:
-            pass
 
-    scroll_outer = getattr(gui, "_analysis_scroll_outer", None)
-    scrollbar = getattr(gui, "_analysis_scrollbar", None)
-    canvas = getattr(gui, "_analysis_scroll_canvas", None)
-    if scroll_outer is None or canvas is None:
-        return
-
-    if hmode is HeightMode.SHORT:
-        try:
-            scroll_outer.rowconfigure(0, weight=1)
-            if scrollbar is not None:
-                scrollbar.grid(row=0, column=1, sticky="ns")
-            canvas.configure(yscrollcommand=scrollbar.set if scrollbar else None)
-        except tk.TclError:
-            pass
-    else:
-        try:
-            if scrollbar is not None:
-                scrollbar.grid(row=0, column=1, sticky="ns")
-        except tk.TclError:
-            pass
+def _apply_height_layout(gui, hmode: HeightMode, height: int, width: int) -> None:
+    """Content-driven section heights — only reflow analysis panel stacking."""
+    _reflow_analysis_panel_stack(gui, width)
+    scroll_sync = getattr(gui, "_sync_dashboard_scroll", None)
+    if scroll_sync is not None:
+        scroll_sync()
 
 
 def _reflow_metric_summary(gui, width: int) -> None:
@@ -342,19 +322,12 @@ def _reflow_metric_summary(gui, width: int) -> None:
 
 
 def _apply_graph_column_minsizes(gui, width: int) -> None:
+    """Graph hosts use content-driven width — no forced cube column minsize."""
     inner = getattr(gui, "dof_analysis_graph_inner", None)
     if inner is None:
         return
-    wmode, _ = classify_layout(width, gui.root.winfo_height())
-    if wmode is WidthMode.SMALL:
-        explain_min = max(88, min(120, int(width * 0.14)))
-        cube_min = max(160, int(width * 0.55))
-    else:
-        cube_min = max(180, min(520, int(width * 0.38)))
-        explain_min = max(88, min(130, int(width * 0.10)))
     try:
-        inner.columnconfigure(0, weight=3, minsize=cube_min)
-        inner.columnconfigure(1, weight=1, minsize=explain_min)
+        inner.columnconfigure(0, weight=1, minsize=0)
     except tk.TclError:
         pass
 
@@ -397,6 +370,13 @@ def _apply_transport_layout(gui, width: int) -> None:
             pass
 
 
+def _sync_scroll_bottom_clearance(gui) -> None:
+    """Advanced tab scroll only — main dashboard uses fixed notebook tabs."""
+    sync = getattr(gui, "_sync_tab_advanced_scroll", None)
+    if sync is not None:
+        sync()
+
+
 def apply_responsive_layout(gui, *, width: int | None = None, height: int | None = None) -> None:
     """Recompute layout for the current root window size."""
     root = gui.root
@@ -418,11 +398,14 @@ def apply_responsive_layout(gui, *, width: int | None = None, height: int | None
     _reflow_metric_summary(gui, width)
     _apply_graph_column_minsizes(gui, width)
     _apply_transport_layout(gui, width)
+    _sync_scroll_bottom_clearance(gui)
 
     gui._layout_width_mode = wmode
     gui._layout_height_mode = hmode
 
-    sync = getattr(gui, "_sync_analysis_scroll", None)
+    sync = getattr(gui, "_sync_dashboard_scroll", None) or getattr(
+        gui, "_sync_analysis_scroll", None
+    )
     if sync is not None:
         sync()
 

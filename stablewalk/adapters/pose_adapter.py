@@ -9,8 +9,9 @@ Downstream OpenSim export: ``stablewalk.biomechanics.export_to_opensim_format(re
 
 from __future__ import annotations
 
+import logging
+
 from stablewalk.models.gait_motion import (
-    DEFAULT_COORDINATE_SYSTEM,
     DofSample,
     GaitMotionRecording,
     JointSample,
@@ -27,6 +28,10 @@ from stablewalk.models.joint_registry import (
     normalize_joint_id,
 )
 from stablewalk.models.pose_data import PoseFrame, PoseSequence
+from stablewalk.coordinates.coordinate_map import (
+    CANONICAL_FRAME_ID,
+    audit_recording_anatomy,
+)
 
 # Pose-estimation landmark → canonical joint
 _POSE_LANDMARK_TO_JOINT: dict[str, str] = {
@@ -191,25 +196,7 @@ def _extract_joint_positions(frame: PoseFrame) -> dict[str, Vec3]:
     if frame.keypoints and frame.detected:
         _fill_from_keypoints(frame.keypoints, positions)
 
-    # Derive foot / heel / toe from ankle when missing (MediaPipe offsets)
-    span = _body_span_y(positions)
-    foot_drop = max(span * 0.035, 0.025)
-    foot_fwd = max(span * 0.055, 0.04)
-    heel_back = max(span * 0.02, 0.015)
-    for side in ("left", "right"):
-        ankle_id = f"{side}_ankle"
-        if ankle_id not in positions:
-            continue
-        a = positions[ankle_id]
-        foot_id = f"{side}_foot"
-        heel_id = f"{side}_heel"
-        toe_id = f"{side}_toe"
-        if foot_id not in positions:
-            positions[foot_id] = Vec3(a.x, a.y - foot_drop, a.z + foot_fwd * 0.6)
-        if heel_id not in positions:
-            positions[heel_id] = Vec3(a.x, a.y - foot_drop * 0.5, a.z - heel_back)
-        if toe_id not in positions:
-            positions[toe_id] = Vec3(a.x, a.y - foot_drop, a.z + foot_fwd)
+    _ensure_foot_landmarks(positions)
 
     _derive_anatomical_joints(positions)
     return positions
@@ -220,6 +207,33 @@ def _body_span_y(positions: dict[str, Vec3]) -> float:
     if len(ys) < 2:
         return 0.5
     return max(ys) - min(ys)
+
+
+def _ensure_foot_landmarks(positions: dict[str, Vec3]) -> None:
+    """
+    Derive or repair foot landmarks from the ipsilateral ankle.
+
+    Heel/toe from raw 2D ``positions`` can sit above the hip-centered ankle
+    (mixed coordinate sources). Replace invalid foot points with ankle offsets.
+    """
+    span = _body_span_y(positions)
+    foot_drop = max(span * 0.035, 0.025)
+    foot_fwd = max(span * 0.055, 0.04)
+    heel_back = max(span * 0.02, 0.015)
+    for side in ("left", "right"):
+        ankle_id = f"{side}_ankle"
+        a = positions.get(ankle_id)
+        if a is None:
+            continue
+        for joint_id, drop, dz in (
+            (f"{side}_foot", foot_drop, foot_fwd * 0.6),
+            (f"{side}_heel", foot_drop * 0.5, -heel_back),
+            (f"{side}_toe", foot_drop, foot_fwd),
+        ):
+            pos = positions.get(joint_id)
+            invalid = pos is None or pos.y > a.y + 0.015
+            if invalid:
+                positions[joint_id] = Vec3(a.x, a.y - drop, a.z + dz)
 
 
 def _extract_image_xy(frame: PoseFrame) -> dict[str, list[float]]:
@@ -392,6 +406,13 @@ def pose_frame_to_snapshot(frame: PoseFrame, *, fps: float) -> SkeletonSnapshot:
 
     image_xy = _extract_image_xy(frame)
 
+    landmark_visibility: dict[str, float] = {}
+    if frame.keypoints:
+        for kp in frame.keypoints:
+            canonical = _POSE_LANDMARK_TO_JOINT.get(kp.name) or normalize_joint_id(kp.name)
+            if canonical in JOINT_IDS or canonical == ROOT_JOINT_ID:
+                landmark_visibility[canonical] = float(kp.visibility)
+
     return SkeletonSnapshot(
         frame_index=frame.frame_index,
         time_s=frame.time_seconds(fps),
@@ -402,6 +423,7 @@ def pose_frame_to_snapshot(frame: PoseFrame, *, fps: float) -> SkeletonSnapshot:
             "gait_phase": dict(frame.gait_phase),
             "gait_events": list(frame.gait_events),
             "image_xy": image_xy,
+            "landmark_visibility": landmark_visibility,
         },
     )
 
@@ -502,8 +524,14 @@ def pose_sequence_to_gait_motion(
         fps=fps,
         snapshots=snapshots,
         source_kind="pose_estimation",
-        coordinate_system=DEFAULT_COORDINATE_SYSTEM,
+        coordinate_system=CANONICAL_FRAME_ID,
         metadata={"detected_count": sum(1 for f in frames if f.detected)},
     )
+    coord_warnings = audit_recording_anatomy(recording)
+    if coord_warnings:
+        recording.metadata["coordinate_warnings"] = coord_warnings
+        log = logging.getLogger(__name__)
+        for msg in coord_warnings[:3]:
+            log.warning("Coordinate audit: %s", msg)
     recording.build_time_series()
     return recording

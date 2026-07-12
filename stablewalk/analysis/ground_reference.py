@@ -23,28 +23,25 @@ import statistics
 from dataclasses import dataclass
 from typing import Literal
 
+from stablewalk.coordinates.coordinate_map import CANONICAL_VERTICAL_AXIS
 from stablewalk.models.gait_motion import GaitMotionRecording, SkeletonSnapshot, Vec3
 from stablewalk.models.joint_registry import ROOT_JOINT_ID
 
 # Analysis vertical axis — all ground-distance math uses this component only.
-VERTICAL_AXIS: str = "y"
+VERTICAL_AXIS: str = CANONICAL_VERTICAL_AXIS
 
-# Lowest foot landmarks used for bilateral clearance (minimum vertical distance).
+# Lowest foot landmarks used for bilateral clearance (minimum heel/toe vertical distance).
 FOOT_MEASUREMENT_JOINTS: dict[str, tuple[str, ...]] = {
-    "left": ("left_toe", "left_heel", "left_ankle"),
-    "right": ("right_toe", "right_heel", "right_ankle"),
+    "left": ("left_heel", "left_toe"),
+    "right": ("right_heel", "right_toe"),
 }
 
-# Foot landmarks scanned when estimating where the floor sits in Y.
+# High-confidence landmarks for sequence-level floor estimation.
 FLOOR_ESTIMATION_JOINTS: tuple[str, ...] = (
-    "left_toe",
-    "right_toe",
     "left_heel",
     "right_heel",
-    "left_ankle",
-    "right_ankle",
-    "left_foot",
-    "right_foot",
+    "left_toe",
+    "right_toe",
 )
 
 # Foot GUI items that receive ground-distance readouts.
@@ -71,16 +68,18 @@ SANITY_MAX_CLEARANCE_M: float = 0.35
 # Shown in UI/export when clearance exceeds SANITY_MAX_CLEARANCE_M (not exact cm).
 CALIBRATION_CHECK_LABEL: str = "Calibration check needed"
 
-# Floor estimation: 8th percentile of stance/low foot heights (robust vs outliers).
-_FLOOR_HEIGHT_PERCENTILE: float = 8.0
+# Floor estimation: robust low percentile of stance-weighted heel/toe heights.
+_FLOOR_HEIGHT_PERCENTILE: float = 10.0
 _MIN_FOOT_SAMPLES: int = 2
 _MIN_STANCE_SAMPLES: int = 3
-_FLOOR_MARGIN_FRAC: float = 0.04
-_MIN_FLOOR_MARGIN_M: float = 0.008
+_FLOOR_MARGIN_FRAC: float = 0.012
+_MIN_FLOOR_MARGIN_M: float = 0.005
+_MAX_FLOOR_BELOW_SESSION_MIN_FRAC: float = 0.015
+_MIN_FLOOR_ESTIMATION_VISIBILITY: float = 0.35
 
-# Feet sit roughly 45–58% of body vertical span below the pelvis (normalized skeleton).
+# Feet sit roughly 38–58% of body vertical span below the pelvis (normalized skeleton).
 _MIN_LEG_DROP_FRAC: float = 0.38
-_MAX_LEG_DROP_FRAC: float = 0.62
+_MAX_LEG_DROP_FRAC: float = 0.58
 
 ScaleMode = Literal["body_normalized", "unknown"]
 
@@ -99,6 +98,12 @@ class GroundReferencePlane:
     vertical_axis: str = VERTICAL_AXIS
     scale_mode: ScaleMode = "body_normalized"
     body_vertical_span: float | None = None
+    floor_candidate_min: float | None = None
+    floor_candidate_max: float | None = None
+    floor_candidate_std: float | None = None
+    coordinate_units: str = (
+        "canonical StableWalk body-normalized meters (+Y vertical, hip-centered)"
+    )
 
 
 @dataclass(frozen=True)
@@ -206,6 +211,19 @@ def foot_clearance_m(
     if distance is None:
         return None
     return max(0.0, distance)
+
+
+def displayed_foot_clearance_m(
+    heel_clearance_m: float | None,
+    toe_clearance_m: float | None,
+) -> float | None:
+    """
+    Displayed foot-to-floor distance reference used on Overview.
+
+    Uses min(heel, toe) clearance; ankle is excluded (see ``FOOT_MEASUREMENT_JOINTS``).
+    """
+    parts = [c for c in (heel_clearance_m, toe_clearance_m) if c is not None]
+    return min(parts) if parts else None
 
 
 def clearance_sanity_flag(distance_m: float | None) -> bool:
@@ -457,9 +475,17 @@ def _percentile(values: list[float], pct: float) -> float:
 
 
 def _filter_outliers(values: list[float]) -> list[float]:
-    """Tukey fence outlier rejection for 1D height samples."""
-    if len(values) < 4:
+    """Robust outlier rejection for 1D height samples (works with n >= 2)."""
+    if len(values) < 2:
         return list(values)
+    if len(values) < 4:
+        med = statistics.median(values)
+        mad = statistics.median(abs(v - med) for v in values)
+        if mad < 1e-9:
+            return list(values)
+        limit = max(3.5 * mad, 0.012)
+        kept = [v for v in values if abs(v - med) <= limit]
+        return kept if kept else list(values)
     ordered = sorted(values)
     q1 = _percentile(ordered, 25.0)
     q3 = _percentile(ordered, 75.0)
@@ -531,23 +557,94 @@ def _plausible_foot_height(
     foot_y: float,
     pelvis_y: float | None,
     body_span: float,
+    *,
+    leg_length: float | None = None,
 ) -> bool:
     """
     Reject pose outliers before floor estimation (+Y vertical, hip-centered).
 
     Feet should sit at or below the pelvis (smaller or equal Y). Reject feet
-    floating above the pelvis or more than ~105% of the observed body span below it.
+    floating above the pelvis or impossibly far below the pelvis / leg length.
     """
     if pelvis_y is None:
         return True
     if foot_y > pelvis_y + 0.06:
         return False
+    leg = leg_length if leg_length is not None else max(body_span * 0.48, 0.28)
+    max_drop = max(leg * 1.08, body_span * 0.62, 0.38)
     if foot_y < pelvis_y:
         leg_drop = pelvis_y - foot_y
-        max_leg = max(body_span, 0.28) * 1.05
-        if leg_drop > max_leg:
+        if leg_drop > max_drop:
             return False
     return True
+
+
+def _robust_leg_length(
+    recording: GaitMotionRecording,
+    end_index: int,
+    *,
+    axis: str,
+) -> float:
+    """Median hip-to-ankle vertical drop used for floor bounds."""
+    drops: list[float] = []
+    for index in range(end_index + 1):
+        snap = recording.snapshot_at(index)
+        if snap is None:
+            continue
+        for hip_id, ankle_id in (("left_hip", "left_ankle"), ("right_hip", "right_ankle")):
+            hip = snap.joints.get(hip_id)
+            ankle = snap.joints.get(ankle_id)
+            if hip is None or ankle is None:
+                continue
+            hy = vertical_coordinate(hip.position, axis=axis)
+            ay = vertical_coordinate(ankle.position, axis=axis)
+            drop = hy - ay
+            if 0.12 < drop < 0.85:
+                drops.append(drop)
+    if drops:
+        return float(statistics.median(drops))
+    return 0.45
+
+
+def _body_vertical_span(
+    recording: GaitMotionRecording,
+    end_index: int,
+    *,
+    axis: str,
+) -> float:
+    """Robust full-body vertical span from per-frame joint spread."""
+    spans: list[float] = []
+    scan = (
+        "head",
+        ROOT_JOINT_ID,
+        "left_hip",
+        "right_hip",
+        "left_ankle",
+        "right_ankle",
+    )
+    for index in range(end_index + 1):
+        snap = recording.snapshot_at(index)
+        if snap is None:
+            continue
+        ys = [
+            vertical_coordinate(sample.position, axis=axis)
+            for jid in scan
+            if (sample := snap.joints.get(jid)) is not None
+        ]
+        if len(ys) >= 2:
+            spans.append(max(ys) - min(ys))
+    if spans:
+        return max(float(statistics.median(spans)), 0.28)
+    return 0.45
+
+
+def _landmark_visibility(snapshot: SkeletonSnapshot, joint_id: str) -> float:
+    vis_map = snapshot.metadata.get("landmark_visibility")
+    if isinstance(vis_map, dict) and joint_id in vis_map:
+        return float(vis_map[joint_id])
+    if snapshot.joints.get(joint_id) is not None:
+        return 1.0
+    return 0.0
 
 
 def _collect_foot_heights(
@@ -555,16 +652,20 @@ def _collect_foot_heights(
     end_index: int,
     *,
     axis: str,
-) -> tuple[list[float], list[float], list[float]]:
+    leg_length: float,
+    body_span: float,
+) -> tuple[list[float], list[float], list[float], list[float], list[float]]:
     """
-    Collect foot landmark heights for floor estimation.
+    Collect heel/toe heights for sequence-level floor estimation.
 
-    Returns (all_foot_heights, stance_foot_heights, pelvis_heights).
-    Samples failing ``_plausible_foot_height`` are skipped.
+    Returns (all_foot_heights, stance_foot_heights, pelvis_heights,
+    frame_min_heights, high_confidence_frame_mins).
     """
     all_heights: list[float] = []
     stance_heights: list[float] = []
     pelvis_heights: list[float] = []
+    frame_min_heights: list[float] = []
+    high_conf_mins: list[float] = []
 
     for index in range(end_index + 1):
         snap = recording.snapshot_at(index)
@@ -574,31 +675,37 @@ def _collect_foot_heights(
         if pelvis is not None:
             pelvis_heights.append(pelvis)
 
-        frame_ys = [
-            vertical_coordinate(sample.position, axis=axis)
-            for jid in (
-                "head",
-                ROOT_JOINT_ID,
-                "left_hip",
-                "right_hip",
-                *FLOOR_ESTIMATION_JOINTS,
-            )
-            if (sample := snap.joints.get(jid)) is not None
-        ]
-        body_span = max(max(frame_ys) - min(frame_ys), 0.28) if len(frame_ys) >= 2 else 0.45
-
+        frame_foot: list[float] = []
+        conf_foot: list[float] = []
         for joint_id in FLOOR_ESTIMATION_JOINTS:
             sample = snap.joints.get(joint_id)
             if sample is None:
                 continue
+            vis = _landmark_visibility(snap, joint_id)
+            if vis < _MIN_FLOOR_ESTIMATION_VISIBILITY:
+                continue
             height = vertical_coordinate(sample.position, axis=axis)
-            if not _plausible_foot_height(height, pelvis, body_span):
+            side = _joint_side(joint_id)
+            side_ankle = snap.joints.get(f"{side}_ankle") if side else None
+            if side_ankle is not None:
+                ah = vertical_coordinate(side_ankle.position, axis=axis)
+                if height > ah + 0.015:
+                    continue
+            if not _plausible_foot_height(
+                height, pelvis, body_span, leg_length=leg_length
+            ):
                 continue
             all_heights.append(height)
+            frame_foot.append(height)
+            conf_foot.append(height)
             if _is_stance_sample(joint_id, snap):
                 stance_heights.append(height)
+        if frame_foot:
+            frame_min_heights.append(min(frame_foot))
+        if conf_foot:
+            high_conf_mins.append(min(conf_foot))
 
-    return all_heights, stance_heights, pelvis_heights
+    return all_heights, stance_heights, pelvis_heights, frame_min_heights, high_conf_mins
 
 
 # Stable ground plane per recording (full session) — avoids floor drift during playback.
@@ -644,41 +751,55 @@ def estimate_ground_plane(
     last_index = recording.frame_count - 1
     axis = VERTICAL_AXIS
 
-    all_heights, stance_heights, pelvis_heights = _collect_foot_heights(
-        recording, last_index, axis=axis
+    body_span = _body_vertical_span(recording, last_index, axis=axis)
+    leg_length = _robust_leg_length(recording, last_index, axis=axis)
+
+    all_heights, stance_heights, pelvis_heights, frame_min_heights, high_conf_mins = (
+        _collect_foot_heights(
+            recording,
+            last_index,
+            axis=axis,
+            leg_length=leg_length,
+            body_span=body_span,
+        )
     )
-    if len(all_heights) < _MIN_FOOT_SAMPLES:
+    if len(all_heights) < _MIN_FOOT_SAMPLES and len(high_conf_mins) < _MIN_FOOT_SAMPLES:
         return None
 
-    pool = stance_heights if len(stance_heights) >= _MIN_STANCE_SAMPLES else all_heights
+    # Prefer high-confidence per-frame heel/toe minima, then stance samples.
+    if len(high_conf_mins) >= _MIN_FOOT_SAMPLES:
+        pool = high_conf_mins
+    elif len(stance_heights) >= _MIN_STANCE_SAMPLES:
+        pool = stance_heights
+    elif len(frame_min_heights) >= _MIN_FOOT_SAMPLES:
+        pool = frame_min_heights
+    else:
+        pool = all_heights
+
     cleaned = _filter_outliers(pool)
     if len(cleaned) < _MIN_FOOT_SAMPLES:
         cleaned = pool
 
-    body_span = max(all_heights) - min(all_heights)
-    body_span = max(body_span, 0.28)
+    candidate_min = min(cleaned)
+    candidate_max = max(cleaned)
+    candidate_std = (
+        float(statistics.pstdev(cleaned)) if len(cleaned) >= 2 else 0.0
+    )
 
-    # Low percentile ≈ lowest stable foot contact (more robust than global min).
-    floor_anchor = _percentile(cleaned, _FLOOR_HEIGHT_PERCENTILE)
+    session_min = candidate_min
     margin = max(_MIN_FLOOR_MARGIN_M, body_span * _FLOOR_MARGIN_FRAC)
-    floor_y = floor_anchor - margin
+    floor_y = _percentile(cleaned, _FLOOR_HEIGHT_PERCENTILE) - margin
 
     if pelvis_heights:
         pelvis_median = statistics.median(pelvis_heights)
-        foot_low = min(cleaned)
-        # +Y up: feet sit below the pelvis (smaller vertical coordinate).
-        leg_drop = pelvis_median - foot_low
-        if leg_drop > 0.02:
-            max_leg = max(leg_drop, body_span) * 1.12
-            # Floor cannot be more than ~1.12× observed leg length below pelvis.
-            floor_y = max(floor_y, pelvis_median - max_leg)
+        floor_y = min(floor_y, pelvis_median - leg_length * 0.82)
 
-    # Floor at or slightly below lowest reliable foot contact (no rogue min() outlier).
-    reliable_low = _percentile(cleaned, 2.0)
-    floor_y = min(floor_y, reliable_low - margin * 0.25)
+    max_below = max(0.02, body_span * _MAX_FLOOR_BELOW_SESSION_MIN_FRAC)
+    floor_y = min(floor_y, session_min + margin * 0.5)
+    floor_y = max(floor_y, session_min - max_below)
 
     scale_mode: ScaleMode = "body_normalized"
-    if body_span > 2.5 or body_span < 0.08:
+    if body_span < 0.08:
         scale_mode = "unknown"
 
     plane = GroundReferencePlane(
@@ -686,6 +807,9 @@ def estimate_ground_plane(
         vertical_axis=axis,
         scale_mode=scale_mode,
         body_vertical_span=body_span,
+        floor_candidate_min=candidate_min,
+        floor_candidate_max=candidate_max,
+        floor_candidate_std=candidate_std,
     )
     _ground_plane_cache[cache_key] = plane
     return plane
@@ -705,11 +829,18 @@ def lowest_foot_landmark(
     side: str,
 ) -> tuple[Vec3 | None, str | None]:
     """
-    Return the lowest foot landmark on ``side`` (``left`` / ``right``).
+    Return the lowest heel/toe landmark on ``side`` (``left`` / ``right``).
 
-    Uses the minimum vertical coordinate among toe, heel, and ankle.
+    Uses the minimum vertical coordinate among heel and toe only.
+    Ankle is not used for foot clearance. Ignores heel/toe above ankle.
     """
     joints = FOOT_MEASUREMENT_JOINTS.get(side, ())
+    ankle_sample = snapshot.joints.get(f"{side}_ankle")
+    ankle_y = (
+        vertical_coordinate(ankle_sample.position, axis=VERTICAL_AXIS)
+        if ankle_sample is not None
+        else None
+    )
     best_pos: Vec3 | None = None
     best_joint: str | None = None
     best_y = float("inf")
@@ -719,6 +850,12 @@ def lowest_foot_landmark(
         if sample is None:
             continue
         y = vertical_coordinate(sample.position, axis=axis)
+        if (
+            ankle_y is not None
+            and joint_id.endswith(("_heel", "_toe", "_foot"))
+            and y > ankle_y + 0.015
+        ):
+            continue
         if y < best_y:
             best_y = y
             best_pos = sample.position

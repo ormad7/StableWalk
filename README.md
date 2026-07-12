@@ -363,30 +363,22 @@ PROFESSOR_REQUIREMENTS_CHECKLIST.md
 
 ## Demo Video Sources
 
-StableWalk ships three predefined demo clips under `data/demo_videos/` for
-presentation and comparison. Each is validated with OpenCV and MediaPipe before use.
+Research-oriented demo protocol: **[data/demo_videos/DEMO_VIDEO_SOURCES.md](data/demo_videos/DEMO_VIDEO_SOURCES.md)**
 
-| Demo | Gait type | Source | Notes |
-|------|-----------|--------|-------|
-| **Abnormal** | Neuropathic gait | [University of Utah – NeuroLogic Examination](https://neurologicexam.med.utah.edu/adult/html/gait_abnormal.html) | *Neuropathic Gait* (`gait_ab_10`) — clinical walking example; right foot dorsiflexion weakness with compensatory high stepping |
-| **Normal** | Typical walking | [Pexels 5320110](https://www.pexels.com/video/a-man-walking-towards-the-camera-5320110/) | Trimmed to continuous walking segment |
-| **Athletic** | Athletic walking | [Pexels 27727783](https://www.pexels.com/video/a-man-walking-on-a-tennis-court-27727783/) | Tennis-court sportswear walk; high heel/foot visibility, HIGH step confidence |
+| UI label | Internal key | Target source |
+|----------|--------------|---------------|
+| **Abnormal** | `abnormal` | [GAVD](https://github.com/Rahmyyy/GAVD) — annotations + YouTube URL |
+| **Normal** | `normal` | [Health&Gait](https://zenodo.org/records/14039922) UGS |
+| **Performance** | `athletic` | Health&Gait FGS (fast gait speed) |
 
-Download abnormal demo: `python scripts/download_utah_abnormal_demo.py`  
-Download normal/athletic: `python scripts/download_demo_videos.py`
+```bash
+python scripts/demo_video_selection_workflow.py
+python scripts/select_gavd_abnormal_candidate.py
+python scripts/inspect_healthgait_samples.py
+python scripts/validate_demo_candidate.py --video <candidate.mp4>
+```
 
-### Demo: Athletic
-
-| Field | Value |
-|-------|-------|
-| **Video title** | A man walking on a tennis court |
-| **Source platform** | Pexels |
-| **Creator** | Lola bertoncelli |
-| **Official source page** | https://www.pexels.com/video/a-man-walking-on-a-tennis-court-27727783/ |
-| **Local file** | `data/demo_videos/athletic_walking.mp4` |
-| **Purpose** | Athletic walking gait-analysis demo (sportswear, full-body rear view, validated MediaPipe foot tracking) |
-
-Replaced 2026-07-06 after investigation confirmed the previous clip (Pexels 5823532) had low heel visibility (~0.61) and LOW step-detection confidence despite acceptable full-segment stability scores. The Mixkit candidate (596) was rejected — lower body occluded by a railing.
+Legacy Pexels / Utah walker-assisted clips are **deprecated** and fail the new validator. Install replacements only after `ACCEPT` or `ACCEPT_WITH_LIMITATIONS`.
 
 ---
 

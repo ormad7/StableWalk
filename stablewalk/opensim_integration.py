@@ -206,41 +206,28 @@ def map_mediapipe_to_opensim_markers(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Coordinate conversion: MediaPipe image space -> OpenSim lab frame
-# ---------------------------------------------------------------------------
+from stablewalk.coordinates.coordinate_map import (
+    estimate_mediapipe_to_meter_scale,
+    mediapipe_to_opensim_trc_m,
+)
+
+
 def _convert_axes(x: float, y: float, z: float, scale: float) -> tuple[float, float, float]:
-    """
-    Convert MediaPipe normalized coordinates to an OpenSim-style lab frame.
-
-    MediaPipe image space: +x right, +y *down*, +z toward camera (relative).
-    OpenSim default lab frame: +x forward, +y *up*, +z right.
-
-    We flip Y so up is positive, scale to (approximate) meters, then to mm for
-    the .trc file. This is a documented approximation; for lab-grade accuracy
-    feed MediaPipe ``pose_world_landmarks`` (already in meters) instead.
-    """
-    x_os = x * scale
-    y_os = (1.0 - y) * scale  # flip image-down to world-up
-    z_os = -z * scale  # depth: toward camera -> negative forward
-    return (x_os, y_os, z_os)
+    """Delegate to centralized OpenSim TRC conversion (see ``coordinate_map``)."""
+    return mediapipe_to_opensim_trc_m(x, y, z, scale)
 
 
 def _estimate_scale(frames: Iterable[MarkerFrame], subject_height_m: float) -> float:
-    """
-    Estimate normalized->meter scale from the figure's vertical extent.
-
-    Uses the largest vertical span (top marker to bottom marker) seen across
-    frames and maps it to ``subject_height_m``. Falls back to 1.0 if no data.
-    """
+    """Estimate normalized→meter scale from marker vertical span in image space."""
     max_span = 0.0
     for f in frames:
         ys = [xyz[1] for xyz in f.markers.values()]
         if len(ys) >= 2:
             max_span = max(max_span, max(ys) - min(ys))
-    if max_span <= 1e-6:
-        return 1.0
-    return subject_height_m / max_span
+    return estimate_mediapipe_to_meter_scale(
+        [0.0, max_span] if max_span > 1e-6 else [],
+        subject_height_m=subject_height_m,
+    )
 
 
 # ---------------------------------------------------------------------------

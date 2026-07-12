@@ -7,6 +7,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from stablewalk.coordinates.coordinate_map import compact_axis_legend
+
 # Color palette
 BG = "#0d1117"
 BG_GRADIENT = "#121820"
@@ -83,7 +85,7 @@ TRAJ_DEFAULT_STATUS = (
 )
 TRAJ_NO_MOTION = "Load gait data to view 3D trajectories"
 EMPTY_SELECT_DOF_TABLE = "Select a point to track positions"
-EMPTY_SELECT_DOF_CHART = "Select a body point to view movement"
+EMPTY_SELECT_DOF_CHART = "Select a joint to view its 3D movement path"
 DOF_ANALYSIS_EXPLANATION_TITLE = "Overview"
 DOF_ANALYSIS_LEGEND_TRACKED_FMT = "{point}"
 DOF_ANALYSIS_PANEL_LINE_VALUES = "Current frame values"
@@ -99,7 +101,7 @@ DOF_ANALYSIS_MODE_FOOT_HINT = ""
 DOF_ANALYSIS_PANEL_GRAPH_GUIDE_TITLE = ""
 DOF_ANALYSIS_PANEL_LINE_GREEN = "Start"
 DOF_ANALYSIS_PANEL_LINE_BLUE = "Path"
-DOF_ANALYSIS_PANEL_LINE_RED = "Current"
+DOF_ANALYSIS_PANEL_LINE_RED = "Now"
 DOF_ANALYSIS_PANEL_LINE_X = "X"
 DOF_ANALYSIS_PANEL_LINE_Y = "Y"
 DOF_ANALYSIS_PANEL_LINE_Z = "Z"
@@ -124,7 +126,7 @@ DOF_ANALYSIS_AXES_TITLE = "Axes"
 DOF_ANALYSIS_LEGEND_PATH = DOF_ANALYSIS_PANEL_LINE_BLUE
 DOF_ANALYSIS_LEGEND_START = DOF_ANALYSIS_PANEL_LINE_GREEN
 DOF_ANALYSIS_LEGEND_DOT = DOF_ANALYSIS_PANEL_LINE_RED
-DOF_ANALYSIS_LEGEND_AXES_COMPACT = "X side · Y up · Z forward"
+DOF_ANALYSIS_LEGEND_AXES_COMPACT = compact_axis_legend()
 DOF_ANALYSIS_METRICS_LINK = DOF_ANALYSIS_PANEL_LINE_VALUES
 DOF_ANALYSIS_INTERPRETATION = DOF_ANALYSIS_PANEL_LINE_VALUES
 DOF_TRAJ_PATH_COLOR = "#82d8ff"
@@ -216,6 +218,32 @@ def apply_theme(root: tk.Tk | tk.Toplevel, style: ttk.Style) -> None:
     )
     style.map(
         "CompactAccent.TButton",
+        background=[("active", "#3df0ad"), ("pressed", ACCENT_DARK)],
+        foreground=[("disabled", MUTED_DIM)],
+    )
+    style.configure(
+        "Export.TButton",
+        background=PANEL,
+        foreground=ACCENT_ALT,
+        bordercolor=BORDER,
+        padding=(10, 6),
+        font=FONT_UI_SM,
+    )
+    style.map(
+        "Export.TButton",
+        background=[("active", ELEVATED), ("pressed", PANEL_HOVER)],
+        foreground=[("disabled", MUTED_DIM)],
+    )
+    style.configure(
+        "ExportAccent.TButton",
+        background=ACCENT,
+        foreground=ACCENT_FG,
+        bordercolor=ACCENT_DARK,
+        padding=(10, 6),
+        font=FONT_UI_SM,
+    )
+    style.map(
+        "ExportAccent.TButton",
         background=[("active", "#3df0ad"), ("pressed", ACCENT_DARK)],
         foreground=[("disabled", MUTED_DIM)],
     )
@@ -508,8 +536,17 @@ def configure_video_placeholder(label: tk.Label) -> None:
     )
 
 
-def format_stability_short(label: str, score: float) -> tuple[str, str]:
+def format_stability_short(
+    label: str,
+    score: float,
+    *,
+    validity_status: str | None = None,
+) -> tuple[str, str]:
     """One-line stability for the compact sidebar."""
+    if validity_status == "INSUFFICIENT_DATA":
+        return "Insufficient data  ·  not comparable", WARNING
+    if validity_status == "PROVISIONAL":
+        return f"⚠  {label}  ·  {score:.0f}/100  (provisional)", WARNING
     if label == "Stable":
         return f"✓  {label}  ·  {score:.0f}/100", SUCCESS
     return f"⚠  {label}  ·  {score:.0f}/100", WARNING

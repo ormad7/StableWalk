@@ -673,6 +673,8 @@ def write_ik_setup_xml(
     results_dir: str | Path | None = None,
     trc_marker_names: list[str] | None = None,
     synthetic_markers: set[str] | None = None,
+    derived_markers: set[str] | None = None,
+    temporal_markers: set[str] | None = None,
 ) -> Path:
     """
     Write an OpenSim Inverse Kinematics setup ``.xml`` with **absolute paths**.
@@ -705,7 +707,8 @@ def write_ik_setup_xml(
         ik_tool.setEndTime(tr[1])
 
     marker_names = trc_marker_names or _read_trc_marker_names(marker_file)
-    synthetic = synthetic_markers or set()
+    derived = derived_markers or synthetic_markers or set()
+    temporal = temporal_markers or set()
     if marker_names:
         from stablewalk.opensim_marker_mapping import get_marker_weight
 
@@ -714,13 +717,21 @@ def write_ik_setup_xml(
             task = osim.IKMarkerTask()  # type: ignore[union-attr]
             task.setName(name)
             task.setApply(True)
-            task.setWeight(get_marker_weight(name, is_synthetic=name in synthetic))
+            task.setWeight(
+                get_marker_weight(
+                    name,
+                    is_derived_anatomical=name in derived,
+                    is_temporal_estimated=name in temporal,
+                    is_synthetic=name in derived,
+                )
+            )
             task_set.adoptAndAppend(task)
         ik_tool.set_IKTaskSet(task_set)
         logger.info(
-            "  IK marker tasks: %d (synthetic: %d)",
+            "  IK marker tasks: %d (derived: %d, temporal: %d)",
             len(marker_names),
-            len(synthetic & set(marker_names)),
+            len(derived & set(marker_names)),
+            len(temporal & set(marker_names)),
         )
 
     ik_tool.printToXML(str(setup_path))
@@ -737,6 +748,8 @@ def run_inverse_kinematics_if_available(
     time_range: tuple[float, float] | None = None,
     trc_marker_names: list[str] | None = None,
     synthetic_markers: set[str] | None = None,
+    derived_markers: set[str] | None = None,
+    temporal_markers: set[str] | None = None,
 ) -> IkResult:
     """
     Run OpenSim Inverse Kinematics **only if** the SDK, model, and marker file
@@ -808,6 +821,8 @@ def run_inverse_kinematics_if_available(
             results_dir=marker_file.parent,
             trc_marker_names=marker_names,
             synthetic_markers=synthetic_markers,
+            derived_markers=derived_markers,
+            temporal_markers=temporal_markers,
         )
         logger.info("Running OpenSim IK...")
         logger.info("  Setup XML: %s", setup_path.resolve())
@@ -993,6 +1008,8 @@ def run_stablewalk_ik_experimental(
         setup_path=setup_path,
         trc_marker_names=comparison.mapped_opensim_markers,
         synthetic_markers=set(comparison.synthetic_markers),
+        derived_markers=set(comparison.derived_anatomical_markers),
+        temporal_markers=set(comparison.temporal_estimated_markers),
     )
 
     if result.ran and result.output_motion_path and Path(result.output_motion_path).is_file():

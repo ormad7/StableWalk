@@ -71,7 +71,9 @@ def _measure(app, width: int, height: int) -> dict[str, object]:
 
     displayed_video = (app.video_label.winfo_width(), app.video_label.winfo_height())
 
-    scroll = getattr(app, "_analysis_scroll_canvas", None)
+    scroll = getattr(app, "_dash_scroll_canvas", None) or getattr(
+        app, "_analysis_scroll_canvas", None
+    )
     scroll_needed = False
     if scroll is not None:
         scroll.update_idletasks()
