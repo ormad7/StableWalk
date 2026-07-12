@@ -8,6 +8,7 @@ figure.  Selected view: one coloured XYZ path and current-position dot per joint
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -220,6 +221,31 @@ def _format_overview_cm_tick(value: float, _pos: int) -> str:
     return f"{cm:.2f}"
 
 
+def _percentile_axis_limits(
+    values: list[float],
+    *,
+    pad_frac: float = 0.12,
+    min_span: float = 0.004,
+    low_pct: float = 0.06,
+    high_pct: float = 0.94,
+) -> tuple[float, float]:
+    """Robust axis limits that ignore single-frame pose spikes."""
+    if not values:
+        return -min_span * 0.5, min_span * 0.5
+    if len(values) < 6:
+        lo, hi = min(values), max(values)
+    else:
+        ordered = sorted(values)
+        n = len(ordered)
+        lo = ordered[max(0, int(n * low_pct))]
+        hi = ordered[min(n - 1, int(n * high_pct))]
+        if hi <= lo:
+            lo, hi = min(values), max(values)
+    span = max(hi - lo, min_span)
+    margin = span * pad_frac
+    return lo - margin, hi + margin
+
+
 def _overview_tick_values(lo: float, hi: float, *, use_cm: bool = False) -> list[float]:
     """Endpoint ticks (plus midpoint when span is readable) for Overview."""
     if abs(hi - lo) < 1e-12:
@@ -239,7 +265,9 @@ def _overview_tick_values(lo: float, hi: float, *, use_cm: bool = False) -> list
     if fmt(lo_r, 0) == fmt(hi_r, 0):
         return [lo, hi]
     ticks = [lo_r]
-    if use_cm and span * 100.0 >= 2.0:
+    span_cm = span * 100.0 if use_cm else span
+    # Midpoint ticks crowd athletic / side-view panels — keep endpoints only.
+    if use_cm and 2.0 <= span_cm < 12.0:
         mid_r = round((lo + hi) * 0.5, decimals)
         mid_label = fmt(mid_r, 0)
         if mid_label not in (fmt(lo_r, 0), fmt(hi_r, 0)):
@@ -313,6 +341,9 @@ def _style_single_dof_cube(ax: Axes) -> None:
 def _style_single_dof_trajectory_ticks(ax: Axes) -> None:
     """Readable ticks without overcrowding the 3D axes."""
     if bool(getattr(ax, "_stablewalk_overview_dock", False)):
+        _apply_overview_trajectory_ticks(ax)
+        return
+    if bool(getattr(ax, "_stablewalk_motion_dock", False)):
         _apply_overview_trajectory_ticks(ax)
         return
 
@@ -412,7 +443,7 @@ def _ensure_trajectory_plot_legend(ax: Axes) -> None:
             [0],
             color=_PATH_LINE_COLOR,
             linewidth=_PATH_LINE_WIDTH,
-            label="Path",
+            label="Path (fade→bright)",
         ),
         Line2D(
             [0],
@@ -641,6 +672,7 @@ def _viewport_for_overview_dock(
     zs: list[float],
     *,
     floor_y: float | None = None,
+    joint_id: str | None = None,
 ) -> _SingleTrajViewport:
     """
     Overview sidebar: fit each axis to the path span (no cubic inflation).
@@ -653,13 +685,21 @@ def _viewport_for_overview_dock(
     min_span = 0.004
     pad_frac = 0.10
 
+    caps = _joint_axis_span_caps_m(joint_id)
+
     for axis_idx, vals in enumerate((xs, ys, zs)):
-        lo, hi = min(vals), max(vals)
+        lo, hi = _percentile_axis_limits(
+            vals,
+            pad_frac=pad_frac,
+            min_span=min_span,
+            low_pct=0.12,
+            high_pct=0.88,
+        )
+        lo, hi = _clamp_limit_pair(lo, hi, max_span=caps[axis_idx])
         if axis_idx == 1 and floor_y is not None:
-            lo = min(lo, floor_y)
+            lo = min(lo, floor_y - min_span)
         span = max(hi - lo, min_span)
-        margin = span * pad_frac
-        limits.append((lo - margin, hi + margin))
+        limits.append((lo, hi))
         spans.append(span)
 
     max_span = max(spans)
@@ -697,6 +737,117 @@ def _path_max_span(path: list[Vec3]) -> float:
 
 def _point_distance(a: Vec3, b: Vec3) -> float:
     return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+
+
+def _remove_trajectory_outliers(path: list[Vec3]) -> list[Vec3]:
+    """Drop single-frame pose spikes that create scribble in small-ROM paths."""
+    if len(path) < 4:
+        return path
+    rom = _path_max_span(path)
+    max_step = max(rom * 0.42, 0.0025)
+    cleaned = [path[0]]
+    for point in path[1:]:
+        if _point_distance(cleaned[-1], point) <= max_step:
+            cleaned.append(point)
+    working = cleaned if len(cleaned) >= max(3, len(path) // 3) else list(path)
+    if len(working) < 8:
+        return working
+    filtered = working
+    for axis_getter in (
+        lambda p: p.x,
+        lambda p: p.y,
+        lambda p: p.z,
+    ):
+        vals = [axis_getter(p) for p in filtered]
+        lo, hi = _percentile_axis_limits(vals, pad_frac=0.0, min_span=1e-6)
+        margin = max(hi - lo, 1e-6) * 0.15
+        filtered = [
+            p
+            for p in filtered
+            if lo - margin <= axis_getter(p) <= hi + margin
+        ]
+    return filtered if len(filtered) >= 3 else working
+
+
+def _smooth_trajectory_path_light(path: list[Vec3], *, window: int = 3) -> list[Vec3]:
+    """Display-only moving average — keeps endpoints, softens tracking jitter."""
+    if len(path) < window:
+        return path
+    half = window // 2
+    smoothed: list[Vec3] = []
+    for index in range(len(path)):
+        lo = max(0, index - half)
+        hi = min(len(path), index + half + 1)
+        chunk = path[lo:hi]
+        smoothed.append(
+            Vec3(
+                sum(p.x for p in chunk) / len(chunk),
+                sum(p.y for p in chunk) / len(chunk),
+                sum(p.z for p in chunk) / len(chunk),
+            )
+        )
+    smoothed[0] = path[0]
+    smoothed[-1] = path[-1]
+    return smoothed
+
+
+def _joint_axis_span_caps_m(joint_id: str | None) -> tuple[float, float, float]:
+    """Maximum plausible root-relative span per axis (meters) for display."""
+    jid = (joint_id or "").lower()
+    if "hip" in jid or "pelvis" in jid:
+        return (0.16, 0.16, 0.16)
+    if any(token in jid for token in ("knee", "ankle", "foot", "heel", "toe")):
+        return (0.42, 0.50, 0.50)
+    return (0.32, 0.40, 0.40)
+
+
+def _clamp_limit_pair(lo: float, hi: float, *, max_span: float) -> tuple[float, float]:
+    span = hi - lo
+    if span <= max_span:
+        return lo, hi
+    mid = (lo + hi) * 0.5
+    half = max_span * 0.5
+    return mid - half, mid + half
+
+
+def _filter_path_near_joint_median(
+    path: list[Vec3],
+    joint_id: str | None,
+) -> list[Vec3]:
+    """Reject pose spikes far from the per-axis median (root-relative ROM)."""
+    if len(path) < 6:
+        return path
+    caps = _joint_axis_span_caps_m(joint_id)
+    mx = statistics.median([p.x for p in path])
+    my = statistics.median([p.y for p in path])
+    mz = statistics.median([p.z for p in path])
+    filtered = [
+        p
+        for p in path
+        if abs(p.x - mx) <= caps[0] * 0.55
+        and abs(p.y - my) <= caps[1] * 0.55
+        and abs(p.z - mz) <= caps[2] * 0.55
+    ]
+    return filtered if len(filtered) >= max(4, len(path) // 4) else path
+
+
+def _prepare_display_path(
+    path: list[Vec3],
+    *,
+    overview: bool = False,
+    motion_dock: bool = False,
+    joint_id: str | None = None,
+) -> list[Vec3]:
+    """Sanitize noisy paths for drawing and viewport limits."""
+    if len(path) < 3:
+        return path
+    cleaned = _remove_trajectory_outliers(path)
+    if overview or motion_dock:
+        cleaned = _filter_path_near_joint_median(cleaned, joint_id)
+    rom = _path_max_span(cleaned)
+    if (overview or motion_dock) and rom < 0.06:
+        cleaned = _smooth_trajectory_path_light(cleaned, window=3)
+    return cleaned
 
 
 def _time_progression_points(path: list[Vec3]) -> list[tuple[int, str]]:
@@ -1129,7 +1280,10 @@ def summarize_overview_trajectory(
     detail_parts = sync_bits + context_bits + motion_bits + [quality_line]
     detail_line = " · ".join(detail_parts)
     video_line = explanation
-    motion_line = "● Start (green)  —  blue path  —  ● Now (red)  ·  cm vs pelvis"
+    motion_line = (
+        "● Start (green)  —  faded path = earlier steps  —  "
+        "bright end = current stride  —  ● Now (red)"
+    )
     return OverviewTrajSummary(
         path_length_cm=path_len,
         span_x_cm=span_x,
@@ -1453,14 +1607,25 @@ def _get_cached_stable_viewport(
     )
     if len(full_path) < 2:
         return None
-    xs = [p.x for p, _t in full_path]
-    ys = [p.y for p, _t in full_path]
-    zs = [p.z for p, _t in full_path]
+    overview_dock = bool(getattr(ax, "_stablewalk_overview_dock", False))
+    motion_dock = bool(getattr(ax, "_stablewalk_motion_dock", False))
+    raw_points = [p for p, _t in full_path]
+    display_points = _prepare_display_path(
+        raw_points,
+        overview=overview_dock,
+        motion_dock=motion_dock,
+        joint_id=joint_id,
+    )
+    xs = [p.x for p in display_points]
+    ys = [p.y for p in display_points]
+    zs = [p.z for p in display_points]
     limit_ys = list(ys)
     if floor_y is not None:
         limit_ys.append(floor_y)
-    if bool(getattr(ax, "_stablewalk_overview_dock", False)):
-        viewport = _viewport_for_overview_dock(xs, limit_ys, zs, floor_y=floor_y)
+    if overview_dock or motion_dock:
+        viewport = _viewport_for_overview_dock(
+            xs, limit_ys, zs, floor_y=floor_y, joint_id=joint_id
+        )
     else:
         viewport = _viewport_for_single_dof_trajectory(xs, limit_ys, zs, floor_y=floor_y)
     ax._stablewalk_stable_viewport = (key, viewport)
@@ -1475,6 +1640,7 @@ def _apply_single_dof_limits(
     *,
     floor_y: float | None = None,
     stable_viewport: _SingleTrajViewport | None = None,
+    joint_id: str | None = None,
 ) -> None:
     """
     Set axis limits for the 3D trajectory panel.
@@ -1484,6 +1650,7 @@ def _apply_single_dof_limits(
     every frame to the partial path.
     """
     if stable_viewport is not None:
+        ax.set_autoscale_on(False)
         ax.set_xlim(*stable_viewport.xlim)
         ax.set_ylim(*stable_viewport.ylim)
         ax.set_zlim(*stable_viewport.zlim)
@@ -1526,7 +1693,7 @@ def _apply_single_dof_limits(
 
     overview_dock = bool(getattr(ax, "_stablewalk_overview_dock", False))
     if overview_dock:
-        viewport = _viewport_for_overview_dock(xs, ys, zs, floor_y=floor_y)
+        viewport = _viewport_for_overview_dock(xs, ys, zs, floor_y=floor_y, joint_id=joint_id)
     else:
         viewport = _viewport_for_single_dof_trajectory(xs, ys, zs, floor_y=floor_y)
     ax.set_xlim(*viewport.xlim)
@@ -2062,6 +2229,27 @@ def _draw_single_dof_trajectory_path(
             zorder=4,
         )
         ax.add_collection3d(collection)
+        if overview and seg_count >= 6:
+            tail_start = max(0, int(seg_count * 0.78))
+            tail_segments = segments[tail_start:]
+            if len(tail_segments) >= 2:
+                bright = mcolors.to_rgb(_PATH_LINE_COLOR)
+                tail_colors = [
+                    (bright[0], bright[1], bright[2], 0.92)
+                    for _ in range(len(tail_segments))
+                ]
+                tail_widths = [
+                    line_w * 1.15 for _ in range(len(tail_segments))
+                ]
+                ax.add_collection3d(
+                    Line3DCollection(
+                        tail_segments,
+                        colors=tail_colors,
+                        linewidths=tail_widths,
+                        capstyle="round",
+                        zorder=5,
+                    )
+                )
     except Exception:
         ax.plot(
             xs,
@@ -2707,23 +2895,30 @@ def draw_single_dof_trajectory_3d(
         return False, ""
 
     path = [point for point, _time in path_with_times]
-    xs = [p.x for p in path]
-    ys = [p.y for p in path]
-    zs = [p.z for p in path]
+    overview_dock = bool(getattr(ax, "_stablewalk_overview_dock", False))
+    motion_dock = bool(getattr(ax, "_stablewalk_motion_dock", False))
+    display_path = _prepare_display_path(
+        path,
+        overview=overview_dock,
+        motion_dock=motion_dock,
+        joint_id=joint_id,
+    )
+    xs = [p.x for p in display_path]
+    ys = [p.y for p in display_path]
+    zs = [p.z for p in display_path]
 
     marker_scale = _single_traj_visual_scale(ax)
     start_size = _START_DOT_SIZE * marker_scale
     current_size = _CURRENT_DOT_SIZE * marker_scale
 
-    span = _path_max_span(path)
+    span = _path_max_span(display_path)
     raw_motion = (
         max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)) if xs else 0.0
     )
-    start = path[0]
+    start = display_path[0]
     state = _traj_artists(ax)
 
     _clear_traj_decorations(ax)
-    overview_dock = bool(getattr(ax, "_stablewalk_overview_dock", False))
     if overview_dock:
         if state.path_line is not None:
             try:
@@ -2738,14 +2933,14 @@ def draw_single_dof_trajectory_3d(
         _ensure_trajectory_path_line(ax, xs, ys, zs)
     if overview_dock:
         patch_before = len(ax.patches)
-        _draw_single_dof_direction_arrow(ax, path, span=span)
+        _draw_single_dof_direction_arrow(ax, display_path, span=span)
         state.decorations.extend(ax.patches[patch_before:])
     else:
         coll_before = len(ax.collections)
-        _draw_path_progress_dots(ax, path, marker_scale=marker_scale)
+        _draw_path_progress_dots(ax, display_path, marker_scale=marker_scale)
         state.decorations.extend(ax.collections[coll_before:])
         patch_before = len(ax.patches)
-        _draw_single_dof_direction_arrow(ax, path, span=span)
+        _draw_single_dof_direction_arrow(ax, display_path, span=span)
         state.decorations.extend(ax.patches[patch_before:])
 
     from stablewalk.analysis.ground_reference import FOOT_POINT_IDS, estimate_ground_plane
@@ -2781,6 +2976,7 @@ def draw_single_dof_trajectory_3d(
         zs,
         floor_y=floor_y,
         stable_viewport=stable_viewport,
+        joint_id=joint_id,
     )
     _style_single_dof_trajectory_ticks(ax)
 
@@ -2828,24 +3024,13 @@ def draw_single_dof_trajectory_3d(
     # on top of the line and hid it. The colours are explained by the side
     # panel's Start / Path / Now legend instead, leaving the trajectory clear.
 
-    # When travel is small the cube auto-zooms in, so the path is visible but the
-    # scale is tiny. Surface the true travel (as ~% of body height) so the
-    # magnified view is read honestly rather than as large motion.
+    # Zoom note is shown in the panel below the graph — not overlaid on the path.
     if raw_motion < _SINGLE_TRAJ_SMALL_MOTION and not getattr(
         ax, "_stablewalk_overview_dock", False
     ):
-        ax.text2D(
-            0.5,
-            0.99,
-            f"Zoomed in \u00b7 total travel \u2248 {raw_motion * 100.0:.1f}% of body height",
-            transform=ax.transAxes,
-            ha="center",
-            va="top",
-            color=MUTED,
-            fontsize=7.5,
-            style="italic",
-            zorder=11,
-        )
+        ax._stablewalk_zoom_note_pct = raw_motion * 100.0
+    else:
+        ax._stablewalk_zoom_note_pct = None
 
     span_tuple = (
         max(xs) - min(xs) if xs else 0.0,
@@ -2857,7 +3042,6 @@ def draw_single_dof_trajectory_3d(
     _ensure_trajectory_plot_legend(ax)
     relayout_single_dof_viewport(ax)
     if getattr(ax, "_stablewalk_overview_dock", False):
-        _apply_overview_trajectory_ticks(ax)
         if overview_dock and current is not None and len(path) >= 2:
             span_x_cm = (max(xs) - min(xs)) * 100.0 if xs else 0.0
             span_y_cm = (max(ys) - min(ys)) * 100.0 if ys else 0.0
@@ -2877,7 +3061,10 @@ def draw_single_dof_trajectory_3d(
                 span_z_cm=span_z_cm,
             )
             path_len_cm = (
-                sum(_point_distance(path[i - 1], path[i]) for i in range(1, len(path)))
+                sum(
+                    _point_distance(display_path[i - 1], display_path[i])
+                    for i in range(1, len(display_path))
+                )
                 * 100.0
             )
             rom_max_cm = max(span_x_cm, span_y_cm, span_z_cm)
@@ -2888,13 +3075,14 @@ def draw_single_dof_trajectory_3d(
             state.decorations.extend(
                 _draw_overview_trajectory_explainers(
                     ax,
-                    path=path,
+                    path=display_path,
                     start=start,
                     current=current,
-                    caption=path_caption,
-                    metrics_line=hud_metrics,
+                    caption=None,
+                    metrics_line=None,
                 )
             )
+        _apply_overview_trajectory_ticks(ax)
     status = trajectory_progression_status(path)
     if len(path) < 5:
         ax.text2D(

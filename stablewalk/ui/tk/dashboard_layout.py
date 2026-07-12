@@ -835,9 +835,9 @@ def _build_compact_graph_legend(parent: tk.Misc) -> list[tk.Label]:
         bg = ELEVATED
 
     items = (
-        (DOF_TRAJ_START_COLOR, DOF_ANALYSIS_PANEL_LINE_GREEN),
-        (DOF_TRAJ_PATH_COLOR, DOF_ANALYSIS_PANEL_LINE_BLUE),
-        (DOF_TRAJ_DOT_COLOR, DOF_ANALYSIS_PANEL_LINE_RED),
+        (DOF_TRAJ_START_COLOR, "Start"),
+        (DOF_TRAJ_PATH_COLOR, "Path (fade→bright)"),
+        (DOF_TRAJ_DOT_COLOR, "Now"),
     )
     labels: list[tk.Label] = []
     for index, (color, name) in enumerate(items):
@@ -1370,6 +1370,7 @@ def build_dashboard_layout(gui) -> None:
         bind_panel_word_wrap,
         build_data_export_section,
         build_gait_metrics_section,
+        build_real_to_sim_section,
         build_gait_summary_cards,
         build_overview_metrics_row,
     )
@@ -1419,6 +1420,7 @@ def build_dashboard_layout(gui) -> None:
     overview_traj_panel.rowconfigure(2, weight=0)
     overview_traj_panel.rowconfigure(3, weight=0)
     overview_traj_panel.rowconfigure(4, weight=0)
+    overview_traj_panel.rowconfigure(5, weight=0)
     gui.overview_traj_panel = overview_traj_panel
     gui.lbl_overview_traj_title = None
     gui.overview_traj_canvas_host = tk.Frame(
@@ -1429,7 +1431,10 @@ def build_dashboard_layout(gui) -> None:
     gui.overview_traj_canvas_host.rowconfigure(0, weight=1)
     gui.lbl_overview_traj_legend = tk.Label(
         overview_traj_panel,
-        text="● Start (green)  —  blue path  —  ● Now (red)  ·  cm vs pelvis center",
+        text=(
+            "● Start (green)  —  faded path = earlier steps  —  "
+            "bright end = current stride  —  ● Now (red)"
+        ),
         bg=PANEL,
         fg=MUTED,
         font=FONT_UI_SM,
@@ -1443,7 +1448,7 @@ def build_dashboard_layout(gui) -> None:
         text="",
         bg=PANEL,
         fg=ACCENT,
-        font=FONT_UI_SM,
+        font=FONT_METRIC,
         anchor="w",
         justify=tk.LEFT,
         wraplength=420,
@@ -1464,13 +1469,24 @@ def build_dashboard_layout(gui) -> None:
         overview_traj_panel,
         text="",
         bg=PANEL,
-        fg=ACCENT,
+        fg=TEXT,
         font=FONT_UI_SM,
         anchor="w",
         justify=tk.LEFT,
-        wraplength=400,
+        wraplength=420,
     )
     gui.lbl_overview_traj_video.grid(row=4, column=0, sticky="ew", pady=(2, 0))
+    gui.lbl_overview_category_note = tk.Label(
+        overview_traj_panel,
+        text="",
+        bg=PANEL,
+        fg=ACCENT,
+        font=("Segoe UI Semibold", 8),
+        anchor="w",
+        justify=tk.LEFT,
+        wraplength=420,
+    )
+    gui.lbl_overview_category_note.grid(row=5, column=0, sticky="ew", pady=(2, 0))
     gui.lbl_overview_traj_motion = None
     gui.overview_traj_mount = gui.overview_traj_canvas_host
     gui._overview_traj_dock_visible = False
@@ -1967,7 +1983,7 @@ def build_dashboard_layout(gui) -> None:
         textvariable=gui.var_dof_traj_display,
         values=("CURRENT PROGRESS", "FULL TRAJECTORY"),
         state="readonly",
-        width=16,
+        width=18,
     )
     gui.cmb_dof_traj_display.pack(side=tk.LEFT, padx=(0, 10))
     gui.cmb_dof_traj_display.bind(
@@ -2128,6 +2144,18 @@ def build_dashboard_layout(gui) -> None:
     )
     gui.lbl_joint_path_summary.grid(row=0, column=0, sticky="ew")
 
+    gui.lbl_motion_traj_metrics = tk.Label(
+        gui.dof_analysis_interp_frame,
+        text="",
+        bg=PANEL,
+        fg=ACCENT,
+        font=FONT_METRIC,
+        anchor="w",
+        justify=tk.LEFT,
+        wraplength=520,
+    )
+    gui.lbl_motion_traj_metrics.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
     gui.lbl_traj_confidence = tk.Label(
         gui.dof_analysis_interp_frame,
         text="Trajectory Confidence: —",
@@ -2136,7 +2164,7 @@ def build_dashboard_layout(gui) -> None:
         font=FONT_UI_SM,
         anchor="w",
     )
-    gui.lbl_traj_confidence.grid(row=1, column=0, sticky="w", pady=(2, 0))
+    gui.lbl_traj_confidence.grid(row=2, column=0, sticky="w", pady=(2, 0))
     gui.lbl_dof_graph_explain_body = gui.lbl_joint_path_summary
     gui.lbl_dof_traj_interp_compact = None
     gui.dof_analysis_graph_explainer = gui.dof_analysis_interp_frame
@@ -2152,6 +2180,8 @@ def build_dashboard_layout(gui) -> None:
 
     gui.fig_dof_traj = Figure(figsize=(5.6, 4.2), dpi=100, facecolor=PANEL)
     gui.ax_dof_traj = gui.fig_dof_traj.add_subplot(111, projection="3d")
+    gui.ax_dof_traj._stablewalk_motion_dock = True
+    gui.ax_dof_traj._stablewalk_overview_cm_ticks = True
     setup_single_dof_trajectory_axes(gui.ax_dof_traj)
     from stablewalk.ui.viewers.dof_trajectory_3d import relayout_single_dof_viewport
 
@@ -2297,20 +2327,26 @@ def build_dashboard_layout(gui) -> None:
         style="Card.TLabel",
     )
     gui.lbl_advanced_pelvis.grid(row=1, column=0, sticky="w", pady=(2, 0))
-    gui.lbl_advanced_evidence = ttk.Label(
+    gui.lbl_advanced_evidence = tk.Label(
         advanced_info,
         text="Evidence: —",
-        style="Card.TLabel",
+        bg=PANEL,
+        fg=TEXT,
+        font=FONT_UI_SM,
+        anchor="w",
         wraplength=720,
         justify=tk.LEFT,
     )
     gui.lbl_advanced_evidence.grid(row=2, column=0, sticky="w", pady=(2, 0))
     gui._section_advanced_info = advanced_info
 
-    motion_tools.grid(row=2, column=0, sticky="ew", pady=(0, PAD_XS))
+    real_to_sim_section = build_real_to_sim_section(gui, tab_advanced_content)
+    real_to_sim_section.grid(row=2, column=0, sticky="ew", pady=(0, PAD_XS))
+
+    motion_tools.grid(row=3, column=0, sticky="ew", pady=(0, PAD_XS))
 
     data_row = build_data_export_section(gui, tab_advanced_content)
-    data_row.grid(row=3, column=0, sticky="ew", pady=(0, PAD_XS))
+    data_row.grid(row=4, column=0, sticky="ew", pady=(0, PAD_XS))
 
     table_panel = ttk.LabelFrame(
         motion_tools,
@@ -2769,6 +2805,17 @@ def build_dashboard_layout(gui) -> None:
         wraplength=_side_wrap,
     )
     gui.lbl_physics_force_note.pack(anchor=tk.W, pady=(0, 0))
+
+    gui.lbl_real_to_sim_style = tk.Label(
+        physics_force_panel,
+        text="Gait style: —",
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_XS,
+        anchor="w",
+        wraplength=_side_wrap,
+    )
+    gui.lbl_real_to_sim_style.pack(anchor=tk.W, pady=(4, 0))
 
     comparison_panel = ttk.Frame(
         gui._sidebar_hidden,

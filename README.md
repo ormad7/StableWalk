@@ -9,6 +9,22 @@ estimation (MediaPipe) with a biomechanics-oriented representation layer
 (OpenSim) so the extracted human motion can be analyzed, visualized, and
 exported in formats used by the biomechanics community.
 
+### Real-to-Sim gait pipeline
+
+StableWalk also implements the research-spec **4-stage Real-to-Sim workflow** for
+initializing a 3D walking simulator from human video (Isaac Lab / AMP):
+
+1. **Perception** — gait style fingerprint (stride, cadence, hip sway, arm swing)
+2. **Retargeting** — scale human motion to Unitree G1 humanoid proportions
+3. **Simulation prep** — AMP reference export for Isaac Lab imitation learning
+4. **Physics** — virtual GRF estimation + contact-mask synchronization reward
+
+```powershell
+python main.py --real-to-sim data/demo_videos/normal_gait.mp4
+```
+
+See `docs/REAL_TO_SIM_PIPELINE.md` for full documentation.
+
 ---
 
 ## 1. Project goal

@@ -26,7 +26,7 @@ from stablewalk.models.pose_data import PoseSequence
 
 logger = logging.getLogger(__name__)
 
-MOTION_REFERENCE_SCHEMA_VERSION = "1.0"
+MOTION_REFERENCE_SCHEMA_VERSION = "1.1"
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,41 @@ def _pelvis_position(snap) -> tuple[float, float, float] | None:
         (lh.position.y + rh.position.y) * 0.5,
         (lh.position.z + rh.position.z) * 0.5,
     )
+
+
+def _estimate_root_orientations(root_positions: np.ndarray) -> np.ndarray:
+    """Estimate root quaternions (w,x,y,z) from pelvis displacement."""
+    n = len(root_positions)
+    quats = np.zeros((n, 4), dtype=np.float64)
+    quats[:, 0] = 1.0
+    if n < 2:
+        return quats
+    for i in range(1, n):
+        dx = root_positions[i, 0] - root_positions[i - 1, 0]
+        dy = root_positions[i, 1] - root_positions[i - 1, 1]
+        dz = root_positions[i, 2] - root_positions[i - 1, 2]
+        horiz = np.hypot(dx, dz)
+        if horiz < 1e-8 and abs(dy) < 1e-8:
+            quats[i] = quats[i - 1]
+            continue
+        yaw = float(np.arctan2(dz, dx))
+        pitch = float(np.arctan2(dy, horiz))
+        cy, sy = np.cos(yaw * 0.5), np.sin(yaw * 0.5)
+        cp, sp = np.cos(pitch * 0.5), np.sin(pitch * 0.5)
+        quats[i, 0] = cy * cp
+        quats[i, 1] = cy * sp
+        quats[i, 2] = sy * cp
+        quats[i, 3] = sy * sp
+    return quats
+
+
+def _joint_rotations_from_dofs(recording: GaitMotionRecording) -> dict[str, list[float]]:
+    """Collect per-frame DOF angles when available."""
+    out: dict[str, list[float]] = {}
+    for snap in recording.snapshots:
+        for dof_id, sample in snap.dofs.items():
+            out.setdefault(dof_id, []).append(float(sample.angle_deg or 0.0))
+    return out
 
 
 def build_motion_reference_arrays(
@@ -130,15 +165,28 @@ def export_motion_reference_npz(
     recording: GaitMotionRecording,
     cycles: GaitCycleAnalysisResult,
     output_path: Path,
+    *,
+    gait_style: object | None = None,
 ) -> MotionReferenceExportResult:
     """Write ``stablewalk_motion.npz`` to ``output_path``."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     arrays = build_motion_reference_arrays(recording, cycles)
-    # root_orientations reserved — not available from current MediaPipe backend
-    arrays["root_orientations"] = np.array([], dtype=np.float64)
-    arrays["joint_rotations_json"] = json.dumps({})
+    root_pos = arrays["root_positions"]
+    if len(root_pos) >= 2 and not np.all(np.isnan(root_pos)):
+        valid = np.nan_to_num(root_pos, nan=0.0)
+        arrays["root_orientations"] = _estimate_root_orientations(valid)
+    else:
+        arrays["root_orientations"] = np.array([], dtype=np.float64)
+
+    dof_rot = _joint_rotations_from_dofs(recording)
+    arrays["joint_rotations_json"] = json.dumps(dof_rot)
+
+    if gait_style is not None and hasattr(gait_style, "to_dict"):
+        arrays["gait_style_characteristics_json"] = json.dumps(gait_style.to_dict())
+    else:
+        arrays["gait_style_characteristics_json"] = json.dumps({})
 
     np.savez_compressed(output_path, **arrays)
     run_name = output_path.stem.replace("_motion", "")

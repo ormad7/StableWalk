@@ -15,6 +15,8 @@ from tkinter import ttk
 from stablewalk.ui.dashboard_interpretability import METRIC_HELP
 from stablewalk.ui.tk.metric_help import add_metric_help_icon
 from stablewalk.ui.theme import (
+    ACCENT,
+    ACCENT_ALT,
     BORDER,
     DASHBOARD_GUTTER,
     ELEVATED,
@@ -23,9 +25,11 @@ from stablewalk.ui.theme import (
     FONT_UI_SM,
     FONT_UI_XS,
     MUTED,
+    ORANGE,
     PAD_XS,
     PANEL,
     TEXT,
+    WARNING,
 )
 
 # Section 1 column weights (47% / 33% / 20%)
@@ -36,6 +40,7 @@ SEC1_SUMMARY_WEIGHT = 20
 SECTION_VISUAL_TITLE = "Overview"
 SECTION_KINEMATIC_TITLE = "Motion Analysis"
 SECTION_GAIT_METRICS_TITLE = "Gait Metrics"
+SECTION_REAL_TO_SIM_TITLE = "Real-to-Sim Pipeline"
 SECTION_DATA_EXPORT_TITLE = "Data & Export"
 
 
@@ -83,8 +88,22 @@ def build_overview_metrics_row(gui, parent: tk.Misc) -> tk.Frame:
     host.columnconfigure(1, weight=1)
     host.columnconfigure(2, weight=1)
 
+    gui.lbl_overview_demo_compare = tk.Label(
+        host,
+        text="",
+        bg=PANEL,
+        fg=ACCENT,
+        font=("Segoe UI Semibold", 9),
+        anchor="w",
+        justify=tk.LEFT,
+        wraplength=980,
+    )
+    gui.lbl_overview_demo_compare.grid(
+        row=0, column=0, columnspan=3, sticky="ew", padx=(2, 0), pady=(PAD_XS, 2)
+    )
+
     phase_card = _gait_metric_card(host, title="Gait Phase")
-    phase_card.grid(row=0, column=0, sticky="nsew", padx=(0, PAD_XS), pady=(PAD_XS, 0))
+    phase_card.grid(row=1, column=0, sticky="nsew", padx=(0, PAD_XS), pady=(0, 0))
     phase_body = tk.Frame(phase_card, bg=ELEVATED)
     phase_body.grid(row=1, column=0, sticky="ew", padx=6, pady=(2, 6))
     tk.Label(
@@ -107,7 +126,7 @@ def build_overview_metrics_row(gui, parent: tk.Misc) -> tk.Frame:
     gui.lbl_gait_card_phase_value.pack(anchor="w")
 
     contact_card = _gait_metric_card(host, title="Contact Pattern")
-    contact_card.grid(row=0, column=1, sticky="nsew", padx=(0, PAD_XS), pady=(PAD_XS, 0))
+    contact_card.grid(row=1, column=1, sticky="nsew", padx=(0, PAD_XS), pady=(0, 0))
     contact_body = tk.Frame(contact_card, bg=ELEVATED)
     contact_body.grid(row=1, column=0, sticky="ew", padx=6, pady=(2, 6))
     for side_key, side_label in (("left", "Left"), ("right", "Right")):
@@ -126,7 +145,7 @@ def build_overview_metrics_row(gui, parent: tk.Misc) -> tk.Frame:
         setattr(gui, f"lbl_overview_contact_{side_key}", val)
 
     cycles_card = _gait_metric_card(host, title="Gait Cycles")
-    cycles_card.grid(row=0, column=2, sticky="nsew", pady=(PAD_XS, 0))
+    cycles_card.grid(row=1, column=2, sticky="nsew", pady=(0, 0))
     cycles_body = tk.Frame(cycles_card, bg=ELEVATED)
     cycles_body.grid(row=1, column=0, sticky="ew", padx=6, pady=(2, 6))
     gui.lbl_overview_gait_cycles_usable = tk.Label(
@@ -224,6 +243,82 @@ def build_gait_metrics_section(gui, parent: tk.Misc) -> ttk.LabelFrame:
     return section
 
 
+def build_real_to_sim_section(gui, parent: tk.Misc) -> ttk.LabelFrame:
+    """
+    Advanced tab — 4-stage Real-to-Sim summary (matches research spec document).
+
+    Video → gait style → retarget → AMP export → virtual GRF.
+    """
+    from stablewalk.ui.theme import INFO
+
+    section = _section_label_frame(parent, SECTION_REAL_TO_SIM_TITLE)
+    section.columnconfigure(0, weight=1)
+
+    intro = tk.Label(
+        section,
+        text=(
+            "Initializes a 3D walking simulator from this video: "
+            "extract gait style, scale to humanoid, export for Isaac Lab AMP, "
+            "estimate foot forces."
+        ),
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_XS,
+        anchor="w",
+        wraplength=720,
+        justify=tk.LEFT,
+    )
+    intro.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+
+    stages_host = tk.Frame(section, bg=PANEL, highlightthickness=0)
+    stages_host.grid(row=1, column=0, sticky="ew")
+    stages_host.columnconfigure(1, weight=1)
+
+    stage_defs = (
+        ("lbl_rts_stage1", "1. Perception", "Gait style: —"),
+        ("lbl_rts_stage2", "2. Retargeting", "Human → Unitree G1 scale: —"),
+        ("lbl_rts_stage3", "3. Simulation", "AMP reference: not exported"),
+        ("lbl_rts_stage4", "4. Physics", "Virtual GRF: —"),
+    )
+    for row, (attr, title, default) in enumerate(stage_defs):
+        tk.Label(
+            stages_host,
+            text=title,
+            bg=PANEL,
+            fg=MUTED,
+            font=FONT_UI_XS,
+            anchor="w",
+            width=14,
+        ).grid(row=row, column=0, sticky="nw", pady=1)
+        lbl = tk.Label(
+            stages_host,
+            text=default,
+            bg=PANEL,
+            fg=TEXT,
+            font=FONT_UI_SM,
+            anchor="w",
+            wraplength=580,
+            justify=tk.LEFT,
+        )
+        lbl.grid(row=row, column=1, sticky="ew", pady=1, padx=(4, 0))
+        setattr(gui, attr, lbl)
+
+    gui.lbl_rts_summary = tk.Label(
+        section,
+        text="Run Real-to-Sim Pipeline below to export motion for Isaac Lab.",
+        bg=PANEL,
+        fg=INFO,
+        font=FONT_UI_XS,
+        anchor="w",
+        wraplength=720,
+        justify=tk.LEFT,
+    )
+    gui.lbl_rts_summary.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+
+    gui._section_real_to_sim = section
+    return section
+
+
 def _summary_score_card(parent: tk.Misc, *, title: str, help_key: str | None) -> tuple[tk.Frame, tk.Label]:
     card = tk.Frame(
         parent,
@@ -257,6 +352,18 @@ def build_gait_summary_cards(gui, parent: tk.Misc) -> tk.Frame:
 
     host = tk.Frame(parent, bg=PANEL, highlightthickness=0)
     host.pack(fill=tk.X)
+
+    gui.lbl_summary_demo_headline = tk.Label(
+        host,
+        text="",
+        bg=PANEL,
+        fg=ORANGE,
+        font=("Segoe UI Semibold", 9),
+        anchor="w",
+        wraplength=240,
+        justify=tk.LEFT,
+    )
+    gui.lbl_summary_demo_headline.pack(fill=tk.X, padx=2, pady=(0, 4))
 
     ms_card, _ = _summary_score_card(host, title="Movement Stability", help_key="movement_stability")
     gui.lbl_summary_ms_value = tk.Label(
@@ -342,6 +449,18 @@ def build_gait_summary_cards(gui, parent: tk.Misc) -> tk.Frame:
         command=gui._show_gait_summary_details,
     )
     gui.btn_walk_summary_details.pack(anchor=tk.W, pady=(PAD_XS, 0))
+
+    gui.lbl_summary_demo_compare = tk.Label(
+        host,
+        text="",
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_XS,
+        anchor="w",
+        wraplength=240,
+        justify=tk.LEFT,
+    )
+    gui.lbl_summary_demo_compare.pack(fill=tk.X, padx=2, pady=(4, 0))
 
     gui.lbl_summary_ms_interp = gui.lbl_summary_ms_explain
     gui.lbl_summary_gq_interp = gui.lbl_summary_gq_explain
@@ -509,8 +628,24 @@ def build_data_export_section(gui, parent: tk.Misc) -> ttk.LabelFrame:
     gui._dashboard_data_row = section
     gui._section_data_export = section
 
+    export_intro = tk.Label(
+        section,
+        text=(
+            "Export motion for Isaac Lab / OpenSim. "
+            "Real-to-Sim Pipeline runs all 4 stages and writes "
+            "stablewalk_motion.npz + amp_reference_motion.npz."
+        ),
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_XS,
+        anchor="w",
+        wraplength=720,
+        justify=tk.LEFT,
+    )
+    export_intro.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+
     btn_host = ttk.Frame(section)
-    btn_host.grid(row=0, column=0, sticky="ew")
+    btn_host.grid(row=1, column=0, sticky="ew")
     btn_host.columnconfigure(0, weight=1)
     btn_host.columnconfigure(1, weight=1)
     btn_host.columnconfigure(2, weight=1)
@@ -522,6 +657,8 @@ def build_data_export_section(gui, parent: tk.Misc) -> ttk.LabelFrame:
         ("btn_export_gait_metrics", "Export Gait Metrics", "_export_gait_metrics", False),
         ("btn_opensim_export_data", "Export OpenSim Files", "_export_opensim_session", True),
         ("btn_export_motion_reference", "Export Motion Reference", "_export_motion_reference", False),
+        ("btn_real_to_sim_pipeline", "Real-to-Sim Pipeline", "_run_real_to_sim_pipeline", True),
+        ("btn_export_amp_reference", "Export AMP Reference", "_export_amp_reference", False),
     )
     for index, (attr, text, cmd, accent) in enumerate(buttons):
         style = "ExportAccent.TButton" if accent else "Export.TButton"

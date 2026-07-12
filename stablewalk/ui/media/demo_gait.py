@@ -134,6 +134,121 @@ def demo_stream_source(example: DemoGaitExample) -> str:
     return str(path)
 
 
+# Default tracked joint per demo category — keeps teacher comparison consistent:
+# abnormal highlights hip stability with walker; normal/performance use knee ROM.
+DEMO_DEFAULT_DOF_ITEM: dict[str, str] = {
+    "abnormal": "right_hip",
+    "normal": "right_knee",
+    "athletic": "right_knee",
+}
+
+DEMO_CATEGORY_TAGLINES: dict[str, str] = {
+    "abnormal": "Impaired gait — walker-assisted · compact hip path · few usable cycles",
+    "normal": "Healthy gait — steady UGS walking · bilateral contact · usable cycles",
+    "athletic": "Performance gait — fast FGS walking · larger knee swing · side view",
+}
+
+
+@dataclass(frozen=True)
+class DemoGaitInterpretation:
+    """Teacher-facing gait analysis copy for each demo category."""
+
+    category_headline: str
+    movement_stability: str
+    gait_quality: str
+    analysis_confidence: str
+    teacher_compare: str
+
+
+def demo_category_tagline(key: str) -> str:
+    """One-line teacher-facing description shown under the demo buttons."""
+    return DEMO_CATEGORY_TAGLINES.get(key, "")
+
+
+def demo_gait_interpretation(
+    key: str,
+    *,
+    usable_cycles: int = 0,
+    detected_cycles: int = 0,
+    completeness_pct: float = 0.0,
+    movement_stability_score: float | None = None,
+    gait_quality_score: float | None = None,
+) -> DemoGaitInterpretation | None:
+    """Mode-specific explanations for the Gait Analysis summary sidebar."""
+    if key == "abnormal":
+        return DemoGaitInterpretation(
+            category_headline="Abnormal demo — assisted walking with a walker",
+            movement_stability=(
+                "Torso/pelvis can score high even when gait is impaired — the walker "
+                "supports balance while step timing stays irregular."
+            ),
+            gait_quality=(
+                f"Low gait quality expected: {detected_cycles} detected / "
+                f"{usable_cycles} usable cycles — walker blocks normal heel-strike rhythm."
+            ),
+            analysis_confidence=(
+                f"Limited evidence ({completeness_pct:.0f}% complete) — use to contrast "
+                "with Normal, not as a clinical score."
+            ),
+            teacher_compare=(
+                "vs Normal: walker present, compact hip path, 0 usable cycles, "
+                "both feet often supported."
+            ),
+        )
+    if key == "normal":
+        return DemoGaitInterpretation(
+            category_headline="Normal demo — healthy usual-speed walking (UGS)",
+            movement_stability=(
+                "Steady pelvis and torso during regular alternating steps — "
+                "typical healthy baseline."
+            ),
+            gait_quality=(
+                f"{usable_cycles} usable cycle(s) support timing and symmetry "
+                f"(score {gait_quality_score:.0f}/100)."
+                if gait_quality_score is not None
+                else f"{usable_cycles} usable cycle(s) support timing and symmetry."
+            ),
+            analysis_confidence=(
+                f"Usable evidence ({completeness_pct:.0f}% complete) from a longer "
+                "walking clip — best reference among the three demos."
+            ),
+            teacher_compare=(
+                "vs Abnormal: no walker, swing/stance alternation, more usable cycles. "
+                "vs Performance: slower cadence, frontal view."
+            ),
+        )
+    if key == "athletic":
+        return DemoGaitInterpretation(
+            category_headline="Performance demo — fast gait speed (FGS), side view",
+            movement_stability=(
+                "Faster leg motion; torso may still look steady while knees/feet "
+                "move through larger ranges."
+                + (
+                    f" Stability {movement_stability_score:.0f}/100."
+                    if movement_stability_score is not None
+                    else ""
+                )
+            ),
+            gait_quality=(
+                f"Larger knee swing and foot clearance than Normal; "
+                f"{usable_cycles} usable cycle(s) from a short fast clip."
+            ),
+            analysis_confidence=(
+                f"Side view + speed reduce some foot metrics ({completeness_pct:.0f}% "
+                "complete) — compare cadence and swing with Normal."
+            ),
+            teacher_compare=(
+                "vs Normal: faster steps, side camera, swing/contact asymmetry at speed."
+            ),
+        )
+    return None
+
+
+def demo_default_dof_item(key: str) -> str:
+    """Body point auto-selected when a demo category loads."""
+    return DEMO_DEFAULT_DOF_ITEM.get(key, "right_knee")
+
+
 def example_by_key(key: str) -> DemoGaitExample | None:
     for ex in DEMO_GAIT_EXAMPLES:
         if ex.key == key:

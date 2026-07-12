@@ -18,6 +18,7 @@ Usage:
   python main.py --simulate walk_stream         # robotic walk simulation
   python main.py --run-opensim-demo-ik          # run Gait2392 demo IK (requires OpenSim SDK)
   python main.py --export-motion-reference VIDEO_PATH  # Real-to-Sim motion .npz export
+  python main.py --real-to-sim VIDEO_OR_RUN            # Full 4-stage Real-to-Sim pipeline
   python main.py --frames-only data/output/frames/walk_stream
 """
 
@@ -157,6 +158,16 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Export stablewalk_motion.npz for Real-to-Sim retargeting "
             "(video path, pose run name, or latest poses if omitted)"
+        ),
+    )
+    parser.add_argument(
+        "--real-to-sim",
+        metavar="VIDEO_OR_RUN",
+        nargs="?",
+        const="",
+        help=(
+            "Run full Real-to-Sim pipeline: gait style, retargeting, "
+            "AMP reference export, virtual GRF (video, run name, or latest)"
         ),
     )
     return parser.parse_args()
@@ -373,6 +384,86 @@ def _export_motion_reference_cli(
     return 0
 
 
+def _run_real_to_sim_cli(
+    target: str | None,
+    *,
+    max_frames: int | None = None,
+    output_name: str | None = None,
+) -> int:
+    """Run the 4-stage Real-to-Sim pipeline offline."""
+    from stablewalk.adapters.pose_adapter import pose_sequence_to_gait_motion
+    from stablewalk.analysis.gait_cycle_analysis import analyze_gait_cycles
+    from stablewalk.io.pose_loader import load_pose_sequence
+    from stablewalk.real_to_sim.pipeline import run_real_to_sim_pipeline
+
+    poses_path: Path | None = None
+    run_name: str | None = output_name
+
+    if target:
+        poses_candidate = config.POSES_DIR / f"{target}_poses.json"
+        if poses_candidate.is_file():
+            poses_path = poses_candidate
+            run_name = run_name or target
+        else:
+            try:
+                video_path = config.resolve_video_path(target)
+            except FileNotFoundError:
+                video_path = Path(target)
+            if video_path.is_file():
+                run_name = run_name or video_path.stem
+                frames_dir = config.FRAMES_DIR / run_name
+                poses_path = config.POSES_DIR / f"{run_name}_poses.json"
+                if not poses_path.is_file():
+                    logger.info("Running video pipeline for Real-to-Sim…")
+                    fps, _, source_video = run_step1(
+                        str(video_path),
+                        frames_dir,
+                        max_frames,
+                        from_url=False,
+                    )
+                    run_step2(
+                        frames_dir,
+                        poses_path,
+                        source_video,
+                        fps,
+                        max_frames,
+                        draw_overlays=False,
+                    )
+            else:
+                logger.error("Could not resolve --real-to-sim target: %s", target)
+                return 1
+    else:
+        candidates = sorted(
+            config.POSES_DIR.glob("*_poses.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            logger.error("No pose JSON found. Run: python main.py --url")
+            return 1
+        poses_path = candidates[0]
+        run_name = run_name or poses_path.stem.replace("_poses", "")
+
+    assert poses_path is not None and run_name is not None
+    sequence = load_pose_sequence(poses_path)
+    recording = pose_sequence_to_gait_motion(sequence)
+    cycles = analyze_gait_cycles(recording)
+    report = run_real_to_sim_pipeline(
+        recording,
+        config.MOTION_REFERENCE_EXPORT_DIR,
+        run_name=run_name,
+        sequence=sequence,
+        cycles=cycles,
+    )
+    logger.info("Real-to-Sim pipeline report → %s", report.report_path)
+    for stage in report.stages:
+        logger.info("  %s: %s — %s", stage.stage, stage.status, stage.detail)
+    if report.gait_style:
+        logger.info("Gait style: %s", report.gait_style.style_summary)
+    print(report.report_path)
+    return 0
+
+
 def _run_opensim_ik_cli(
     *,
     run_name: str,
@@ -475,6 +566,14 @@ def main() -> int:
     if args.export_motion_reference is not None:
         target = args.export_motion_reference if args.export_motion_reference else None
         return _export_motion_reference_cli(
+            target,
+            max_frames=args.max_frames,
+            output_name=args.output_name,
+        )
+
+    if args.real_to_sim is not None:
+        target = args.real_to_sim if args.real_to_sim else None
+        return _run_real_to_sim_cli(
             target,
             max_frames=args.max_frames,
             output_name=args.output_name,

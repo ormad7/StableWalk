@@ -163,6 +163,9 @@ from stablewalk.ui.media.demo_gait import (
     DEMO_GAIT_EXAMPLES,
     DemoGaitExample,
     demo_cached_file_ready,
+    demo_category_tagline,
+    demo_default_dof_item,
+    demo_gait_interpretation,
     demo_exists,
     demo_path,
     demo_stream_source,
@@ -671,7 +674,7 @@ class StableWalkGUI:
                 demo_row,
                 text=ex.button_label,
                 style="Secondary.TButton",
-                width=10,
+                width=12,
                 command=lambda k=ex.key: self._load_demo_gait(k),
             )
             btn.pack(side=tk.LEFT, padx=(0, PAD_XS))
@@ -686,6 +689,18 @@ class StableWalkGUI:
             state=tk.DISABLED,
         )
         self.btn_save_demo_comparison.pack(side=tk.LEFT, padx=(PAD_XS, 0))
+
+        self.lbl_demo_category_hint = tk.Label(
+            demo_row,
+            text="",
+            bg=PANEL,
+            fg=MUTED,
+            font=FONT_UI_SM,
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=520,
+        )
+        self.lbl_demo_category_hint.pack(side=tk.LEFT, padx=(PAD_SM, 0), fill=tk.X, expand=True)
 
         self._demo_info_btn = ttk.Label(demo_row, text="Info", style="Card.TLabel", cursor="hand2")
         self._demo_info_btn.pack(side=tk.RIGHT)
@@ -755,7 +770,32 @@ class StableWalkGUI:
         self.preset_var.set(CUSTOM_URL_PRESET_LABEL)
         self._update_demo_analysis_title(ex)
         self._highlight_demo_button(key)
+        self._sync_demo_category_hint()
         self._load_video(source=source, show_dialog=False, unique_session=True)
+
+    def _sync_demo_category_hint(self) -> None:
+        """Update category tagline and compare strip as soon as a demo is selected."""
+        demo = getattr(self, "_active_demo_gait", None)
+        hint = getattr(self, "lbl_demo_category_hint", None)
+        if hint is not None:
+            if demo is None:
+                hint.configure(text="")
+            else:
+                from stablewalk.ui.theme import ACCENT_ALT, ORANGE, TEXT, WARNING
+
+                tagline = demo_category_tagline(demo.key)
+                fg = TEXT
+                if demo.key == "abnormal":
+                    fg = WARNING
+                elif demo.key == "athletic":
+                    fg = ACCENT_ALT
+                elif demo.key == "normal":
+                    fg = ORANGE
+                hint.configure(
+                    text=f"{demo.button_label}: {tagline}" if tagline else "",
+                    fg=fg,
+                )
+        self._sync_demo_category_compare_strip()
 
     def _highlight_demo_button(self, active_key: str | None) -> None:
         for key, btn in getattr(self, "_demo_gait_buttons", {}).items():
@@ -770,6 +810,10 @@ class StableWalkGUI:
         self._active_demo_gait = None
         self._update_demo_analysis_title(None)
         self._highlight_demo_button(None)
+        hint = getattr(self, "lbl_demo_category_hint", None)
+        if hint is not None:
+            hint.configure(text="")
+        self._sync_demo_category_compare_strip()
         self._sync_demo_save_button()
 
     def _update_demo_analysis_title(self, example: DemoGaitExample | None = None) -> None:
@@ -809,7 +853,53 @@ class StableWalkGUI:
         self.status.configure(
             text=f"✓  {self._active_demo_gait.button_label} — press Play"
         )
+        self._sync_demo_category_hint()
         self._sync_demo_save_button()
+
+    def _sync_demo_category_compare_strip(self) -> None:
+        """Teacher-facing one-line comparison across Abnormal / Normal / Performance."""
+        lbl = getattr(self, "lbl_overview_demo_compare", None)
+        demo = getattr(self, "_active_demo_gait", None)
+        if lbl is None:
+            return
+        if demo is None or self.gait_motion is None:
+            lbl.configure(text="")
+            return
+        from stablewalk.ui.theme import ACCENT_ALT, ORANGE, WARNING
+
+        usable, detected = self._resolved_gait_cycle_count()
+        completeness = (
+            self._biomech.completeness_pct if self._biomech is not None else None
+        )
+        comp = f" · {completeness:.0f}% complete" if completeness is not None else ""
+        item_id = self._active_dof_item_id()
+        joint = ""
+        if item_id:
+            from stablewalk.ui.dof_selection import label_for_item
+
+            joint = label_for_item(item_id) or ""
+        if demo.key == "abnormal":
+            text = (
+                f"COMPARE — Abnormal: walker-assisted gait · tracks {joint or 'hip'} "
+                f"· {detected or 0} detected / {usable or 0} usable cycles{comp}"
+            )
+            fg = WARNING
+        elif demo.key == "normal":
+            text = (
+                f"COMPARE — Normal: healthy steady walking · tracks {joint or 'knee'} "
+                f"· {usable or 0} usable cycles · alternating swing/stance{comp}"
+            )
+            fg = ORANGE
+        elif demo.key == "athletic":
+            text = (
+                f"COMPARE — Performance: fast side-view gait · tracks {joint or 'knee'} "
+                f"· larger knee swing · {usable or 0} usable cycle(s){comp}"
+            )
+            fg = ACCENT_ALT
+        else:
+            text = ""
+            fg = ACCENT_ALT
+        lbl.configure(text=text, fg=fg)
 
     def _sync_demo_save_button(self) -> None:
         btn = getattr(self, "btn_save_demo_comparison", None)
@@ -1294,6 +1384,12 @@ class StableWalkGUI:
             "btn_export_motion_reference": (
                 "Export stablewalk_motion.npz for Real-to-Sim / retargeting workflows."
             ),
+            "btn_real_to_sim_pipeline": (
+                "Run full Real-to-Sim pipeline: gait style, retargeting, AMP export, vGRF."
+            ),
+            "btn_export_amp_reference": (
+                "Export AMP reference motion clip for Isaac Lab imitation learning."
+            ),
         }
         attached = False
         for attr, tip in tips.items():
@@ -1406,7 +1502,23 @@ class StableWalkGUI:
         self._update_skeleton_view_box()
         self._update_interactive_skeleton(force_draw=True)
         self._update_session_selection_overview()
-        self._ensure_default_dof_selection()
+        self._ensure_demo_dof_selection()
+
+    def _ensure_demo_dof_selection(self) -> None:
+        """Pick the category-appropriate joint so the three demos compare clearly."""
+        if not hasattr(self, "_dof_checkbox_vars"):
+            return
+        demo = getattr(self, "_active_demo_gait", None)
+        if demo is None:
+            self._ensure_default_dof_selection()
+            return
+        item_id = demo_default_dof_item(demo.key)
+        if item_id not in self._dof_checkbox_vars:
+            self._ensure_default_dof_selection()
+            return
+        self.selection.select_only(item_id)
+        self._sync_dof_checkboxes()
+        self._notify_dof_selection_changed()
 
     def _update_skeleton_view_box(self) -> None:
         """Compute a stable, sequence-global view box for the skeleton panel.
@@ -1794,6 +1906,7 @@ class StableWalkGUI:
                     self.gait_motion,
                     self._gait_cycle,
                     gait_features=self._gait_features,
+                    sequence=self.sequence,
                 )
             else:
                 self._gait_cycle = None
@@ -1801,6 +1914,7 @@ class StableWalkGUI:
                 self._virtual_grf = None
             self._update_gait_cycle_panel(self._gait_cycle)
             self._refresh_physics_force_panel()
+            self._refresh_real_to_sim_advanced_panel()
             self._knee_chart_mode_user_set = False
             self._rebuild_knee_angle_series()
             self._apply_default_knee_chart_mode()
@@ -2755,11 +2869,47 @@ class StableWalkGUI:
                 ms_fg = WARNING
             ms_lbl.configure(text=format_score_over_100(ms), fg=ms_fg)
         ms_explain = getattr(self, "lbl_summary_ms_explain", None)
+        demo_interp = None
+        demo = getattr(self, "_active_demo_gait", None)
+        if demo is not None:
+            usable, detected = self._resolved_gait_cycle_count()
+            if usable is None:
+                usable = result.usable_gait_cycles
+            demo_interp = demo_gait_interpretation(
+                demo.key,
+                usable_cycles=usable or 0,
+                detected_cycles=detected or 0,
+                completeness_pct=result.completeness_pct,
+                movement_stability_score=summary.movement_stability.score,
+                gait_quality_score=summary.gait_quality.score,
+            )
+        headline = getattr(self, "lbl_summary_demo_headline", None)
+        compare_lbl = getattr(self, "lbl_summary_demo_compare", None)
+        if headline is not None:
+            if demo_interp is not None:
+                from stablewalk.ui.theme import ACCENT_ALT, ORANGE, WARNING
+
+                fg = ORANGE
+                if demo.key == "abnormal":
+                    fg = WARNING
+                elif demo.key == "athletic":
+                    fg = ACCENT_ALT
+                headline.configure(text=demo_interp.category_headline, fg=fg)
+            else:
+                headline.configure(text="")
+        if compare_lbl is not None:
+            if demo_interp is not None:
+                compare_lbl.configure(text=demo_interp.teacher_compare, fg=MUTED)
+            else:
+                compare_lbl.configure(text="")
         if ms_explain is not None:
+            ms_text = (
+                demo_interp.movement_stability
+                if demo_interp is not None
+                else interpret_movement_stability(result).sentence
+            )
             ms_explain.configure(
-                text=truncate_dashboard_explanation(
-                    interpret_movement_stability(result).sentence
-                )
+                text=truncate_dashboard_explanation(ms_text, max_len=160)
             )
 
         gq = summary.gait_quality.score
@@ -2779,10 +2929,13 @@ class StableWalkGUI:
             badge_lbl.configure(text=badge or "", fg=WARNING if badge else MUTED)
         gq_explain = getattr(self, "lbl_summary_gq_explain", None)
         if gq_explain is not None:
+            gq_text = (
+                demo_interp.gait_quality
+                if demo_interp is not None
+                else interpret_gait_quality(result).sentence
+            )
             gq_explain.configure(
-                text=truncate_dashboard_explanation(
-                    interpret_gait_quality(result).sentence
-                )
+                text=truncate_dashboard_explanation(gq_text, max_len=160)
             )
 
         level = summary.analysis_confidence.level
@@ -2799,24 +2952,212 @@ class StableWalkGUI:
             )
         ac_explain = getattr(self, "lbl_summary_ac_explain", None)
         if ac_explain is not None:
+            ac_text = (
+                demo_interp.analysis_confidence
+                if demo_interp is not None
+                else interpret_analysis_confidence(result).sentence
+            )
             ac_explain.configure(
-                text=truncate_dashboard_explanation(
-                    interpret_analysis_confidence(result).sentence
-                )
+                text=truncate_dashboard_explanation(ac_text, max_len=160)
             )
 
         overview_usable = getattr(self, "lbl_overview_gait_cycles_usable", None)
         overview_completeness = getattr(self, "lbl_overview_gait_cycles_completeness", None)
+        usable, detected = self._resolved_gait_cycle_count()
+        if usable is None:
+            usable = result.usable_gait_cycles
+        self._sync_gait_cycles_labels(
+            usable=usable,
+            detected=detected,
+            completeness_pct=result.completeness_pct,
+        )
+
+    def _resolved_gait_cycle_count(self) -> tuple[int | None, int | None]:
+        """
+        Return (usable_cycles, detected_cycles) from stability or gait analysis.
+
+        Stability ``usable_gait_cycles`` can be 0 while gait cycle detection still
+        found cycles — prefer the best available count for the Advanced tab cards.
+        """
+        usable: int | None = None
+        detected: int | None = None
+        if self._biomech is not None:
+            usable = self._biomech.usable_gait_cycles
+        if self._gait_cycle is not None:
+            detected = len(self._gait_cycle.cycles)
+            if self._biomech and self._biomech.domain_evidence:
+                for key in ("spatial_symmetry", "cycle_consistency", "temporal_symmetry"):
+                    text = self._biomech.domain_evidence.get(key, "")
+                    if "usable" in text.lower():
+                        import re
+
+                        m = re.search(r"(\d+)\s+usable", text, re.I)
+                        if m:
+                            parsed = int(m.group(1))
+                            if usable is None:
+                                usable = parsed
+                            elif parsed < usable:
+                                usable = parsed
+                            break
+        return usable, detected
+
+    def _sync_gait_cycles_labels(
+        self,
+        *,
+        usable: int | None = None,
+        detected: int | None = None,
+        completeness_pct: float | None = None,
+    ) -> None:
+        """Keep Overview + Advanced gait-cycle cards in sync."""
+        from stablewalk.ui.theme import MUTED, TEXT, WARNING
+
+        if usable is None and detected is None:
+            usable, detected = self._resolved_gait_cycle_count()
+        elif usable is None or detected is None:
+            resolved_u, resolved_d = self._resolved_gait_cycle_count()
+            if usable is None:
+                usable = resolved_u
+            if detected is None:
+                detected = resolved_d
+        if completeness_pct is None and self._biomech is not None:
+            completeness_pct = self._biomech.completeness_pct
+
+        if detected and usable is not None and detected != usable:
+            cycles_text = f"{detected} detected · {usable} usable"
+            cycles_fg = WARNING if usable == 0 else TEXT
+        elif usable is not None and usable > 0:
+            cycles_text = f"{usable} usable cycle{'s' if usable != 1 else ''}"
+            cycles_fg = TEXT
+        elif detected and detected > 0:
+            cycles_text = f"{detected} detected · 0 usable"
+            cycles_fg = WARNING
+        else:
+            cycles_text = "—"
+            cycles_fg = MUTED
+
+        for attr in ("lbl_gait_card_cycles_value",):
+            lbl = getattr(self, attr, None)
+            if lbl is not None:
+                lbl.configure(text=cycles_text, fg=cycles_fg)
+
+        overview_usable = getattr(self, "lbl_overview_gait_cycles_usable", None)
         if overview_usable is not None:
-            cycles = result.usable_gait_cycles
-            overview_usable.configure(
-                text=f"Usable: {cycles}" if cycles is not None else "Usable: —",
-                fg=TEXT if cycles else MUTED,
+            if cycles_text == "—":
+                overview_text = "Usable: —"
+            elif "detected" in cycles_text or "usable cycle" in cycles_text:
+                overview_text = cycles_text
+            else:
+                overview_text = f"Usable: {cycles_text}"
+            overview_usable.configure(text=overview_text, fg=cycles_fg)
+
+        self._sync_demo_category_compare_strip()
+
+        comp_text = (
+            f"Completeness: {completeness_pct:.0f}%"
+            if completeness_pct is not None
+            else "Completeness: —"
+        )
+        for attr in (
+            "lbl_gait_card_completeness_value",
+            "lbl_overview_gait_cycles_completeness",
+        ):
+            lbl = getattr(self, attr, None)
+            if lbl is not None:
+                lbl.configure(text=comp_text, fg=MUTED)
+
+    def _refresh_real_to_sim_advanced_panel(self) -> None:
+        """Update Advanced tab Real-to-Sim 4-stage summary."""
+        from stablewalk.ui.theme import INFO, MUTED as THEME_MUTED, SUCCESS, TEXT, WARNING
+
+        s1 = getattr(self, "lbl_rts_stage1", None)
+        s2 = getattr(self, "lbl_rts_stage2", None)
+        s3 = getattr(self, "lbl_rts_stage3", None)
+        s4 = getattr(self, "lbl_rts_stage4", None)
+        summary = getattr(self, "lbl_rts_summary", None)
+        if s1 is None:
+            return
+
+        if self.gait_motion is None or self._gait_cycle is None:
+            for lbl, default in (
+                (s1, "Gait style: — (analyze a video first)"),
+                (s2, "Human → Unitree G1 scale: —"),
+                (s3, "AMP reference: not exported"),
+                (s4, "Virtual GRF: —"),
+            ):
+                if lbl is not None:
+                    lbl.configure(text=default, fg=THEME_MUTED)
+            if summary is not None:
+                summary.configure(
+                    text="Load a walking video, then use Real-to-Sim Pipeline in Data & Export.",
+                    fg=THEME_MUTED,
+                )
+            return
+
+        try:
+            from stablewalk.real_to_sim.gait_style_extraction import (
+                extract_gait_style_fingerprint,
             )
-        if overview_completeness is not None:
-            overview_completeness.configure(
-                text=f"Completeness: {result.completeness_pct:.0f}%",
-                fg=MUTED,
+
+            fp = extract_gait_style_fingerprint(
+                self.gait_motion,
+                self._gait_cycle,
+                gait_features=self._gait_features,
+            )
+            parts: list[str] = []
+            if fp.cadence_steps_per_min is not None:
+                parts.append(f"cadence {fp.cadence_steps_per_min:.0f} spm")
+            if fp.stride_length_m is not None:
+                parts.append(f"stride {fp.stride_length_m * 100:.0f} cm")
+            if fp.hip_sway_m is not None:
+                parts.append(f"hip sway {fp.hip_sway_m * 100:.1f} cm")
+            detail = " · ".join(parts) if parts else fp.style_summary
+            if s1 is not None:
+                s1.configure(text=f"Gait style: {detail}", fg=TEXT)
+        except Exception:
+            if s1 is not None:
+                s1.configure(text="Gait style: —", fg=THEME_MUTED)
+
+        if s2 is not None:
+            s2.configure(
+                text="Human → Unitree G1: ready (uniform scale from leg length)",
+                fg=INFO,
+            )
+
+        run_name = Path(self._resolve_session_video_source() or "session").stem or "session"
+        amp_path = config.MOTION_REFERENCE_EXPORT_DIR / run_name / "amp_reference_motion.npz"
+        if s3 is not None:
+            if amp_path.is_file():
+                s3.configure(text=f"AMP reference: exported ✓ ({amp_path.name})", fg=SUCCESS)
+            else:
+                s3.configure(
+                    text="AMP reference: click Export AMP Reference or Real-to-Sim Pipeline",
+                    fg=WARNING,
+                )
+
+        vgrf = self._virtual_grf
+        if s4 is not None:
+            if vgrf is not None and vgrf.available:
+                s4.configure(
+                    text=(
+                        f"Virtual GRF: {vgrf.estimation_method_label} "
+                        f"({vgrf.confidence:.0%} confidence)"
+                    ),
+                    fg=TEXT,
+                )
+            else:
+                s4.configure(
+                    text="Virtual GRF: pose proxy unavailable (need pose sequence)",
+                    fg=THEME_MUTED,
+                )
+
+        if summary is not None:
+            summary.configure(
+                text=(
+                    "Matches research spec: video gait style → retarget → "
+                    "Isaac Lab AMP → contact-sync foot forces. "
+                    "See docs/REAL_TO_SIM_PIPELINE.md."
+                ),
+                fg=INFO,
             )
 
     def _update_gait_metric_cards(
@@ -2827,32 +3168,12 @@ class StableWalkGUI:
         validity,
     ) -> None:
         """Populate Section 3 gait cycles card from stability result."""
-        cycles_lbl = getattr(self, "lbl_gait_card_cycles_value", None)
-        if cycles_lbl is not None:
-            cycles = result.usable_gait_cycles
-            cycles_lbl.configure(
-                text=str(cycles) if cycles is not None else "—",
-                fg=TEXT if cycles else MUTED,
-            )
-        completeness_lbl = getattr(self, "lbl_gait_card_completeness_value", None)
-        if completeness_lbl is not None:
-            completeness_lbl.configure(
-                text=f"Completeness: {result.completeness_pct:.0f}%",
-                fg=MUTED,
-            )
-        overview_usable = getattr(self, "lbl_overview_gait_cycles_usable", None)
-        if overview_usable is not None:
-            cycles = result.usable_gait_cycles
-            overview_usable.configure(
-                text=f"Usable: {cycles}" if cycles is not None else "Usable: —",
-                fg=TEXT if cycles else MUTED,
-            )
-        overview_completeness = getattr(self, "lbl_overview_gait_cycles_completeness", None)
-        if overview_completeness is not None:
-            overview_completeness.configure(
-                text=f"Completeness: {result.completeness_pct:.0f}%",
-                fg=MUTED,
-            )
+        usable, detected = self._resolved_gait_cycle_count()
+        self._sync_gait_cycles_labels(
+            usable=usable,
+            detected=detected,
+            completeness_pct=result.completeness_pct,
+        )
         adv_btn = getattr(self, "btn_advanced_analysis", None)
         if adv_btn is not None:
             adv_btn.configure(state=tk.NORMAL)
@@ -2876,11 +3197,14 @@ class StableWalkGUI:
         if evidence_lbl is not None:
             snippets = []
             if result.domain_evidence:
-                for key, text in list(result.domain_evidence.items())[:3]:
-                    snippets.append(f"{key.replace('_', ' ').title()}: {text}")
+                for key, text in list(result.domain_evidence.items())[:4]:
+                    label = key.replace("_", " ").title()
+                    snippets.append(f"• {label}: {text}")
             evidence_lbl.configure(
-                text="Evidence: " + (" · ".join(snippets) if snippets else "—")
+                text="\n".join(snippets) if snippets else "Evidence: —"
             )
+
+        self._refresh_real_to_sim_advanced_panel()
 
     def _reset_stability_panel(self) -> None:
         self._biomech = None
@@ -3090,11 +3414,27 @@ class StableWalkGUI:
         if note is not None:
             note.configure(
                 text=(
-                    "Foot contact detection shows timing only. "
-                    "Virtual GRF is simulated — not measured kinetics."
+                    "Foot contact = timing only. "
+                    "Virtual GRF = estimated proxy — not measured kinetics."
                 ),
                 fg=THEME_MUTED,
             )
+        style_lbl = getattr(self, "lbl_real_to_sim_style", None)
+        if style_lbl is not None and self.gait_motion is not None and self._gait_cycle:
+            try:
+                from stablewalk.real_to_sim.gait_style_extraction import (
+                    extract_gait_style_fingerprint,
+                )
+
+                fp = extract_gait_style_fingerprint(
+                    self.gait_motion,
+                    self._gait_cycle,
+                    gait_features=self._gait_features,
+                )
+                style_lbl.configure(text=fp.style_summary, fg=TEXT)
+            except Exception:
+                style_lbl.configure(text="—", fg=THEME_MUTED)
+        self._refresh_real_to_sim_advanced_panel()
 
     def _assert_overview_contact_clearance_sync_debug(self, snapshot) -> None:
         """Debug-mode frame-index and contact/clearance consistency checks."""
@@ -3299,6 +3639,15 @@ class StableWalkGUI:
             card = interpret_gait_phase(state, result)
             interp_lbl.configure(text=format_compact_interpretation(card))
 
+        usable, detected = self._resolved_gait_cycle_count()
+        if usable is None and detected:
+            usable = detected
+        completeness = self._biomech.completeness_pct if self._biomech else None
+        self._sync_gait_cycles_labels(
+            usable=usable, detected=detected, completeness_pct=completeness
+        )
+        self._refresh_real_to_sim_advanced_panel()
+
     def _open_opensim_details_dialog(self) -> None:
         """Show full OpenSim technical status in a dialog."""
         frame = getattr(self, "_opensim_details_frame", None)
@@ -3436,6 +3785,31 @@ class StableWalkGUI:
             lines.append(
                 f"{'View confidence':<22}{result.view_confidence:.0%}"
             )
+        demo = getattr(self, "_active_demo_gait", None)
+        if demo is not None:
+            usable, detected = self._resolved_gait_cycle_count()
+            if usable is None:
+                usable = result.usable_gait_cycles
+            interp = demo_gait_interpretation(
+                demo.key,
+                usable_cycles=usable or 0,
+                detected_cycles=detected or 0,
+                completeness_pct=result.completeness_pct,
+                movement_stability_score=summary.movement_stability.score,
+                gait_quality_score=summary.gait_quality.score,
+            )
+            if interp is not None:
+                lines.extend(
+                    [
+                        "",
+                        f"Demo category ({demo.button_label}):",
+                        f"  {interp.category_headline}",
+                        f"  Movement: {interp.movement_stability}",
+                        f"  Gait quality: {interp.gait_quality}",
+                        f"  Confidence: {interp.analysis_confidence}",
+                        f"  Compare: {interp.teacher_compare}",
+                    ]
+                )
         lines.extend(["", "Domains:"])
         for m in result.metrics:
             if m.availability == "UNAVAILABLE" or m.score is None:
@@ -7421,6 +7795,103 @@ class StableWalkGUI:
             f"Motion reference exported:\n{result.npz_path.resolve()}",
         )
 
+    def _run_real_to_sim_pipeline(self) -> None:
+        """Run offline 4-stage Real-to-Sim pipeline."""
+        if self._presentation_mode or self.gait_motion is None:
+            messagebox.showinfo(
+                "Real-to-Sim Pipeline",
+                "Load and analyze a real video before running the pipeline.",
+            )
+            return
+        config.ensure_output_dirs()
+        try:
+            from stablewalk.real_to_sim.pipeline import run_real_to_sim_pipeline
+
+            run_name = Path(self._resolve_session_video_source() or "session").stem or "session"
+            report = run_real_to_sim_pipeline(
+                self.gait_motion,
+                config.MOTION_REFERENCE_EXPORT_DIR,
+                run_name=run_name,
+                sequence=self.sequence,
+                cycles=self._gait_cycle,
+            )
+            self._virtual_grf = None
+            if self._gait_cycle is not None:
+                from stablewalk.analysis.virtual_grf import estimate_virtual_grf
+
+                self._virtual_grf = estimate_virtual_grf(
+                    self.gait_motion,
+                    self._gait_cycle,
+                    gait_features=self._gait_features,
+                    sequence=self.sequence,
+                )
+            self._refresh_physics_force_panel()
+            self._refresh_real_to_sim_advanced_panel()
+        except Exception as exc:
+            messagebox.showerror("Real-to-Sim failed", str(exc))
+            return
+        stages = "\n".join(
+            f"• {s.stage}: {s.status} — {s.detail[:80]}"
+            for s in report.stages
+        )
+        self.status.configure(text=f"Real-to-Sim → {report.run_name}")
+        messagebox.showinfo(
+            "Real-to-Sim Pipeline",
+            f"Pipeline complete.\n\n{stages}\n\nReport:\n{report.report_path}",
+        )
+
+    def _export_amp_reference(self) -> None:
+        """Export AMP reference clip for Isaac Lab."""
+        if self._presentation_mode or self.gait_motion is None or self._gait_cycle is None:
+            messagebox.showinfo(
+                "Export AMP Reference",
+                "Load and analyze a video first.",
+            )
+            return
+        config.ensure_output_dirs()
+        try:
+            from stablewalk.io.motion_reference_export import export_motion_reference_npz
+            from stablewalk.real_to_sim.amp_reference_export import export_amp_reference
+            from stablewalk.real_to_sim.gait_style_extraction import (
+                extract_gait_style_fingerprint,
+            )
+            from stablewalk.real_to_sim.motion_reference_loader import load_motion_reference
+            from stablewalk.real_to_sim.retargeting import (
+                load_retarget_config,
+                retarget_motion_reference,
+            )
+
+            run_name = Path(self._resolve_session_video_source() or "session").stem or "session"
+            run_dir = config.MOTION_REFERENCE_EXPORT_DIR / run_name
+            run_dir.mkdir(parents=True, exist_ok=True)
+            motion_path = run_dir / "stablewalk_motion.npz"
+            gait_style = extract_gait_style_fingerprint(
+                self.gait_motion, self._gait_cycle, gait_features=self._gait_features
+            )
+            export_motion_reference_npz(
+                self.gait_motion,
+                self._gait_cycle,
+                motion_path,
+                gait_style=gait_style,
+            )
+            motion = load_motion_reference(motion_path)
+            retargeted = retarget_motion_reference(motion, load_retarget_config())
+            result = export_amp_reference(
+                motion,
+                retargeted,
+                config.MOTION_REFERENCE_EXPORT_DIR,
+                run_name=run_name,
+                gait_style=gait_style,
+            )
+        except Exception as exc:
+            messagebox.showerror("Export failed", str(exc))
+            return
+        self.status.configure(text=f"AMP reference → {result.npz_path.name}")
+        messagebox.showinfo(
+            "Export AMP Reference",
+            f"AMP reference exported for Isaac Lab:\n{result.npz_path.resolve()}",
+        )
+
     def _export_selected_point_analysis(self) -> None:
         """Export full analysis data for all selected points (session bundle)."""
         self._export_analysis_data()
@@ -8096,6 +8567,7 @@ class StableWalkGUI:
         dev_lbl = getattr(self, "lbl_traj_max_deviation", None)
         samples_lbl = getattr(self, "lbl_traj_samples", None)
         summary_lbl = getattr(self, "lbl_joint_path_summary", None)
+        metrics_lbl = getattr(self, "lbl_motion_traj_metrics", None)
         conf_lbl = getattr(self, "lbl_traj_confidence", None)
 
         if samples_lbl is not None:
@@ -8112,6 +8584,8 @@ class StableWalkGUI:
                 summary_lbl.configure(
                     text=f"Insufficient trajectory data. {readiness.reason}"
                 )
+            if metrics_lbl is not None:
+                metrics_lbl.configure(text="")
             if conf_lbl is not None:
                 conf_lbl.configure(text="Trajectory Confidence: INSUFFICIENT")
             return
@@ -8125,10 +8599,30 @@ class StableWalkGUI:
                 dev_lbl.configure(
                     text=f"Maximum deviation: {metrics.max_deviation_m * 100:.1f} cm"
                 )
-        if summary_lbl is not None:
-            summary_lbl.configure(
-                text=truncate_dashboard_explanation(interpretation.sentence, max_len=200)
+            if metrics_lbl is not None and path:
+                xs = [p.x for p in path]
+                ys = [p.y for p in path]
+                zs = [p.z for p in path]
+                span_x = (max(xs) - min(xs)) * 100.0 if xs else 0.0
+                span_y = (max(ys) - min(ys)) * 100.0 if ys else 0.0
+                span_z = (max(zs) - min(zs)) * 100.0 if zs else 0.0
+                rom = max(span_x, span_y, span_z)
+                travel_cm = metrics.total_travel_m * 100.0
+                metrics_lbl.configure(
+                    text=(
+                        f"Travel {travel_cm:.1f} cm  ·  ROM {rom:.1f} cm  ·  "
+                        f"side {span_x:.1f} · up {span_y:.1f} · fwd {span_z:.1f} cm"
+                    )
+                )
+        zoom_pct = getattr(self.ax_dof_traj, "_stablewalk_zoom_note_pct", None)
+        summary_text = truncate_dashboard_explanation(interpretation.sentence, max_len=220)
+        if zoom_pct is not None:
+            summary_text = (
+                f"Magnified view — true travel ≈ {zoom_pct:.1f}% of body height. "
+                f"{summary_text}"
             )
+        if summary_lbl is not None:
+            summary_lbl.configure(text=summary_text)
         if conf_lbl is not None:
             conf_lbl.configure(
                 text=(
@@ -8252,6 +8746,9 @@ class StableWalkGUI:
 
         if projection_mode == "3D":
             relayout_single_dof_viewport(self.ax_dof_traj)
+            from stablewalk.ui.viewers.dof_trajectory_3d import _style_single_dof_trajectory_ticks
+
+            _style_single_dof_trajectory_ticks(self.ax_dof_traj)
 
         self._update_dof_trajectory_interpretation(
             item_id,
@@ -8557,6 +9054,7 @@ class StableWalkGUI:
                     (i for i in GUI_DOF_ITEM_IDS if i in self.selection.selected),
                     None,
                 )
+            self.selection.ensure_last_selected()
         else:
             self._sync_dof_checkboxes()
             return
@@ -8591,11 +9089,17 @@ class StableWalkGUI:
 
         item_id = self._active_dof_item_id()
         traj_panel = getattr(self, "overview_traj_panel", None)
+        demo = getattr(self, "_active_demo_gait", None)
         if traj_panel is not None and item_id:
             from stablewalk.ui.dof_selection import label_for_item
 
             joint_label = label_for_item(item_id) or "Joint"
-            traj_panel.configure(text=f"  {joint_label} 3D Path  ")
+            if demo is not None:
+                traj_panel.configure(
+                    text=f"  {demo.button_label} — {joint_label} 3D Path  "
+                )
+            else:
+                traj_panel.configure(text=f"  {joint_label} 3D Path  ")
 
         has_session = bool(
             self.skeleton_player and getattr(self.skeleton_player, "frame_count", 0) > 0
@@ -8628,6 +9132,7 @@ class StableWalkGUI:
                 "lbl_overview_traj_metrics",
                 "lbl_overview_traj_detail",
                 "lbl_overview_traj_video",
+                "lbl_overview_category_note",
             ):
                 lbl = getattr(self, attr, None)
                 if lbl is not None:
@@ -8635,7 +9140,10 @@ class StableWalkGUI:
             legend_lbl = getattr(self, "lbl_overview_traj_legend", None)
             if legend_lbl is not None:
                 legend_lbl.configure(
-                    text="● Start (green)  —  blue path  —  ● Now (red)  ·  cm vs pelvis center"
+                    text=(
+                        "● Start (green)  —  faded path = earlier steps  —  "
+                        "bright end = current stride  —  ● Now (red)"
+                    )
                 )
             self._render_overview_traj_canvas(force=force_draw)
             return
@@ -8768,6 +9276,61 @@ class StableWalkGUI:
                     legend_lbl = getattr(self, "lbl_overview_traj_legend", None)
                     if legend_lbl is not None:
                         legend_lbl.configure(text=summary.motion_line)
+                    # Low usable cycles on abnormal / walker clips
+                    usable, detected = self._resolved_gait_cycle_count()
+                    category_note = getattr(self, "lbl_overview_category_note", None)
+                    if category_note is not None and demo is not None:
+                        from stablewalk.ui.theme import ACCENT_ALT, ORANGE, WARNING
+
+                        completeness = (
+                            self._biomech.completeness_pct
+                            if self._biomech is not None
+                            else None
+                        )
+                        comp_bit = (
+                            f" · {completeness:.0f}% complete"
+                            if completeness is not None
+                            else ""
+                        )
+                        if demo.key == "abnormal":
+                            category_note.configure(
+                                text=(
+                                    "Compare: Abnormal — assisted walker gait, "
+                                    f"compact hip ROM{comp_bit}"
+                                ),
+                                fg=WARNING,
+                            )
+                        elif demo.key == "normal":
+                            category_note.configure(
+                                text=(
+                                    f"Compare: Normal — steady walking, "
+                                    f"{usable or 0} usable cycles{comp_bit}"
+                                ),
+                                fg=ORANGE,
+                            )
+                        elif demo.key == "athletic":
+                            category_note.configure(
+                                text=(
+                                    f"Compare: Performance — fast side-view gait, "
+                                    f"larger knee swing{comp_bit}"
+                                ),
+                                fg=ACCENT_ALT,
+                            )
+                        else:
+                            category_note.configure(text="")
+                    if (
+                        demo is not None
+                        and "abnormal" in (demo.button_label or "").lower()
+                        and (usable or 0) == 0
+                        and detail_lbl is not None
+                    ):
+                        detail_lbl.configure(
+                            text=(
+                                f"{summary.detail_line}  ·  "
+                                "Walker-assisted gait — expect a compact hip path "
+                                "and few complete cycles."
+                            )
+                        )
                 else:
                     metrics_lbl.configure(text="")
                     if detail_lbl is not None:

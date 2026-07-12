@@ -41,6 +41,7 @@ from stablewalk.analysis.gait_feature_analysis import (
     GaitFeatureAnalysisResult,
 )
 from stablewalk.models.gait_motion import GaitMotionRecording, Vec3
+from stablewalk.models.pose_data import PoseSequence
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,78 @@ class PhysicsSimulationForceEstimator(VirtualForceEstimator):
         )
 
 
+class LegacyPoseProxyForceEstimator(VirtualForceEstimator):
+    """
+    Bridge to ``GRFAnalyzer`` — pose-based vertical force proxy.
+
+    Uses CoM/hip acceleration and video contact masks. Not instrumented kinetics;
+    suitable for contact-sync evaluation until Isaac Lab physics vGRF is available.
+    """
+
+    def __init__(self, *, body_mass_kg: float = 70.0) -> None:
+        self.body_mass_kg = body_mass_kg
+
+    @property
+    def method(self) -> VirtualForceMethod:
+        return VirtualForceMethod.LEGACY_POSE_PROXY
+
+    def estimate(self, data: VirtualForceEstimatorInput) -> VirtualForceResult:
+        sequence: PoseSequence | None = data.metadata.get("pose_sequence")
+        if sequence is None:
+            return VirtualForceResult(
+                method=self.method,
+                confidence=0.0,
+                timestamps=np.asarray(data.timestamps, dtype=float),
+                available=False,
+                notes=[
+                    "Legacy pose proxy requires PoseSequence in metadata.",
+                    "Run full video analysis before estimating virtual GRF.",
+                ],
+            )
+
+        from stablewalk.analysis.forces import GRFAnalyzer
+
+        ts = GRFAnalyzer(body_mass_kg=data.body_mass_kg or self.body_mass_kg).analyze(
+            sequence
+        )
+        if len(ts.time_s) < 2:
+            return VirtualForceResult(
+                method=self.method,
+                confidence=0.2,
+                timestamps=np.asarray(data.timestamps, dtype=float),
+                available=False,
+                notes=ts.notes or ["Insufficient frames for GRF proxy."],
+            )
+
+        # Resample GRF series onto gait motion timestamps
+        left_n = np.interp(
+            data.timestamps, ts.time_s, ts.left_force_n, left=0.0, right=0.0
+        )
+        right_n = np.interp(
+            data.timestamps, ts.time_s, ts.right_force_n, left=0.0, right=0.0
+        )
+        bw = max((data.body_mass_kg or self.body_mass_kg) * G, 1e-6)
+
+        conf = float(data.metadata.get("contact_confidence", 0.5))
+        conf = min(0.75, max(0.35, conf * 0.85))
+
+        return VirtualForceResult(
+            method=self.method,
+            confidence=conf,
+            timestamps=np.asarray(data.timestamps, dtype=float),
+            left_vgrf_n=left_n,
+            right_vgrf_n=right_n,
+            left_vgrf_bw=left_n / bw,
+            right_vgrf_bw=right_n / bw,
+            available=True,
+            notes=[
+                "Estimated Virtual GRF via pose-based vertical proxy (GRFAnalyzer).",
+                "Not measured kinetics — compare timing/shape only.",
+                *ts.notes[:2],
+            ],
+        )
+
+
 class LearnedForceEstimator(VirtualForceEstimator):
     """Placeholder for a future learned vGRF model (e.g. video-to-force network)."""
 
@@ -214,7 +287,7 @@ class LearnedForceEstimator(VirtualForceEstimator):
         )
 
 
-DEFAULT_VIRTUAL_FORCE_ESTIMATOR: VirtualForceEstimator = UnavailableForceEstimator()
+DEFAULT_VIRTUAL_FORCE_ESTIMATOR: VirtualForceEstimator = LegacyPoseProxyForceEstimator()
 
 
 def build_virtual_force_input(
@@ -224,6 +297,7 @@ def build_virtual_force_input(
     body_mass_kg: float = 70.0,
     body_dimensions: BodySegmentDimensions | None = None,
     gait_features: GaitFeatureAnalysisResult | None = None,
+    sequence: PoseSequence | None = None,
 ) -> VirtualForceEstimatorInput:
     """Assemble the vGRF estimator input contract from gait analysis artifacts."""
     from stablewalk.analysis.gait_feature_analysis import estimate_body_segment_dimensions
@@ -277,6 +351,7 @@ def build_virtual_force_input(
         metadata={
             "coordinate_system": recording.coordinate_system,
             "contact_confidence": cycles.metrics.contact_confidence,
+            "pose_sequence": sequence,
         },
     )
 
@@ -288,14 +363,16 @@ def estimate_virtual_grf(
     estimator: VirtualForceEstimator | None = None,
     body_mass_kg: float = 70.0,
     gait_features: GaitFeatureAnalysisResult | None = None,
+    sequence: PoseSequence | None = None,
 ) -> VirtualForceResult:
-    """Run the configured virtual force estimator (default: unavailable placeholder)."""
+    """Run the configured virtual force estimator (default: legacy pose proxy)."""
     est = estimator or DEFAULT_VIRTUAL_FORCE_ESTIMATOR
     data = build_virtual_force_input(
         recording,
         cycles,
         body_mass_kg=body_mass_kg,
         gait_features=gait_features,
+        sequence=sequence,
     )
     result = est.estimate(data)
     if result.available and len(result.left_vgrf_n):
@@ -327,6 +404,7 @@ __all__ = [
     "VirtualForceEstimator",
     "UnavailableForceEstimator",
     "PhysicsSimulationForceEstimator",
+    "LegacyPoseProxyForceEstimator",
     "LearnedForceEstimator",
     "DEFAULT_VIRTUAL_FORCE_ESTIMATOR",
     "build_virtual_force_input",
