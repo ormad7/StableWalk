@@ -120,8 +120,10 @@ The **Physics Force Estimation** sidebar shows virtual GRF status and gait style
 | File | Purpose |
 |------|---------|
 | `stablewalk_motion.npz` | Canonical human motion + contact masks |
+| `retargeted_motion.npz` | Scaled humanoid motion (stage 2 output) |
 | `amp_reference_motion.npz` | Scaled motion for AMP training |
 | `amp_reference_manifest.json` | Robot config + gait style metadata |
+| `contact_sync_reward.npz` | Per-frame contact–force sync rewards |
 | `real_to_sim_pipeline_report.json` | Stage status + contact-sync summary |
 
 ## Scientific limitations
@@ -133,6 +135,7 @@ The **Physics Force Estimation** sidebar shows virtual GRF status and gait style
 
 ## Related docs
 
+- `docs/SPEC_COMPLIANCE.md` — research spec → implementation mapping
 - `docs/VIRTUAL_GRF.md` — force estimation terminology
 - `docs/POSE_BACKENDS.md` — future ROMP/HybrIK/SMPL backends
 - `stablewalk/analysis/isaac_lab_integration.py` — Isaac Lab probe + stage map

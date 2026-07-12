@@ -139,10 +139,39 @@ def retarget_motion_reference(
     )
 
 
+def export_retargeted_motion_npz(
+    retargeted: RetargetedMotion,
+    output_path: Path,
+    *,
+    source_motion_path: Path | None = None,
+) -> Path:
+    """Write scaled humanoid motion reference (stage 2 output) to NPZ."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    meta = dict(retargeted.metadata)
+    if source_motion_path is not None:
+        meta["source_motion_npz"] = str(source_motion_path)
+    np.savez_compressed(
+        output_path,
+        timestamps=retargeted.timestamps.astype(np.float64),
+        fps=np.float64(retargeted.fps),
+        root_positions=retargeted.root_positions.astype(np.float64),
+        joint_positions=retargeted.joint_positions.astype(np.float64),
+        left_contact_mask=retargeted.left_contact_mask.astype(np.int8),
+        right_contact_mask=retargeted.right_contact_mask.astype(np.int8),
+        robot_name=np.array(retargeted.robot_name),
+        scale_factor=np.float64(retargeted.scale_factor),
+        retarget_metadata_json=json.dumps(meta),
+        joint_map_json=json.dumps(retargeted.joint_map),
+    )
+    return output_path
+
+
 __all__ = [
     "DEFAULT_RETARGET_CONFIG",
     "RetargetConfig",
     "RetargetedMotion",
+    "export_retargeted_motion_npz",
     "load_retarget_config",
     "retarget_motion_reference",
 ]

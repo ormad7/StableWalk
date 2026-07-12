@@ -31,7 +31,7 @@ MOTION_REFERENCE_FILENAME = "stablewalk_motion.npz"
 AMP_REFERENCE_FILENAME = "amp_reference_motion.npz"
 
 RETARGET_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "models" / "real_to_sim" / "unitree_g1_retarget.json"
+    Path(__file__).resolve().parents[2] / "models" / "real_to_sim" / "unitree_g1_retarget.json"
 )
 
 PIPELINE_STAGES = (

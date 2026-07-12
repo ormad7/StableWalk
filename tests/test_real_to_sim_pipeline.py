@@ -12,6 +12,7 @@ from stablewalk.io.motion_reference_export import export_motion_reference_npz
 from stablewalk.real_to_sim.amp_reference_export import export_amp_reference
 from stablewalk.real_to_sim.contact_sync_reward import (
     contact_force_sync_reward,
+    export_contact_sync_reward_npz,
     summarize_contact_sync,
 )
 from stablewalk.real_to_sim.gait_style_extraction import extract_gait_style_fingerprint
@@ -19,7 +20,12 @@ from stablewalk.real_to_sim.motion_reference_loader import (
     load_motion_reference,
     validate_motion_reference,
 )
-from stablewalk.real_to_sim.retargeting import load_retarget_config, retarget_motion_reference
+from stablewalk.real_to_sim.pipeline import run_real_to_sim_pipeline
+from stablewalk.real_to_sim.retargeting import (
+    export_retargeted_motion_npz,
+    load_retarget_config,
+    retarget_motion_reference,
+)
 from tests.test_virtual_grf import _cycles, _recording
 
 
@@ -98,3 +104,50 @@ def test_contact_sync_reward() -> None:
     summary = summarize_contact_sync(mask, mask, force, force)
     assert 0.0 <= summary.mean_reward <= 1.0
     assert summary.interpretation
+
+
+def test_retargeted_motion_export(tmp_path: Path) -> None:
+    rec = _recording(10)
+    cycles = analyze_gait_cycles(rec)
+    motion_path = tmp_path / "stablewalk_motion.npz"
+    export_motion_reference_npz(rec, cycles, motion_path)
+    motion = load_motion_reference(motion_path)
+    retargeted = retarget_motion_reference(motion, load_retarget_config())
+    out = tmp_path / "retargeted_motion.npz"
+    export_retargeted_motion_npz(retargeted, out, source_motion_path=motion_path)
+    assert out.is_file()
+    data = np.load(out, allow_pickle=False)
+    assert len(data["timestamps"]) == 10
+    assert float(data["scale_factor"]) > 0
+
+
+def test_contact_sync_export(tmp_path: Path) -> None:
+    mask = np.array([1, 1, 0, 1], dtype=np.int8)
+    force = np.array([50.0, 5.0, 0.0, 30.0])
+    out = tmp_path / "contact_sync_reward.npz"
+    export_contact_sync_reward_npz(mask, mask, force, force, out)
+    data = np.load(out, allow_pickle=False)
+    assert "combined_reward" in data
+    assert len(data["combined_reward"]) == 4
+
+
+def test_full_pipeline_offline(tmp_path: Path) -> None:
+    rec = _recording(18)
+    cycles = analyze_gait_cycles(rec)
+    report = run_real_to_sim_pipeline(
+        rec,
+        tmp_path,
+        run_name="pipeline_test",
+        cycles=cycles,
+    )
+    assert report.report_path is not None
+    assert report.report_path.is_file()
+    assert report.retargeted_npz_path is not None
+    assert report.retargeted_npz_path.is_file()
+    assert report.amp_npz_path is not None
+    assert report.amp_npz_path.is_file()
+    d = report.to_dict()
+    assert d["retargeted_npz_path"]
+    assert any(s["stage"] == "2_retargeting" for s in d["stages"])
+    stage2 = next(s for s in d["stages"] if s["stage"] == "2_retargeting")
+    assert "retargeted_motion.npz" in (stage2.get("output_path") or "")

@@ -3065,6 +3065,24 @@ class StableWalkGUI:
             if lbl is not None:
                 lbl.configure(text=comp_text, fg=MUTED)
 
+    def _load_rts_report_for_session(self) -> dict | None:
+        """Return cached or on-disk Real-to-Sim pipeline report for current session."""
+        cached = getattr(self, "_last_rts_report", None)
+        if cached is not None:
+            return cached
+        run_name = Path(self._resolve_session_video_source() or "session").stem or "session"
+        report_path = (
+            config.MOTION_REFERENCE_EXPORT_DIR
+            / run_name
+            / "real_to_sim_pipeline_report.json"
+        )
+        if not report_path.is_file():
+            return None
+        try:
+            return json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
     def _refresh_real_to_sim_advanced_panel(self) -> None:
         """Update Advanced tab Real-to-Sim 4-stage summary."""
         from stablewalk.ui.theme import INFO, MUTED as THEME_MUTED, SUCCESS, TEXT, WARNING
@@ -3093,41 +3111,81 @@ class StableWalkGUI:
                 )
             return
 
-        try:
-            from stablewalk.real_to_sim.gait_style_extraction import (
-                extract_gait_style_fingerprint,
-            )
+        report = self._load_rts_report_for_session()
+        stage_by_id = {}
+        if report:
+            for stage in report.get("stages", []):
+                stage_by_id[stage.get("stage", "")] = stage
 
-            fp = extract_gait_style_fingerprint(
-                self.gait_motion,
-                self._gait_cycle,
-                gait_features=self._gait_features,
-            )
-            parts: list[str] = []
-            if fp.cadence_steps_per_min is not None:
-                parts.append(f"cadence {fp.cadence_steps_per_min:.0f} spm")
-            if fp.stride_length_m is not None:
-                parts.append(f"stride {fp.stride_length_m * 100:.0f} cm")
-            if fp.hip_sway_m is not None:
-                parts.append(f"hip sway {fp.hip_sway_m * 100:.1f} cm")
-            detail = " · ".join(parts) if parts else fp.style_summary
-            if s1 is not None:
-                s1.configure(text=f"Gait style: {detail}", fg=TEXT)
+        # Stage 1 — perception
+        try:
+            if report and report.get("gait_style"):
+                fp_data = report["gait_style"]
+                parts: list[str] = []
+                cadence = fp_data.get("cadence_steps_per_min")
+                stride = fp_data.get("stride_length_m")
+                hip = fp_data.get("hip_sway_m")
+                if cadence is not None:
+                    parts.append(f"cadence {cadence:.0f} spm")
+                if stride is not None:
+                    parts.append(f"stride {stride * 100:.0f} cm")
+                if hip is not None:
+                    parts.append(f"hip sway {hip * 100:.1f} cm")
+                detail = " · ".join(parts) if parts else fp_data.get("style_summary", "—")
+                status = stage_by_id.get("1_perception", {}).get("status", "complete")
+                color = WARNING if status == "partial" else TEXT
+                if s1 is not None:
+                    s1.configure(text=f"Gait style: {detail}", fg=color)
+            else:
+                from stablewalk.real_to_sim.gait_style_extraction import (
+                    extract_gait_style_fingerprint,
+                )
+
+                fp = extract_gait_style_fingerprint(
+                    self.gait_motion,
+                    self._gait_cycle,
+                    gait_features=self._gait_features,
+                )
+                parts = []
+                if fp.cadence_steps_per_min is not None:
+                    parts.append(f"cadence {fp.cadence_steps_per_min:.0f} spm")
+                if fp.stride_length_m is not None:
+                    parts.append(f"stride {fp.stride_length_m * 100:.0f} cm")
+                if fp.hip_sway_m is not None:
+                    parts.append(f"hip sway {fp.hip_sway_m * 100:.1f} cm")
+                detail = " · ".join(parts) if parts else fp.style_summary
+                if s1 is not None:
+                    s1.configure(text=f"Gait style: {detail}", fg=TEXT)
         except Exception:
             if s1 is not None:
                 s1.configure(text="Gait style: —", fg=THEME_MUTED)
 
+        # Stage 2 — retargeting
         if s2 is not None:
-            s2.configure(
-                text="Human → Unitree G1: ready (uniform scale from leg length)",
-                fg=INFO,
-            )
+            s2_stage = stage_by_id.get("2_retargeting")
+            if s2_stage:
+                detail2 = s2_stage.get("detail", "")
+                status2 = s2_stage.get("status", "complete")
+                s2.configure(
+                    text=f"Retargeting: {detail2[:72]}",
+                    fg=SUCCESS if status2 == "complete" else WARNING,
+                )
+            else:
+                s2.configure(
+                    text="Human → Unitree G1: ready (uniform scale from leg length)",
+                    fg=INFO,
+                )
 
         run_name = Path(self._resolve_session_video_source() or "session").stem or "session"
         amp_path = config.MOTION_REFERENCE_EXPORT_DIR / run_name / "amp_reference_motion.npz"
         if s3 is not None:
-            if amp_path.is_file():
-                s3.configure(text=f"AMP reference: exported ✓ ({amp_path.name})", fg=SUCCESS)
+            s3_stage = stage_by_id.get("3_simulation_amp")
+            if amp_path.is_file() or (s3_stage and s3_stage.get("status") in ("complete", "partial")):
+                status3 = (s3_stage or {}).get("status", "complete")
+                s3.configure(
+                    text=f"AMP reference: exported ✓ ({amp_path.name})",
+                    fg=SUCCESS if status3 == "complete" else WARNING,
+                )
             else:
                 s3.configure(
                     text="AMP reference: click Export AMP Reference or Real-to-Sim Pipeline",
@@ -3135,8 +3193,17 @@ class StableWalkGUI:
                 )
 
         vgrf = self._virtual_grf
+        contact_sync = (report or {}).get("contact_sync")
         if s4 is not None:
-            if vgrf is not None and vgrf.available:
+            if contact_sync:
+                mean_r = contact_sync.get("mean_reward", 0.0)
+                interp = contact_sync.get("interpretation", "")
+                short = interp[:60] + ("…" if len(interp) > 60 else "")
+                s4.configure(
+                    text=f"Contact sync: {mean_r:.0%} mean — {short}",
+                    fg=SUCCESS if mean_r >= 0.65 else (WARNING if mean_r >= 0.35 else THEME_MUTED),
+                )
+            elif vgrf is not None and vgrf.available:
                 s4.configure(
                     text=(
                         f"Virtual GRF: {vgrf.estimation_method_label} "
@@ -3151,14 +3218,23 @@ class StableWalkGUI:
                 )
 
         if summary is not None:
-            summary.configure(
-                text=(
-                    "Matches research spec: video gait style → retarget → "
-                    "Isaac Lab AMP → contact-sync foot forces. "
-                    "See docs/REAL_TO_SIM_PIPELINE.md."
-                ),
-                fg=INFO,
-            )
+            spec_link = "See docs/SPEC_COMPLIANCE.md and REAL_TO_SIM_PIPELINE.md."
+            if report:
+                summary.configure(
+                    text=(
+                        f"Pipeline report loaded for “{report.get('run_name', run_name)}”. "
+                        f"{spec_link}"
+                    ),
+                    fg=SUCCESS,
+                )
+            else:
+                summary.configure(
+                    text=(
+                        "Matches research spec: video gait style → retarget → "
+                        f"Isaac Lab AMP → contact-sync foot forces. {spec_link}"
+                    ),
+                    fg=INFO,
+                )
 
     def _update_gait_metric_cards(
         self,
@@ -7815,6 +7891,7 @@ class StableWalkGUI:
                 sequence=self.sequence,
                 cycles=self._gait_cycle,
             )
+            self._last_rts_report = report.to_dict()
             self._virtual_grf = None
             if self._gait_cycle is not None:
                 from stablewalk.analysis.virtual_grf import estimate_virtual_grf

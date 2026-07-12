@@ -23,13 +23,20 @@ from stablewalk.io.motion_reference_export import export_motion_reference_npz
 from stablewalk.models.gait_motion import GaitMotionRecording
 from stablewalk.models.pose_data import PoseSequence
 from stablewalk.real_to_sim.amp_reference_export import export_amp_reference
-from stablewalk.real_to_sim.contact_sync_reward import summarize_contact_sync
+from stablewalk.real_to_sim.contact_sync_reward import (
+    export_contact_sync_reward_npz,
+    summarize_contact_sync,
+)
 from stablewalk.real_to_sim.gait_style_extraction import (
     GaitStyleFingerprint,
     extract_gait_style_fingerprint,
 )
 from stablewalk.real_to_sim.motion_reference_loader import load_motion_reference
-from stablewalk.real_to_sim.retargeting import load_retarget_config, retarget_motion_reference
+from stablewalk.real_to_sim.retargeting import (
+    export_retargeted_motion_npz,
+    load_retarget_config,
+    retarget_motion_reference,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +57,9 @@ class RealToSimPipelineReport:
     stages: list[PipelineStageStatus] = field(default_factory=list)
     gait_style: GaitStyleFingerprint | None = None
     motion_npz_path: Path | None = None
+    retargeted_npz_path: Path | None = None
     amp_npz_path: Path | None = None
+    contact_sync_npz_path: Path | None = None
     contact_sync: dict[str, Any] | None = None
     virtual_grf: dict[str, Any] | None = None
     isaac_lab_available: bool = False
@@ -71,7 +80,13 @@ class RealToSimPipelineReport:
             ],
             "gait_style": None if self.gait_style is None else self.gait_style.to_dict(),
             "motion_npz_path": str(self.motion_npz_path) if self.motion_npz_path else None,
+            "retargeted_npz_path": (
+                str(self.retargeted_npz_path) if self.retargeted_npz_path else None
+            ),
             "amp_npz_path": str(self.amp_npz_path) if self.amp_npz_path else None,
+            "contact_sync_npz_path": (
+                str(self.contact_sync_npz_path) if self.contact_sync_npz_path else None
+            ),
             "contact_sync": self.contact_sync,
             "virtual_grf": self.virtual_grf,
             "isaac_lab_available": self.isaac_lab_available,
@@ -111,11 +126,15 @@ def run_real_to_sim_pipeline(
     # Stage 1 — Perception
     gait_style = extract_gait_style_fingerprint(recording, cycles)
     report.gait_style = gait_style
+    s1_status = "complete"
+    if gait_style.usable_cycles < 1 or gait_style.confidence < 0.4:
+        s1_status = "partial"
     report.stages.append(
         PipelineStageStatus(
             stage="1_perception",
-            status="complete",
+            status=s1_status,
             detail=gait_style.style_summary,
+            output_path=str(run_dir / "stablewalk_motion.npz"),
         )
     )
 
@@ -132,6 +151,13 @@ def run_real_to_sim_pipeline(
     motion_data = load_motion_reference(motion_path)
     retarget_cfg = load_retarget_config(robot_config_path)
     retargeted = retarget_motion_reference(motion_data, retarget_cfg)
+    retargeted_path = run_dir / "retargeted_motion.npz"
+    export_retargeted_motion_npz(
+        retargeted,
+        retargeted_path,
+        source_motion_path=motion_path,
+    )
+    report.retargeted_npz_path = retargeted_path
     report.stages.append(
         PipelineStageStatus(
             stage="2_retargeting",
@@ -140,7 +166,7 @@ def run_real_to_sim_pipeline(
                 f"Scaled human motion to {retarget_cfg.robot_name} "
                 f"(scale ×{retargeted.scale_factor:.2f})"
             ),
-            output_path=str(motion_path),
+            output_path=str(retargeted_path),
         )
     )
 
@@ -188,10 +214,30 @@ def run_real_to_sim_pipeline(
             vgrf_result.right_vgrf_n,
         )
         contact_sync_dict = sync.to_dict()
+        contact_sync_path = run_dir / "contact_sync_reward.npz"
+        export_contact_sync_reward_npz(
+            motion_data.left_contact_mask,
+            motion_data.right_contact_mask,
+            vgrf_result.left_vgrf_n,
+            vgrf_result.right_vgrf_n,
+            contact_sync_path,
+            timestamps=motion_data.timestamps,
+        )
+        report.contact_sync_npz_path = contact_sync_path
+        contact_sync_dict["per_frame_npz"] = str(contact_sync_path)
+        contact_sync_dict["frame_count"] = int(
+            min(
+                len(motion_data.left_contact_mask),
+                len(vgrf_result.left_vgrf_n),
+            )
+        )
         report.contact_sync = contact_sync_dict
 
     physics_detail = (
-        contact_sync_dict["interpretation"]
+        (
+            f"{contact_sync_dict['interpretation']} "
+            f"(mean sync {contact_sync_dict['mean_reward']:.0%})"
+        )
         if contact_sync_dict
         else "Virtual GRF unavailable — load pose sequence for force proxy."
     )
@@ -200,6 +246,11 @@ def run_real_to_sim_pipeline(
             stage="4_physics_vgrf",
             status="complete" if vgrf_result.available else "partial",
             detail=physics_detail,
+            output_path=(
+                str(report.contact_sync_npz_path)
+                if report.contact_sync_npz_path
+                else None
+            ),
         )
     )
 
@@ -213,8 +264,17 @@ def run_real_to_sim_pipeline(
     return report
 
 
+def load_pipeline_report(path: Path) -> dict[str, Any] | None:
+    """Load a saved ``real_to_sim_pipeline_report.json`` if present."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 __all__ = [
     "PipelineStageStatus",
     "RealToSimPipelineReport",
+    "load_pipeline_report",
     "run_real_to_sim_pipeline",
 ]

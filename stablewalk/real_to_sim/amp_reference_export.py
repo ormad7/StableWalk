@@ -102,7 +102,9 @@ def build_amp_reference_arrays(
         "retargeting_metadata": retargeted.metadata,
         "amp_note": (
             "Reference clip for Adversarial Motion Priors (AMP) training in Isaac Lab. "
-            "Load in a separate simulation environment with Unitree G1/H1 URDF."
+            "Load in a separate simulation environment with Unitree G1/H1 URDF. "
+            "joint_positions are scaled canonical trajectories — map to robot DOF via "
+            "Isaac Lab GMR before training."
         ),
         "contact_mask_note": (
             "left_contact_mask / right_contact_mask synchronize video foot timing "

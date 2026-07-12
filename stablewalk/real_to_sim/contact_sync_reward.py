@@ -11,6 +11,7 @@ video-derived foot contact timing.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -136,8 +137,52 @@ def summarize_contact_sync(
     )
 
 
+def export_contact_sync_reward_npz(
+    left_contact_mask: np.ndarray,
+    right_contact_mask: np.ndarray,
+    left_force_n: np.ndarray,
+    right_force_n: np.ndarray,
+    output_path: Path,
+    *,
+    force_threshold_n: float = 10.0,
+    timestamps: np.ndarray | None = None,
+) -> Path:
+    """Export per-frame contact–force sync rewards for AMP / validation."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    n = min(
+        len(left_contact_mask),
+        len(right_contact_mask),
+        len(left_force_n),
+        len(right_force_n),
+    )
+    left_r = contact_force_sync_reward(
+        left_contact_mask[:n], left_force_n[:n], force_threshold_n=force_threshold_n
+    )
+    right_r = contact_force_sync_reward(
+        right_contact_mask[:n], right_force_n[:n], force_threshold_n=force_threshold_n
+    )
+    combined = (left_r + right_r) * 0.5
+    payload: dict[str, Any] = {
+        "frame_count": np.int32(n),
+        "left_reward": left_r.astype(np.float64),
+        "right_reward": right_r.astype(np.float64),
+        "combined_reward": combined.astype(np.float64),
+        "left_contact_mask": left_contact_mask[:n].astype(np.int8),
+        "right_contact_mask": right_contact_mask[:n].astype(np.int8),
+        "left_force_n": left_force_n[:n].astype(np.float64),
+        "right_force_n": right_force_n[:n].astype(np.float64),
+        "force_threshold_n": np.float64(force_threshold_n),
+    }
+    if timestamps is not None and len(timestamps) >= n:
+        payload["timestamps"] = timestamps[:n].astype(np.float64)
+    np.savez_compressed(output_path, **payload)
+    return output_path
+
+
 __all__ = [
     "ContactSyncSummary",
     "contact_force_sync_reward",
+    "export_contact_sync_reward_npz",
     "summarize_contact_sync",
 ]

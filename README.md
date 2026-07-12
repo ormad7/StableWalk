@@ -23,7 +23,7 @@ initializing a 3D walking simulator from human video (Isaac Lab / AMP):
 python main.py --real-to-sim data/demo_videos/normal_gait.mp4
 ```
 
-See `docs/REAL_TO_SIM_PIPELINE.md` for full documentation.
+See `docs/REAL_TO_SIM_PIPELINE.md` for full documentation and `docs/SPEC_COMPLIANCE.md` for spec mapping.
 
 ---
 
