@@ -204,12 +204,23 @@ def main() -> int:
         _assert("right_knee" in app.selection.selected, "re-pick should keep selected")
         _assert(app._dof_checkbox_vars["right_knee"].get(), "checkbox still checked")
 
+        # Plain click replaces selection (single-selection joint inspection).
         app._on_skeleton_pick(_mock_pick("left_shoulder"))
         _assert(
-            {"right_knee", "left_shoulder"} <= app.selection.selected,
-            f"shoulder pick should add left_shoulder, got {app.selection.selected}",
+            app.selection.selected == {"left_shoulder"},
+            f"shoulder pick should replace selection, got {app.selection.selected}",
         )
         _assert(app._dof_checkbox_vars["left_shoulder"].get(), "left_shoulder checkbox off")
+        _assert(not app._dof_checkbox_vars["right_knee"].get(), "right_knee should clear")
+
+        # Ctrl+Click adds a second joint for comparison.
+        ctrl_pick = _mock_pick("right_knee")
+        ctrl_pick.mouseevent = SimpleNamespace(key="control", guiEvent=None)
+        app._on_skeleton_pick(ctrl_pick)
+        _assert(
+            {"right_knee", "left_shoulder"} <= app.selection.selected,
+            f"Ctrl+Click should add right_knee, got {app.selection.selected}",
+        )
 
     check("1. Select only Right Knee", case1)
     check("2. Add Left Arm", case2)

@@ -455,10 +455,13 @@ def verify_skeleton_foot_clearance_matches_cards(gui: Any) -> list[GuiRegression
         card_cm = parse_card_clearance_cm(card_text)
 
         sk_cm = None
-        if skeleton_cm is not None and len(skeleton_cm) > idx:
-            sk_cm = skeleton_cm[idx]
-        elif last_labels is not None:
-            sk_cm = last_labels[idx].clearance_cm
+        try:
+            if skeleton_cm is not None and len(skeleton_cm) > idx:
+                sk_cm = skeleton_cm[idx]
+            elif last_labels is not None and len(last_labels) > idx:
+                sk_cm = last_labels[idx].clearance_cm
+        except TypeError:
+            sk_cm = None
 
         matched = skeleton_clearance_matches_card(sk_cm, card_cm)
         checks.append(
@@ -544,7 +547,7 @@ def verify_trajectory_canvas_functional(gui: Any) -> GuiRegressionCheck:
 
 
 def verify_trajectory_legend(gui: Any) -> GuiRegressionCheck:
-    """Legend must show Start, Path, Now (Current accepted as legacy alias)."""
+    """Legend must show Start, Path, Current/Now, and End."""
     labels = getattr(gui, "dof_traj_legend_labels", None) or []
     texts = []
     for lbl in labels:
@@ -552,13 +555,14 @@ def verify_trajectory_legend(gui: Any) -> GuiRegressionCheck:
             texts.append(str(lbl.cget("text")).strip())
         except Exception:
             pass
-    now_aliases = {"Now", "Current"}
+    now_aliases = {"Now", "Current", "Current frame"}
     has_start = "Start" in texts
-    has_path = "Path" in texts
+    has_path = any(t.startswith("Path") for t in texts)
     has_now = any(t in now_aliases for t in texts)
-    passed = has_start and has_path and has_now
+    has_end = "End" in texts
+    passed = has_start and has_path and has_now and has_end
     return GuiRegressionCheck(
-        name="trajectory_legend_start_path_now",
+        name="trajectory_legend_start_path_now_end",
         passed=passed,
         detail=f"legend texts={texts}",
     )

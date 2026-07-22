@@ -19,11 +19,13 @@ from stablewalk.walk_simulator import WalkSimulation, WalkSimulator
 
 logger = logging.getLogger(__name__)
 
+from stablewalk.ui.colors import COM, CRITICAL, SIDE_LEFT
+
 BG = "#1a1a2e"
 PANEL = "#16213e"
-BONE = "#4dabf7"
+BONE = COM
 JOINT = "#ffd32a"
-ACCENT = "#00ff88"
+ACCENT = SIDE_LEFT
 TEXT = "#e8e8e8"
 MUTED = "#8892a0"
 

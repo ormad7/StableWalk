@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,7 @@ class PipelineStageStatus:
     status: str  # "complete" | "partial" | "pending"
     detail: str
     output_path: str | None = None
+    duration_s: float | None = None
 
 
 @dataclass
@@ -80,6 +82,7 @@ class RealToSimPipelineReport:
                     "status": s.status,
                     "detail": s.detail,
                     "output_path": s.output_path,
+                    "duration_s": s.duration_s,
                 }
                 for s in self.stages
             ],
@@ -151,6 +154,7 @@ def run_real_to_sim_pipeline(
         cycles = analyze_gait_cycles(recording)
 
     # Stage 1 — Perception
+    _t0 = time.perf_counter()
     gait_style = extract_gait_style_fingerprint(recording, cycles)
     report.gait_style = gait_style
     s1_status = "complete"
@@ -166,10 +170,12 @@ def run_real_to_sim_pipeline(
                 f"{', fallback from ' + pose_backend_requested if pose_backend_fallback else ''}]"
             ),
             output_path=str(run_dir / "stablewalk_motion.npz"),
+            duration_s=time.perf_counter() - _t0,
         )
     )
 
     # Stage 2 — Motion reference + retargeting
+    _t0 = time.perf_counter()
     motion_path = run_dir / "stablewalk_motion.npz"
     export_motion_reference_npz(
         recording,
@@ -198,10 +204,12 @@ def run_real_to_sim_pipeline(
                 f"(scale ×{retargeted.scale_factor:.2f})"
             ),
             output_path=str(retargeted_path),
+            duration_s=time.perf_counter() - _t0,
         )
     )
 
     # Stage 3 — AMP reference export (simulation prep)
+    _t0 = time.perf_counter()
     amp_result = export_amp_reference(
         motion_data,
         retargeted,
@@ -222,10 +230,12 @@ def run_real_to_sim_pipeline(
             status=sim_status,
             detail=sim_detail,
             output_path=str(amp_result.npz_path),
+            duration_s=time.perf_counter() - _t0,
         )
     )
 
     # Stage 4 — Physics / contact-sync vs estimated virtual GRF
+    _t0 = time.perf_counter()
     from stablewalk.io.foot_contact_export import export_foot_contact_artifacts
 
     foot_exports = export_foot_contact_artifacts(
@@ -280,10 +290,12 @@ def run_real_to_sim_pipeline(
                 if report.contact_sync_npz_path
                 else None
             ),
+            duration_s=time.perf_counter() - _t0,
         )
     )
 
     # Stage 5 — Biomechanical analysis (extends pipeline; does not replace stability)
+    _t0 = time.perf_counter()
     from stablewalk.analysis.biomechanical import run_biomechanical_analysis
     from stablewalk.io.biomechanical_export import export_biomechanical_artifacts
 
@@ -311,6 +323,7 @@ def run_real_to_sim_pipeline(
             status="complete" if biomech.center_of_mass else "partial",
             detail=f"Biomechanical report — Gait Quality {gq:.0f}/100 (estimated)",
             output_path=str(biomech_exports.biomechanical_report_path),
+            duration_s=time.perf_counter() - _t0,
         )
     )
 

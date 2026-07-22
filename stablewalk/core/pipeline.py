@@ -27,8 +27,39 @@ from stablewalk.pose.video_source import content_cache_key, derive_run_name, nor
 
 logger = logging.getLogger(__name__)
 
-ProgressCallback = Callable[[str, float], None]
+ProgressCallback = Callable[..., None]  # (message, fraction, **info)
 CacheFramesMode = Literal[False, True, "legacy"]
+
+
+def _noop_progress(message: str, fraction: float, **_info: object) -> None:
+    del message, fraction
+
+
+def _emit(
+    progress: ProgressCallback,
+    message: str,
+    fraction: float,
+    *,
+    stage: str | None = None,
+    frames_done: int | None = None,
+    frames_total: int | None = None,
+    fps: float | None = None,
+) -> None:
+    """Call progress with optional metrics; fall back to (msg, frac) only."""
+    info = {
+        k: v
+        for k, v in {
+            "stage": stage,
+            "frames_done": frames_done,
+            "frames_total": frames_total,
+            "fps": fps,
+        }.items()
+        if v is not None
+    }
+    try:
+        progress(message, fraction, **info)
+    except TypeError:
+        progress(message, fraction)
 
 
 @dataclass
@@ -50,10 +81,6 @@ class PipelineResult:
     pose_backend_fallback: bool = False
     pose_backend_fallback_reason: str | None = None
     smpl_motion_path: Path | None = None
-
-
-def _noop_progress(message: str, fraction: float) -> None:
-    pass
 
 
 def _first_frame_hash(frame_paths: list[str]) -> str:
@@ -101,7 +128,15 @@ def _run_legacy_two_pass(
     pose_backend: str | None = None,
 ) -> tuple[FrameExtractionResult, list[str], PoseExtractionResult]:
     """Extract JPGs, then re-read each file for pose (slow, debug-friendly)."""
-    progress("Extracting frames (legacy)…", 0.15)
+    _emit(
+        progress,
+        "Extracting frames...",
+        0.15,
+        stage="extracting",
+        frames_done=0,
+        frames_total=max_frames,
+        fps=None,
+    )
     processor = VideoProcessor(jpeg_quality=config.DEFAULT_JPEG_QUALITY)
     if from_url:
         extraction = processor.extract_frames_from_url(
@@ -120,7 +155,15 @@ def _run_legacy_two_pass(
     if extraction.frame_count == 0:
         raise RuntimeError("Video returned no frames — invalid or empty video source.")
 
-    progress("Running pose estimation (legacy)…", 0.35)
+    _emit(
+        progress,
+        "Pose estimation...",
+        0.35,
+        stage="pose",
+        frames_done=extraction.frame_count,
+        frames_total=extraction.frame_count,
+        fps=extraction.fps,
+    )
     pose_result = extract_pose_from_frames_dir(
         frames_dir,
         source_video=source,
@@ -129,7 +172,15 @@ def _run_legacy_two_pass(
         max_frames=max_frames,
         enrich=True,
     )
-    progress("Saving JSON export…", 0.9)
+    _emit(
+        progress,
+        "Saving pose export...",
+        0.88,
+        stage="pose",
+        frames_done=extraction.frame_count,
+        frames_total=extraction.frame_count,
+        fps=extraction.fps,
+    )
     _save_pose_sequence(pose_result.sequence, poses_path)
     return extraction, extraction.frame_paths, pose_result
 
@@ -145,7 +196,18 @@ def _run_single_pass(
     pose_backend: str | None = None,
 ) -> tuple[FrameExtractionResult, list[str], PoseExtractionResult]:
     """One video decode: pose inference + optional JPG cache for GUI playback."""
-    progress("Processing video (single pass)…", 0.2)
+    _emit(
+        progress,
+        "Extracting frames...",
+        0.18,
+        stage="extracting",
+    )
+    _emit(
+        progress,
+        "Pose estimation...",
+        0.28,
+        stage="pose",
+    )
     pose_result, extraction = extract_pose_video_with_frame_cache(
         source,
         frames_dir if cache_frames else None,
@@ -156,7 +218,24 @@ def _run_single_pass(
     )
     if extraction.frame_count == 0:
         raise RuntimeError("Video returned no frames — invalid or empty video source.")
-    progress("Saving JSON export…", 0.9)
+    _emit(
+        progress,
+        "Pose estimation...",
+        0.72,
+        stage="pose",
+        frames_done=extraction.frame_count,
+        frames_total=extraction.frame_count,
+        fps=extraction.fps,
+    )
+    _emit(
+        progress,
+        "Saving pose export...",
+        0.78,
+        stage="pose",
+        frames_done=extraction.frame_count,
+        frames_total=extraction.frame_count,
+        fps=extraction.fps,
+    )
     _save_pose_sequence(pose_result.sequence, poses_path)
     return extraction, extraction.frame_paths, pose_result
 
@@ -217,7 +296,7 @@ def run_gait_pipeline(
     name = run_name or derive_run_name(source, unique_session=False)
 
     if validate is not False:
-        progress("Validating video source…", 0.05)
+        _emit(progress, "Loading video...", 0.05, stage="loading")
         passed, _, msg = validate_source(source, mode=validate)
         if not passed:
             raise RuntimeError(msg)
@@ -266,9 +345,7 @@ def run_gait_pipeline(
         " (fallback)" if resolution.fallback else "",
     )
 
-    progress("Done.", 1.0)
-    logger.info("Pipeline complete (fresh): %s", poses_path)
-
+    # Quiet OpenSim marker export — UI OpenSim stage runs later in load_poses.
     export_paths = _auto_export_opensim(poses_path, name)
     if export_paths:
         logger.info(
@@ -276,6 +353,16 @@ def run_gait_pipeline(
             name,
             resolution.used,
         )
+
+    _emit(
+        progress,
+        "Pose estimation complete",
+        0.58,
+        stage="pose",
+        frames_done=extraction.frame_count,
+        frames_total=extraction.frame_count,
+        fps=extraction.fps,
+    )
 
     return PipelineResult(
         poses_path=poses_path,

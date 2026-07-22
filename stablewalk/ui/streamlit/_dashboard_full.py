@@ -389,7 +389,7 @@ def build_gait_metrics_rows(bundle: AnalysisBundle) -> list[dict[str, str]]:
         },
         {
             "Metric": "Cadence",
-            "Value": f"{cad:.0f} spm" if cad else "n/a",
+            "Value": f"{cad:.0f} steps/min" if cad else "n/a",
             "Assessment": _metric_status(cad, good_min=90, good_max=130) if cad else "—",
             "Notes": "Steps per minute",
         },

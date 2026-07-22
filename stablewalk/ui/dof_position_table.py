@@ -56,7 +56,7 @@ DOF_TABLE_HEADINGS: dict[str, str] = {
     "z": "Z",
     "speed": "Speed",
     "foot_clearance": "Foot Clearance",
-    "contact_status": "Contact Status",
+    "contact_status": "Contact State",
 }
 
 DOF_TABLE_WIDTHS: dict[str, int] = {

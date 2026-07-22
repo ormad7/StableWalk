@@ -194,8 +194,10 @@ class GaitContactPureFunctionTests(unittest.TestCase):
             contact_confidence=0.8,
             confidence_tier="HIGH",
         )
-        self.assertIsNotNone(metrics.left_stance_time_s)
-        self.assertIsNotNone(metrics.cadence_steps_per_min)
+        self.assertFalse(metrics.metrics_reliable)
+        self.assertIsNone(metrics.left_stance_time_s)
+        self.assertIsNone(metrics.cadence_steps_per_min)
+        self.assertIn("complete", metrics.reliability_reason)
 
 
 if __name__ == "__main__":

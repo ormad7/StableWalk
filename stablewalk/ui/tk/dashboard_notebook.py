@@ -10,20 +10,25 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from stablewalk.ui.theme import BG, PAD_XS
+from stablewalk.ui.theme import BG, DASHBOARD_TAB_PAD, PAD_XS
 
 
 TAB_OVERVIEW = "Overview"
 TAB_MOTION = "Motion Analysis"
 TAB_BIOMECHANICS = "Biomechanics"
+TAB_RESULTS_SUMMARY = "Results Summary"
+TAB_COMPARE = "Compare"
 TAB_ADVANCED = "Advanced & Export"
 
 
-def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame]:
+def install_dashboard_notebook(
+    gui, parent: tk.Misc
+) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame]:
     """
-    Install a four-tab notebook as the main dashboard viewport.
+    Install a six-tab notebook as the main dashboard viewport.
 
-    Returns ``(tab_overview, tab_motion, tab_biomechanics, tab_advanced_content)``.
+    Returns
+    ``(tab_overview, tab_motion, tab_biomechanics, tab_results_summary, tab_compare, tab_advanced_content)``.
     Widgets are created once per tab; switching tabs never recreates children.
     """
     parent.columnconfigure(0, weight=1)
@@ -33,32 +38,50 @@ def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Fra
     notebook.grid(row=0, column=0, sticky="nsew")
     gui._dashboard_notebook = notebook
 
-    tab_overview = ttk.Frame(notebook, padding=(PAD_XS, PAD_XS))
-    tab_motion = ttk.Frame(notebook, padding=(PAD_XS, PAD_XS))
-    tab_biomechanics = ttk.Frame(notebook, padding=(PAD_XS, PAD_XS))
+    tab_overview = ttk.Frame(notebook, padding=DASHBOARD_TAB_PAD)
+    tab_motion = ttk.Frame(notebook, padding=DASHBOARD_TAB_PAD)
+    tab_biomechanics = ttk.Frame(notebook, padding=DASHBOARD_TAB_PAD)
+    tab_results_summary = ttk.Frame(notebook, padding=DASHBOARD_TAB_PAD)
+    tab_compare = ttk.Frame(notebook, padding=DASHBOARD_TAB_PAD)
     tab_advanced_outer = ttk.Frame(notebook, padding=0)
 
     notebook.add(tab_overview, text=f"  {TAB_OVERVIEW}  ")
     notebook.add(tab_motion, text=f"  {TAB_MOTION}  ")
     notebook.add(tab_biomechanics, text=f"  {TAB_BIOMECHANICS}  ")
+    notebook.add(tab_results_summary, text=f"  {TAB_RESULTS_SUMMARY}  ")
+    notebook.add(tab_compare, text=f"  {TAB_COMPARE}  ")
     notebook.add(tab_advanced_outer, text=f"  {TAB_ADVANCED}  ")
 
     tab_overview.columnconfigure(0, weight=1)
-    tab_overview.rowconfigure(0, weight=1)
-    tab_overview.rowconfigure(1, weight=0)
+    # Rows are finalized in build_dashboard_layout:
+    # 0 toolbar, 1 visuals (Video|Skeleton|Path), 2 Joint Graphs (collapsed),
+    # 3 gait cards (collapsed).
+    tab_overview.rowconfigure(0, weight=0)
+    tab_overview.rowconfigure(1, weight=1)
+    tab_overview.rowconfigure(2, weight=0)
+    tab_overview.rowconfigure(3, weight=0)
 
     tab_motion.columnconfigure(0, weight=1)
     tab_motion.rowconfigure(0, weight=1)
     tab_motion.rowconfigure(1, weight=0)
 
     tab_biomechanics.columnconfigure(0, weight=1)
-    tab_biomechanics.rowconfigure(0, weight=1)
+    tab_biomechanics.rowconfigure(0, weight=0)
+    tab_biomechanics.rowconfigure(1, weight=1)
+
+    tab_results_summary.columnconfigure(0, weight=1)
+    tab_results_summary.rowconfigure(0, weight=1)
+
+    tab_compare.columnconfigure(0, weight=1)
+    tab_compare.rowconfigure(0, weight=1)
 
     tab_advanced_content = _install_tab_scroll(gui, tab_advanced_outer)
 
     gui._tab_overview = tab_overview
     gui._tab_motion = tab_motion
     gui._tab_biomechanics = tab_biomechanics
+    gui._tab_results_summary = tab_results_summary
+    gui._tab_compare = tab_compare
     gui._tab_advanced_outer = tab_advanced_outer
     gui._tab_advanced_content = tab_advanced_content
 
@@ -95,14 +118,19 @@ def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Fra
             except Exception:
                 pass
         _schedule_tab_reflow(gui)
+        # Playback only paints the visible tab, so refresh the destination tab
+        # once on switch to guarantee its charts match the current frame.
+        refresh_active = getattr(gui, "_refresh_active_tab_charts", None)
+        if refresh_active is not None:
+            gui.root.after_idle(refresh_active)
         try:
             selected = notebook.select()
             tab = notebook.nametowidget(selected)
+            if tab is getattr(gui, "_tab_compare", None):
+                ensure_compare = getattr(gui, "_ensure_comparison_mode_loaded", None)
+                if callable(ensure_compare):
+                    ensure_compare()
             if tab is getattr(gui, "_tab_motion", None):
-                from stablewalk.ui.tk.dashboard_shell import print_motion_widget_hierarchy
-
-                print_motion_widget_hierarchy(gui)
-                activate_motion_tab_trajectory(gui)
                 gui.root.after_idle(lambda: _log_motion_tab_geometry(gui))
         except tk.TclError:
             pass
@@ -110,7 +138,14 @@ def install_dashboard_notebook(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Fra
     notebook.bind("<<NotebookTabChanged>>", _on_tab_changed, add="+")
     gui._on_dashboard_tab_changed = _on_tab_changed
 
-    return tab_overview, tab_motion, tab_biomechanics, tab_advanced_content
+    return (
+        tab_overview,
+        tab_motion,
+        tab_biomechanics,
+        tab_results_summary,
+        tab_compare,
+        tab_advanced_content,
+    )
 
 
 def is_advanced_tab_selected(gui) -> bool:
@@ -176,6 +211,18 @@ def activate_motion_tab_trajectory(gui) -> None:
     fit = getattr(gui, "_fit_dof_traj_canvas", None)
     if fit is not None:
         fit()
+    fit_contact = getattr(gui, "_fit_contact_gait_canvas", None)
+    if fit_contact is not None:
+        try:
+            fit_contact()
+        except Exception:
+            pass
+    sync_motion = getattr(gui, "_sync_motion_scroll", None)
+    if sync_motion is not None:
+        try:
+            sync_motion()
+        except Exception:
+            pass
     _ensure_trajectory_canvas_gridded(gui.canvas_dof_traj)
     lift = getattr(gui, "_lift_trajectory_canvas", None)
     if lift is not None:
@@ -291,29 +338,74 @@ def reflow_tab_canvases(gui) -> None:
     """Reflow matplotlib/video layout after a tab switch (no widget recreation)."""
     from stablewalk.ui.tk.clip_viewport import sync_clipped_viewport
 
-    refit_video = getattr(gui, "_on_video_label_resize", None)
-    if refit_video is not None:
-        refit_video()
-    fit_skel = getattr(gui, "_fit_skeleton_canvas", None)
-    if fit_skel is not None:
-        fit_skel()
-    if hasattr(gui, "_update_chart"):
+    active = None
+    notebook = getattr(gui, "_dashboard_notebook", None)
+    if notebook is not None:
         try:
-            gui._update_chart()
+            active = notebook.nametowidget(notebook.select())
+        except (tk.TclError, KeyError):
+            active = None
+    overview_active = active is getattr(gui, "_tab_overview", None)
+    motion_active = active is getattr(gui, "_tab_motion", None)
+    biomechanics_active = active is getattr(gui, "_tab_biomechanics", None)
+    trajectory_active = motion_active or (
+        overview_active and getattr(gui, "_overview_traj_dock_visible", False)
+    )
+
+    if overview_active:
+        refit_video = getattr(gui, "_on_video_label_resize", None)
+        if refit_video is not None:
+            refit_video()
+        fit_skel = getattr(gui, "_fit_skeleton_canvas", None)
+        if fit_skel is not None:
+            fit_skel()
+    if motion_active:
+        if hasattr(gui, "_update_chart"):
+            try:
+                gui._update_chart()
+            except Exception:
+                pass
+        sync_clipped_viewport(
+            getattr(gui, "_knee_clip_canvas", None),
+            getattr(gui, "_knee_clip_window_id", None),
+        )
+        # Rebuild contact/vGRF after a possible zero-size first paint on Overview.
+        try:
+            gui._contact_chart_data_key = None
+            update_contact = getattr(gui, "_update_contact_gait_chart", None)
+            if callable(update_contact):
+                update_contact(force_rebuild=True)
         except Exception:
             pass
-    sync_clipped_viewport(
-        getattr(gui, "_knee_clip_canvas", None),
-        getattr(gui, "_knee_clip_window_id", None),
-    )
-    sync_clipped_viewport(
-        getattr(gui, "_traj_clip_canvas", None),
-        getattr(gui, "_traj_clip_window_id", None),
-    )
-    fit_traj = getattr(gui, "_fit_dof_traj_canvas", None)
-    if fit_traj is not None:
-        fit_traj()
-    if not getattr(gui, "_traj_startup_test_drawn", False):
+    if trajectory_active:
+        sync_clipped_viewport(
+            getattr(gui, "_traj_clip_canvas", None),
+            getattr(gui, "_traj_clip_window_id", None),
+        )
+        fit_traj = getattr(gui, "_fit_dof_traj_canvas", None)
+        if fit_traj is not None:
+            fit_traj()
+    if motion_active:
+        fit_contact = getattr(gui, "_fit_contact_gait_canvas", None)
+        if fit_contact is not None:
+            try:
+                fit_contact()
+            except Exception:
+                pass
+        sync_motion = getattr(gui, "_sync_motion_scroll", None)
+        if sync_motion is not None:
+            try:
+                sync_motion()
+            except Exception:
+                pass
+    if biomechanics_active:
+        fit_biomech = getattr(gui, "_fit_biomech_canvas", None)
+        if fit_biomech is not None:
+            try:
+                fit_biomech()
+            except Exception:
+                pass
+    if motion_active and not getattr(gui, "_traj_startup_test_drawn", False):
         has_session = bool(
             getattr(gui, "skeleton_player", None)
             and getattr(gui.skeleton_player, "frame_count", 0) > 0
@@ -330,7 +422,7 @@ def reflow_tab_canvases(gui) -> None:
         getattr(gui, "skeleton_player", None)
         and getattr(gui.skeleton_player, "frame_count", 0) > 0
     )
-    if refresh_traj is not None and (
+    if trajectory_active and refresh_traj is not None and (
         has_session or (getattr(gui, "selection", None) and gui.selection.selected)
     ):
         try:
@@ -342,7 +434,7 @@ def reflow_tab_canvases(gui) -> None:
                 "Failed to refresh Motion Analysis trajectory graph"
             )
     render = getattr(gui, "_render_dof_traj_canvas", None)
-    if render is not None and is_motion_tab_selected(gui):
+    if render is not None and motion_active:
         try:
             render(force=True)
         except Exception:
@@ -357,23 +449,39 @@ def select_dashboard_tab(gui, tab: str) -> None:
     notebook = getattr(gui, "_dashboard_notebook", None)
     if notebook is None:
         return
-    labels = {TAB_OVERVIEW: 0, TAB_MOTION: 1, TAB_BIOMECHANICS: 2, TAB_ADVANCED: 3}
+    labels = {
+        TAB_OVERVIEW: 0,
+        TAB_MOTION: 1,
+        TAB_BIOMECHANICS: 2,
+        TAB_RESULTS_SUMMARY: 3,
+        TAB_COMPARE: 4,
+        TAB_ADVANCED: 5,
+    }
     index = labels.get(tab)
     if index is None:
         return
     try:
+        previous = notebook.index(notebook.select())
         notebook.select(index)
         gui.root.update_idletasks()
-        reflow_tab_canvases(gui)
+        if previous == index:
+            reflow_tab_canvases(gui)
         sync_mount = getattr(gui, "_sync_trajectory_mount_for_active_tab", None)
         if sync_mount is not None:
             try:
                 sync_mount()
             except Exception:
                 pass
-        if tab == TAB_MOTION:
+        if tab == TAB_MOTION and previous == index:
             activate_motion_tab_trajectory(gui)
             _log_motion_tab_geometry(gui)
+        if tab == TAB_COMPARE:
+            refresh = getattr(gui, "_refresh_comparison_mode", None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except Exception:
+                    pass
     except tk.TclError:
         pass
 
@@ -412,7 +520,24 @@ def run_tab_switch_stress_test(gui, *, cycles: int = 50) -> list[tuple[str, bool
 
     from stablewalk.ui.tk.dashboard_shell import assert_dashboard_widget_singletons
 
-    tabs = (TAB_OVERVIEW, TAB_MOTION, TAB_BIOMECHANICS, TAB_ADVANCED, TAB_MOTION, TAB_OVERVIEW)
+    tabs = (
+        TAB_OVERVIEW,
+        TAB_MOTION,
+        TAB_BIOMECHANICS,
+        TAB_RESULTS_SUMMARY,
+        TAB_COMPARE,
+        TAB_ADVANCED,
+        TAB_MOTION,
+        TAB_OVERVIEW,
+    )
+    player = getattr(gui, "skeleton_player", None)
+    baseline_frame = (
+        float(player.state.frame_float) if player is not None else None
+    )
+    baseline_playing = bool(getattr(gui, "playing", False))
+    selection = getattr(gui, "selection", None)
+    baseline_selected = frozenset(getattr(selection, "selected", ()) or ())
+    baseline_active = getattr(selection, "active_item_id", None)
     for i in range(cycles):
         select_dashboard_tab(gui, tabs[i % len(tabs)])
         try:
@@ -421,6 +546,34 @@ def run_tab_switch_stress_test(gui, *, cycles: int = 50) -> list[tuple[str, bool
             pass
 
     results: list[tuple[str, bool, str]] = []
+    current_frame = float(player.state.frame_float) if player is not None else None
+    results.append(
+        (
+            "tab_switch_preserves_frame",
+            (
+                current_frame == baseline_frame
+                if not baseline_playing
+                else current_frame is not None
+            ),
+            f"before={baseline_frame}, after={current_frame}",
+        )
+    )
+    results.append(
+        (
+            "tab_switch_preserves_play_state",
+            bool(getattr(gui, "playing", False)) == baseline_playing,
+            f"before={baseline_playing}, after={bool(getattr(gui, 'playing', False))}",
+        )
+    )
+    current_selected = frozenset(getattr(selection, "selected", ()) or ())
+    current_active = getattr(selection, "active_item_id", None)
+    results.append(
+        (
+            "tab_switch_preserves_selection",
+            current_selected == baseline_selected and current_active == baseline_active,
+            f"selected={len(current_selected)}, active={current_active}",
+        )
+    )
 
     def _count_canvas(attr: str) -> int:
         canvas = getattr(gui, attr, None)

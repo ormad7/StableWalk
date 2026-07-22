@@ -35,10 +35,14 @@ class FrameRgbCache:
         self._store.clear()
 
     def get_rgb(self, path: str | Path) -> np.ndarray:
-        key = str(Path(path).resolve()) if Path(path).is_file() else str(path)
-        if key in self._store:
+        # Key on the raw path string so cache hits avoid a filesystem stat and
+        # Path allocation every frame during playback. Callers pass a stable
+        # ``frame.image_path`` so this remains a reliable key.
+        key = str(path)
+        cached = self._store.get(key)
+        if cached is not None:
             self._store.move_to_end(key)
-            return self._store[key]
+            return cached
         rgb = _load_frame_rgb_uncached(path)
         self._store[key] = rgb
         if len(self._store) > self._max:

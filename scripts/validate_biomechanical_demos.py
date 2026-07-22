@@ -17,6 +17,11 @@ sys.path.insert(0, str(ROOT))
 
 from stablewalk.adapters.pose_adapter import pose_sequence_to_gait_motion
 from stablewalk.analysis.biomechanical import run_biomechanical_analysis
+from stablewalk.analysis.biomechanical.walking_speed import (
+    format_walking_speed_display,
+    is_plausible_walking_speed,
+    is_reportable_walking_speed,
+)
 from stablewalk.analysis.gait_comparison_validation import COMPARISON_VIDEOS
 from stablewalk.io.pose_loader import load_pose_sequence
 
@@ -43,6 +48,7 @@ def main() -> int:
         seq = load_pose_sequence(poses_path)
         rec = pose_sequence_to_gait_motion(seq)
         bio = run_biomechanical_analysis(rec, seq)
+        ws = bio.gait_metrics.walking_speed if bio.gait_metrics else None
         results[label] = {
             "poses_path": str(poses_path),
             "gait_quality_score": bio.gait_quality.score if bio.gait_quality else None,
@@ -59,11 +65,13 @@ def main() -> int:
                 if bio.gait_metrics and bio.gait_metrics.cadence
                 else None
             ),
-            "walking_speed_m_s": (
-                bio.gait_metrics.walking_speed.value
-                if bio.gait_metrics and bio.gait_metrics.walking_speed
-                else None
+            "walking_speed_m_s": ws.value if ws else None,
+            "walking_speed_display": format_walking_speed_display(ws),
+            "walking_speed_plausible": (
+                is_plausible_walking_speed(ws.value) if ws and ws.value is not None else False
             ),
+            "walking_speed_reportable": is_reportable_walking_speed(ws),
+            "walking_speed_confidence": ws.confidence if ws else None,
             "video_quality": (
                 bio.video_quality.overall_quality_score if bio.video_quality else None
             ),

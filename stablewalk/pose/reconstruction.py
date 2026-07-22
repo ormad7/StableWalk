@@ -297,7 +297,9 @@ def plot_skeleton_3d(
 
     if show_root and "mid_hip" in joints:
         r = joints["mid_hip"]
-        ax.scatter([r.x], [r.y], [r.z], c="#ff6b6b", s=80, marker="s", label="root")
+        from stablewalk.ui.colors import COM
+
+        ax.scatter([r.x], [r.y], [r.z], c=COM, s=80, marker="s", label="root")
 
     pad = max(skeleton.max_extent(), 0.25) * 1.15
     ax.set_xlim(-pad, pad)
@@ -363,11 +365,13 @@ def plot_skeleton_sequence(
         rt = skel_seq.root_trajectory
         valid = ~np.isnan(rt).any(axis=1)
         if valid.any():
+            from stablewalk.ui.colors import COM
+
             ax.plot(
                 rt[valid, 0],
                 rt[valid, 1],
                 rt[valid, 2],
-                color="#ff6b6b",
+                color=COM,
                 linewidth=2.0,
                 linestyle="--",
                 label="root trajectory",

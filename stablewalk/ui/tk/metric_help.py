@@ -53,7 +53,7 @@ def add_metric_help_icon(parent: tk.Misc, title: str, body: str) -> tk.Label:
             font=FONT_UI_XS,
             anchor="w",
             justify=tk.LEFT,
-            wraplength=300,
+            wraplength=360,
         ).pack(fill=tk.X, padx=10, pady=(0, 10))
         popup.bind("<Escape>", _close)
         popup.protocol("WM_DELETE_WINDOW", _close)
@@ -73,4 +73,4 @@ def bind_metric_help_tooltip(widget: tk.Misc, title: str, body: str) -> None:
     """Hover tooltip on a metric title — no visible ? icon."""
     from stablewalk.ui.theme import create_tooltip
 
-    create_tooltip(widget, f"{title}\n\n{body}")
+    create_tooltip(widget, f"{title}\n\n{body}", wraplength=340)

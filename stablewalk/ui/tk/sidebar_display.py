@@ -229,16 +229,30 @@ def mapping_label_line(*, label: str) -> str:
     return f"Mapping: {label}"
 
 
+def markers_count_line(
+    *,
+    matched: int | None = None,
+    reference: int | None = None,
+    mapping_percent: float | None = None,
+    mapped: int | None = None,
+    total: int | None = None,
+) -> str:
+    """Sidebar marker count / mapping percentage line."""
+    n_matched = matched if matched is not None else mapped
+    n_ref = reference if reference is not None else total
+    if n_matched is None or n_ref is None or n_ref <= 0:
+        if mapping_percent is not None:
+            return f"Markers: mapping {mapping_percent:.0f}%"
+        return "Markers: —"
+    if mapping_percent is not None:
+        return f"Markers: {n_matched}/{n_ref} ({mapping_percent:.0f}%)"
+    return f"Markers: {n_matched}/{n_ref}"
+
+
 def coverage_line(*, percent: float | None) -> str:
     if percent is None:
         return "Coverage: —"
     return f"Coverage: {percent:.1f}%"
-
-
-def markers_count_line(*, mapped: int, total: int) -> str:
-    if total <= 0:
-        return "Markers: —"
-    return f"Markers: {mapped} / {total}"
 
 
 def reliability_line(*, reliability: str | None) -> str:

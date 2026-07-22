@@ -137,7 +137,7 @@ class FootClearanceDisplayTests(unittest.TestCase):
     def test_overview_copy_and_confidence_labels(self) -> None:
         self.assertEqual(OVERVIEW_SECTION_TITLE, "FOOT-TO-FLOOR DISTANCE")
         self.assertEqual(OVERVIEW_DISTANCE_CAPTION, "DISTANCE FROM FLOOR")
-        self.assertEqual(measurement_confidence_label("HIGH"), "Measurement Confidence: High")
+        self.assertEqual(measurement_confidence_label("HIGH"), "Foot Clearance Confidence: High")
         self.assertEqual(
             foot_clearance_confidence_label("MODERATE"),
             "Foot Clearance Confidence: Moderate",
@@ -191,7 +191,7 @@ class FootClearanceDisplayTests(unittest.TestCase):
         assert panel is not None
         text = format_foot_clearance_details(panel)
         self.assertIn("Foot Clearance Confidence:", text)
-        self.assertIn("Measurement Confidence:", text)
+        self.assertIn("Foot Clearance Confidence:", text)
 
     def test_debug_lines_populated(self) -> None:
         recording, snapshot = _bilateral_snapshot()

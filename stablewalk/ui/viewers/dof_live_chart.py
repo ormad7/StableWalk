@@ -14,9 +14,16 @@ import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
-from stablewalk.ui.colors import BORDER, MUTED, PANEL, TEXT
+from stablewalk.ui.colors import BORDER, COM, INFO, METRIC_GLOBAL, MUTED, PANEL, SIDE_LEFT, TEXT
 from stablewalk.ui.dof_position_table import angle_value_for_item
 from stablewalk.ui.dof_selection import anchor_joint_for_item, label_for_item
+from stablewalk.ui.viewers.chart_style import (
+    apply_chart_grid,
+    apply_chart_panel_style,
+    configure_numeric_y_axis,
+    configure_time_axis,
+    style_chart_legend,
+)
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -82,12 +89,12 @@ def collect_dof_live_series(
 # Rendering-only limits (does not affect data collection).
 DOF_LIVE_CHART_MAX_POINTS = 50
 
-# Distinct colors and line styles for at-a-glance reading.
+# Distinct colors and line styles for at-a-glance reading (lab palette).
 _SERIES_STYLE: tuple[tuple[str, str, str, str, str], ...] = (
-    ("X", "X (m)", "#2ee59d", "-", "2.0"),
-    ("Y", "Y (m)", "#4dabf7", "--", "2.0"),
-    ("Z", "Z (m)", "#ffc857", "-.", "2.0"),
-    ("Angle", "Angle (°)", "#ff6b81", "-", "2.2"),
+    ("X", "X (m)", SIDE_LEFT, "-", "1.55"),
+    ("Y", "Y (m)", COM, "--", "1.55"),
+    ("Z", "Z (m)", INFO, "-.", "1.55"),
+    ("Angle", "Angle (°)", METRIC_GLOBAL, "-", "1.7"),
 )
 
 # Plot band (top) + x-label band + legend band (bottom).
@@ -96,14 +103,11 @@ _LEGEND_ANCHOR = (0.52, 0.03)
 
 
 def setup_dof_live_chart_axes(ax: Axes) -> None:
-    """Apply dashboard styling to the live DOF chart axes."""
-    ax.set_facecolor(PANEL)
-    ax.tick_params(axis="both", colors=MUTED, labelsize=7.5, pad=3, length=3)
-    ax.set_xlabel("Time (s)", color=MUTED, fontsize=8, labelpad=6)
-    ax.set_ylabel("Position (m)", color=MUTED, fontsize=8, labelpad=6)
-    ax.grid(True, color=BORDER, alpha=0.32, linestyle="--", linewidth=0.55, zorder=0)
-    for spine in ax.spines.values():
-        spine.set_color(BORDER)
+    """Apply shared dashboard styling to the live DOF chart axes."""
+    apply_chart_panel_style(ax)
+    configure_time_axis(ax, show_xlabel=True, nbins=5)
+    configure_numeric_y_axis(ax, "Position (m)", nbins=4)
+    apply_chart_grid(ax, y_minor=True)
 
 
 def _clear_extra_axes(ax: Axes) -> None:
@@ -135,23 +139,23 @@ def _format_time(value: float, _pos: int) -> str:
 
 def _style_angle_axis(angle_ax: Axes) -> None:
     angle_ax.set_facecolor("none")
-    angle_ax.set_ylabel("Angle (°)", color=MUTED, fontsize=8, labelpad=8)
+    angle_ax.set_ylabel("Angle (°)", color=MUTED, fontsize=10.0, labelpad=8)
     angle_ax.yaxis.set_label_coords(1.02, 0.5)
     angle_ax.tick_params(
         axis="y",
         colors=MUTED,
-        labelsize=7.5,
+        labelsize=8.5,
         pad=5,
-        length=3,
+        length=4,
         direction="out",
     )
-    angle_ax.yaxis.set_major_locator(MaxNLocator(nbins=3, min_n_ticks=3, prune="both"))
+    angle_ax.yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=3, prune="both"))
     angle_ax.yaxis.set_major_formatter(FuncFormatter(_format_degrees))
     angle_ax.spines["top"].set_visible(False)
     angle_ax.spines["left"].set_visible(False)
     angle_ax.spines["bottom"].set_visible(False)
     angle_ax.spines["right"].set_color(BORDER)
-    angle_ax.spines["right"].set_linewidth(0.8)
+    angle_ax.spines["right"].set_linewidth(1.0)
 
 
 def _style_primary_ticks(ax: Axes) -> None:
@@ -226,16 +230,16 @@ def _draw_chart_legend(fig: Figure) -> None:
         loc="lower center",
         bbox_to_anchor=_LEGEND_ANCHOR,
         ncol=4,
-        fontsize=7.5,
+        fontsize=8.5,
         framealpha=0.96,
         facecolor=PANEL,
         edgecolor=BORDER,
         labelcolor=TEXT,
         handlelength=2.2,
-        handletextpad=0.5,
-        borderpad=0.35,
-        labelspacing=0.3,
-        columnspacing=0.9,
+        handletextpad=0.55,
+        borderpad=0.4,
+        labelspacing=0.35,
+        columnspacing=1.0,
     )
 
 
@@ -348,19 +352,32 @@ def draw_dof_live_chart(
     if play_time is not None and len(times) > 0:
         t_min, t_max = float(times[0]), float(times[-1])
         if t_min - 1e-6 <= float(play_time) <= t_max + 1e-6:
-            ax.axvline(
-                float(play_time),
-                color=TEXT,
-                linewidth=0.9,
-                linestyle=":",
-                alpha=0.5,
-                zorder=1,
+            from stablewalk.ui.viewers.chart_playhead import PlayheadState, draw_chart_playhead
+
+            value_y = float(np.interp(float(play_time), times, y)) if len(y) else None
+            value_label = None
+            if value_y is not None and np.isfinite(value_y):
+                ang = float(np.interp(float(play_time), times, angle)) if len(angle) else None
+                if ang is not None and np.isfinite(ang):
+                    value_label = f"Y {value_y:.3f} m · ∠ {ang:.1f}°"
+                else:
+                    value_label = f"Y {value_y:.3f} m"
+            draw_chart_playhead(
+                ax,
+                PlayheadState(
+                    time_s=float(play_time),
+                    frame_index=int(end_frame_index),
+                    animating=False,
+                ),
+                show_label=True,
+                value_label=value_label,
+                value_y=value_y,
             )
 
     title = series.dof_label
     if windowed:
         title = f"{title}  ·  last {DOF_LIVE_CHART_MAX_POINTS} frames"
-    ax.set_title(title, color=TEXT, fontsize=9, fontweight="medium", pad=6)
+    ax.set_title(title, color=TEXT, fontsize=11.0, fontweight="medium", pad=6)
 
     _draw_chart_legend(fig)
     apply_dof_live_chart_layout(fig)

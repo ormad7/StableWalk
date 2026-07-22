@@ -15,14 +15,15 @@ if TYPE_CHECKING:
     from stablewalk.models.pose_data import PoseFrame
     from stablewalk.skeleton_3d_model import Skeleton3D
 
-from stablewalk.gui_theme import (
-    ACCENT,
-    ACCENT_ALT,
+from stablewalk.ui.colors import (
     BORDER,
+    COM,
     INFO,
+    METRIC_GLOBAL,
     PANEL,
+    SIDE_LEFT,
+    SIDE_RIGHT,
     TEXT,
-    VIZ_JOINT,
     WARNING,
 )
 
@@ -30,10 +31,10 @@ BG = PANEL
 MUTED = "#7d8da6"
 
 # Accent hints on painted body (left / right / center)
-COLOR_LEFT = ACCENT
-COLOR_RIGHT = WARNING
-COLOR_TORSO = ACCENT_ALT
-COLOR_HEAD = VIZ_JOINT
+COLOR_LEFT = SIDE_LEFT
+COLOR_RIGHT = SIDE_RIGHT
+COLOR_TORSO = COM
+COLOR_HEAD = WARNING
 COLOR_VEL = INFO
 
 # Human figure palette (person in clothes — not colored robot segments)
@@ -1295,8 +1296,8 @@ def draw_joint_positions_chart(
 
     y = np.arange(len(names))
     h = 0.18
-    ax.barh(y - 1.5 * h, xs, height=h, color=ACCENT, alpha=0.9, label="X")
-    ax.barh(y - 0.5 * h, ys, height=h, color=ACCENT_ALT, alpha=0.9, label="Y")
+    ax.barh(y - 1.5 * h, xs, height=h, color=SIDE_LEFT, alpha=0.9, label="X")
+    ax.barh(y - 0.5 * h, ys, height=h, color=COM, alpha=0.9, label="Y")
     ax.barh(y + 0.5 * h, zs, height=h, color=COLOR_TORSO, alpha=0.9, label="Z")
     ax.barh(y + 1.5 * h, speeds, height=h, color=COLOR_VEL, alpha=0.9, label="|v|")
     ax.set_yticks(y)
@@ -1348,7 +1349,7 @@ def draw_dof_motion_chart(
 
     y = np.arange(len(labels))
     h = 0.35
-    ax.barh(y - h / 4, angle_vals, height=h / 2, color=ACCENT, alpha=0.85, label="Angle °")
+    ax.barh(y - h / 4, angle_vals, height=h / 2, color=METRIC_GLOBAL, alpha=0.85, label="Angle °")
     ax.barh(y + h / 4, omega_vals, height=h / 2, color=COLOR_VEL, alpha=0.85, label="ω °/s")
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=7, color=TEXT)
@@ -1404,7 +1405,7 @@ def draw_robot_geometry(
             [pa[0], pb[0]],
             [pa[1], pb[1]],
             [pa[2], pb[2]],
-            color=ACCENT_ALT,
+            color=COM,
             linewidth=2.5,
         )
 

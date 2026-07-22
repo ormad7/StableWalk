@@ -49,9 +49,12 @@ _DEFAULT_EXIT_MIN_VEL_M_S = 0.42
 
 MIN_FOOT_VISIBILITY = 0.35
 MIN_FRAMES_FOR_ANALYSIS = 6
-MIN_CYCLES_FOR_CADENCE = 1
+MIN_CYCLES_FOR_CADENCE = 2
 MIN_STATE_HOLD_FRAMES = 2
 MIN_CONTACT_RUN_FRAMES = 3
+MIN_COMPLETE_CYCLE_DURATION_S = 0.35
+MAX_COMPLETE_CYCLE_DURATION_S = 3.0
+MIN_RELIABLE_CONTACT_CONFIDENCE = 0.48
 
 # Maximum displayed min(heel,toe) clearance while retaining CONTACT (fraction of leg length).
 # Prevents ankle-driven contact hysteresis when heel/toe are clearly off the floor.
@@ -116,6 +119,7 @@ class DetectedGaitCycle:
     start_time_s: float
     end_time_s: float
     duration_s: float
+    boundary_side: str = ""
 
 
 @dataclass
@@ -130,6 +134,14 @@ class GaitTemporalMetrics:
     left_right_swing_symmetry: float | None = None
     double_support_time_s: float | None = None
     double_support_pct: float | None = None
+    single_support_time_s: float | None = None
+    single_support_pct: float | None = None
+    flight_time_s: float | None = None
+    flight_pct: float | None = None
+    left_stance_pct: float | None = None
+    right_stance_pct: float | None = None
+    left_swing_pct: float | None = None
+    right_swing_pct: float | None = None
     step_time_s: float | None = None
     stride_time_s: float | None = None
     cadence_steps_per_min: float | None = None
@@ -137,6 +149,16 @@ class GaitTemporalMetrics:
     gait_cycle_consistency: float | None = None
     contact_confidence: float = 0.0
     confidence_tier: ConfidenceTier = "LOW_CONFIDENCE"
+    metrics_reliable: bool = False
+    reliability_reason: str = "No complete gait cycles were analyzed."
+    double_support_definition: str = (
+        "Total time with both feet in contact, combining both double-support "
+        "periods within one complete same-side heel-strike gait cycle."
+    )
+    single_support_definition: str = (
+        "Ipsilateral single-limb support as a percentage of the gait cycle "
+        "(mean of left-only and right-only support; typically ~40%)."
+    )
     left_heel_strike_count: int = 0
     right_heel_strike_count: int = 0
     left_toe_off_count: int = 0
@@ -674,7 +696,15 @@ def segment_durations_s(
 
 
 def symmetry_ratio(a: float | None, b: float | None) -> float | None:
-    if a is None or b is None or max(a, b) <= 1e-9:
+    if (
+        a is None
+        or b is None
+        or not math.isfinite(a)
+        or not math.isfinite(b)
+        or a < 0.0
+        or b < 0.0
+        or max(a, b) <= 1e-9
+    ):
         return None
     return min(a, b) / max(a, b)
 
@@ -693,22 +723,40 @@ def detect_gait_cycles(
     *,
     duration_s: float,
 ) -> list[DetectedGaitCycle]:
-    """Cycles bounded by consecutive left heel strikes (fallback: any HS)."""
-    left_hs = sorted(
-        (e for e in events if e.event_type == "left_heel_strike"),
-        key=lambda e: e.time_s,
-    )
-    if len(left_hs) >= 2:
-        bounds = left_hs
-    else:
-        bounds = sorted(events, key=lambda e: e.time_s)
-        bounds = [e for e in bounds if e.event_type.endswith("_heel_strike")]
+    """Return complete cycles bounded by consecutive same-side heel strikes.
+
+    Alternating heel strikes delimit steps, not gait cycles. A leading or
+    trailing partial interval is therefore never promoted to a complete cycle.
+    """
+    del duration_s  # Retained for API compatibility; partial clip duration is not a cycle.
+    candidates: list[tuple[str, list[GaitEvent]]] = []
+    for side in ("left", "right"):
+        bounds = sorted(
+            (e for e in events if e.event_type == f"{side}_heel_strike"),
+            key=lambda e: e.time_s,
+        )
+        if len(bounds) >= 2:
+            candidates.append((side, bounds))
+    if not candidates:
+        return []
+
+    def _candidate_rank(item: tuple[str, list[GaitEvent]]) -> tuple[int, float]:
+        _, bounds = item
+        durations = [
+            bounds[i + 1].time_s - bounds[i].time_s
+            for i in range(len(bounds) - 1)
+            if bounds[i + 1].time_s > bounds[i].time_s
+        ]
+        cv = interval_cv(durations)
+        return len(durations), -(cv if cv is not None else 1.0)
+
+    boundary_side, bounds = max(candidates, key=_candidate_rank)
 
     cycles: list[DetectedGaitCycle] = []
     for i in range(len(bounds) - 1):
         start, end = bounds[i], bounds[i + 1]
         dur = end.time_s - start.time_s
-        if dur <= 1e-6:
+        if not (MIN_COMPLETE_CYCLE_DURATION_S <= dur <= MAX_COMPLETE_CYCLE_DURATION_S):
             continue
         cycles.append(
             DetectedGaitCycle(
@@ -718,20 +766,61 @@ def detect_gait_cycles(
                 start_time_s=start.time_s,
                 end_time_s=end.time_s,
                 duration_s=dur,
-            )
-        )
-    if not cycles and duration_s > 0 and bounds:
-        cycles.append(
-            DetectedGaitCycle(
-                cycle_index=0,
-                start_frame=bounds[0].frame_index,
-                end_frame=bounds[-1].frame_index,
-                start_time_s=bounds[0].time_s,
-                end_time_s=bounds[-1].time_s,
-                duration_s=max(duration_s, 1e-6),
+                boundary_side=boundary_side,
             )
         )
     return cycles
+
+
+def _cycle_support_durations(
+    per_frame: list[FrameContactState],
+    cycle: DetectedGaitCycle,
+    *,
+    fps: float,
+) -> dict[str, float] | None:
+    """Integrate binary support states over one complete gait cycle."""
+    states = [
+        state
+        for state in per_frame
+        if cycle.start_time_s <= state.time_s < cycle.end_time_s
+    ]
+    if len(states) < 3 or cycle.duration_s <= 1e-9:
+        return None
+
+    totals = {
+        "left_stance": 0.0,
+        "right_stance": 0.0,
+        "double_support": 0.0,
+        "left_single_support": 0.0,
+        "right_single_support": 0.0,
+        "single_support": 0.0,
+        "flight": 0.0,
+    }
+    fallback_dt = 1.0 / max(fps, 1e-6)
+    for i, state in enumerate(states):
+        next_t = states[i + 1].time_s if i + 1 < len(states) else cycle.end_time_s
+        dt = min(max(next_t - state.time_s, 0.0), fallback_dt * 2.5)
+        if state.left_contact:
+            totals["left_stance"] += dt
+        if state.right_contact:
+            totals["right_stance"] += dt
+        if state.left_contact and state.right_contact:
+            totals["double_support"] += dt
+        elif state.left_contact:
+            totals["left_single_support"] += dt
+            totals["single_support"] += dt
+        elif state.right_contact:
+            totals["right_single_support"] += dt
+            totals["single_support"] += dt
+        else:
+            totals["flight"] += dt
+
+    covered = (
+        totals["double_support"] + totals["single_support"] + totals["flight"]
+    )
+    if covered < cycle.duration_s * 0.98:
+        return None
+    return totals
 
 
 def compute_temporal_metrics(
@@ -743,81 +832,148 @@ def compute_temporal_metrics(
     contact_confidence: float,
     confidence_tier: ConfidenceTier,
 ) -> GaitTemporalMetrics:
-    if not per_frame:
-        return GaitTemporalMetrics(
-            contact_confidence=contact_confidence,
-            confidence_tier=confidence_tier,
-        )
-
-    times = [s.time_s for s in per_frame]
-    left = [s.left_contact for s in per_frame]
-    right = [s.right_contact for s in per_frame]
-    duration_s = max(times[-1] - times[0], len(per_frame) / max(fps, 1e-6))
-
-    left_stance_runs = segment_durations_s(left, times, value=1)
-    right_stance_runs = segment_durations_s(right, times, value=1)
-    left_swing_runs = segment_durations_s(left, times, value=0)
-    right_swing_runs = segment_durations_s(right, times, value=0)
-
-    left_stance = statistics.mean(left_stance_runs) if left_stance_runs else None
-    right_stance = statistics.mean(right_stance_runs) if right_stance_runs else None
-    left_swing = statistics.mean(left_swing_runs) if left_swing_runs else None
-    right_swing = statistics.mean(right_swing_runs) if right_swing_runs else None
-
-    stance_vals = [v for v in (left_stance, right_stance) if v is not None]
-    swing_vals = [v for v in (left_swing, right_swing) if v is not None]
-
-    ds_frames = sum(1 for s in per_frame if s.left_contact and s.right_contact)
-    ds_time = ds_frames / max(fps, 1e-6)
-    cycle_durations = [c.duration_s for c in cycles if c.duration_s > 0]
-    mean_cycle = statistics.mean(cycle_durations) if cycle_durations else duration_s
-    ds_pct = (ds_time / mean_cycle * 100.0) if mean_cycle > 1e-6 else None
-
-    hs_times = sorted(e.time_s for e in events if e.event_type.endswith("_heel_strike"))
-    step_intervals = [hs_times[i + 1] - hs_times[i] for i in range(len(hs_times) - 1)]
-    step_time = statistics.mean(step_intervals) if step_intervals else None
-
     left_hs_times = sorted(
         e.time_s for e in events if e.event_type == "left_heel_strike"
     )
     right_hs_times = sorted(
         e.time_s for e in events if e.event_type == "right_heel_strike"
     )
-    left_stride = [left_hs_times[i + 1] - left_hs_times[i] for i in range(len(left_hs_times) - 1)]
-    right_stride = [right_hs_times[i + 1] - right_hs_times[i] for i in range(len(right_hs_times) - 1)]
-    stride_pool = left_stride + right_stride
-    stride_time = statistics.mean(stride_pool) if stride_pool else None
+    event_counts = {
+        "left_heel_strike_count": len(left_hs_times),
+        "right_heel_strike_count": len(right_hs_times),
+        "left_toe_off_count": sum(
+            1 for e in events if e.event_type == "left_toe_off"
+        ),
+        "right_toe_off_count": sum(
+            1 for e in events if e.event_type == "right_toe_off"
+        ),
+    }
+    if not per_frame:
+        return GaitTemporalMetrics(
+            contact_confidence=contact_confidence,
+            confidence_tier=confidence_tier,
+            reliability_reason="No contact-state frames were available.",
+            **event_counts,
+        )
 
-    cadence = None
-    if step_time and step_time > 1e-6:
-        cadence = 60.0 / step_time
-    elif hs_times and duration_s > 0:
-        cadence = len(hs_times) / duration_s * 60.0
+    cycle_samples = [
+        (cycle, sample)
+        for cycle in cycles
+        if (sample := _cycle_support_durations(per_frame, cycle, fps=fps)) is not None
+    ]
+    usable_cycles = [cycle for cycle, _ in cycle_samples]
+    support_samples = [sample for _, sample in cycle_samples]
+    reliable = (
+        len(support_samples) >= MIN_CYCLES_FOR_CADENCE
+        and contact_confidence >= MIN_RELIABLE_CONTACT_CONFIDENCE
+        and confidence_tier != "LOW_CONFIDENCE"
+    )
+    if len(support_samples) < MIN_CYCLES_FOR_CADENCE:
+        reason = (
+            f"Only {len(support_samples)} complete, adequately sampled gait cycle(s); "
+            f"at least {MIN_CYCLES_FOR_CADENCE} are required for final session metrics."
+        )
+    elif contact_confidence < MIN_RELIABLE_CONTACT_CONFIDENCE or confidence_tier == "LOW_CONFIDENCE":
+        reason = (
+            f"Contact confidence is {contact_confidence:.2f} ({confidence_tier}); "
+            f"at least {MIN_RELIABLE_CONTACT_CONFIDENCE:.2f} and MEDIUM confidence are required."
+        )
+    else:
+        reason = (
+            f"Computed from {len(support_samples)} complete same-side heel-strike cycles."
+        )
 
+    if not reliable:
+        return GaitTemporalMetrics(
+            gait_cycle_count=len(support_samples),
+            contact_confidence=contact_confidence,
+            confidence_tier=confidence_tier,
+            metrics_reliable=False,
+            reliability_reason=reason,
+            **event_counts,
+        )
+
+    cycle_durations = [cycle.duration_s for cycle in usable_cycles]
+    left_stance_values = [s["left_stance"] for s in support_samples]
+    right_stance_values = [s["right_stance"] for s in support_samples]
+    left_swing_values = [
+        max(cycle.duration_s - sample["left_stance"], 0.0)
+        for cycle, sample in cycle_samples
+    ]
+    right_swing_values = [
+        max(cycle.duration_s - sample["right_stance"], 0.0)
+        for cycle, sample in cycle_samples
+    ]
+    ds_values = [s["double_support"] for s in support_samples]
+    left_ss_values = [s["left_single_support"] for s in support_samples]
+    right_ss_values = [s["right_single_support"] for s in support_samples]
+    # Keep total exclusive SS for flight accounting; report ipsilateral mean clinically.
+    ss_values = [
+        0.5 * (ls + rs) for ls, rs in zip(left_ss_values, right_ss_values)
+    ]
+    flight_values = [s["flight"] for s in support_samples]
+
+    def _mean_pct(values: list[float]) -> float:
+        return statistics.mean(
+            value / cycle.duration_s * 100.0
+            for cycle, value in zip(usable_cycles, values)
+        )
+
+    complete_hs = sorted(
+        {
+            (event.time_s, event.side)
+            for event in events
+            if event.event_type.endswith("_heel_strike")
+            and any(
+                cycle.start_time_s <= event.time_s <= cycle.end_time_s
+                for cycle in usable_cycles
+            )
+        }
+    )
+    step_intervals = [
+        complete_hs[i + 1][0] - complete_hs[i][0]
+        for i in range(len(complete_hs) - 1)
+        if complete_hs[i][1] != complete_hs[i + 1][1]
+        and complete_hs[i + 1][0] > complete_hs[i][0]
+    ]
+    step_time = statistics.mean(step_intervals) if step_intervals else None
+    stride_time = statistics.mean(cycle_durations)
+    cadence = 60.0 / step_time if step_time and step_time > 1e-6 else 120.0 / stride_time
     cycle_cv = interval_cv(cycle_durations)
 
     return GaitTemporalMetrics(
-        left_stance_time_s=left_stance,
-        right_stance_time_s=right_stance,
-        left_swing_time_s=left_swing,
-        right_swing_time_s=right_swing,
-        average_stance_duration_s=statistics.mean(stance_vals) if stance_vals else None,
-        average_swing_duration_s=statistics.mean(swing_vals) if swing_vals else None,
-        left_right_stance_symmetry=symmetry_ratio(left_stance, right_stance),
-        left_right_swing_symmetry=symmetry_ratio(left_swing, right_swing),
-        double_support_time_s=ds_time,
-        double_support_pct=ds_pct,
+        left_stance_time_s=statistics.mean(left_stance_values),
+        right_stance_time_s=statistics.mean(right_stance_values),
+        left_swing_time_s=statistics.mean(left_swing_values),
+        right_swing_time_s=statistics.mean(right_swing_values),
+        average_stance_duration_s=statistics.mean(left_stance_values + right_stance_values),
+        average_swing_duration_s=statistics.mean(left_swing_values + right_swing_values),
+        left_right_stance_symmetry=symmetry_ratio(
+            statistics.mean(left_stance_values), statistics.mean(right_stance_values)
+        ),
+        left_right_swing_symmetry=symmetry_ratio(
+            statistics.mean(left_swing_values), statistics.mean(right_swing_values)
+        ),
+        double_support_time_s=statistics.mean(ds_values),
+        double_support_pct=_mean_pct(ds_values),
+        single_support_time_s=statistics.mean(ss_values),
+        single_support_pct=_mean_pct(ss_values),
+        flight_time_s=statistics.mean(flight_values),
+        flight_pct=_mean_pct(flight_values),
+        left_stance_pct=_mean_pct(left_stance_values),
+        right_stance_pct=_mean_pct(right_stance_values),
+        left_swing_pct=_mean_pct(left_swing_values),
+        right_swing_pct=_mean_pct(right_swing_values),
         step_time_s=step_time,
         stride_time_s=stride_time,
         cadence_steps_per_min=cadence,
-        gait_cycle_count=len(cycles),
+        gait_cycle_count=len(usable_cycles),
         gait_cycle_consistency=(1.0 - min(cycle_cv, 1.0)) if cycle_cv is not None else None,
         contact_confidence=contact_confidence,
         confidence_tier=confidence_tier,
-        left_heel_strike_count=len(left_hs_times),
-        right_heel_strike_count=len(right_hs_times),
-        left_toe_off_count=sum(1 for e in events if e.event_type == "left_toe_off"),
-        right_toe_off_count=sum(1 for e in events if e.event_type == "right_toe_off"),
+        metrics_reliable=True,
+        reliability_reason=reason,
+        **event_counts,
     )
 
 
@@ -928,7 +1084,13 @@ def analyze_gait_cycles(
             recording.frame_count,
             MIN_FRAMES_FOR_ANALYSIS,
         )
-        return GaitCycleAnalysisResult(fps=fps)
+        return GaitCycleAnalysisResult(
+            fps=fps,
+            warnings=[
+                f"Final gait metrics unavailable: only {recording.frame_count} frames "
+                f"were available; at least {MIN_FRAMES_FOR_ANALYSIS} are required."
+            ],
+        )
 
     end_index = recording.frame_count - 1
     plane = estimate_ground_plane(recording, float(end_index))
@@ -952,7 +1114,11 @@ def analyze_gait_cycles(
             metrics=GaitTemporalMetrics(
                 contact_confidence=conf,
                 confidence_tier=tier,
+                reliability_reason="Ground plane could not be estimated.",
             ),
+            warnings=[
+                "Final gait metrics unavailable: ground plane could not be estimated."
+            ],
         )
 
     smooth_window = max(3, int(round(fps * 0.06)) | 1)
@@ -1210,6 +1376,41 @@ def validate_gait_cycle_analysis(
         )
     if metrics.gait_cycle_count == 0 and hs_total == 0:
         warnings.append("No complete gait cycles detected.")
+    if not metrics.metrics_reliable:
+        warnings.append(f"Final temporal gait metrics unavailable: {metrics.reliability_reason}")
+    if metrics.metrics_reliable:
+        for side in ("left", "right"):
+            stance = getattr(metrics, f"{side}_stance_pct")
+            swing = getattr(metrics, f"{side}_swing_pct")
+            if stance is None or swing is None:
+                warnings.append(f"{side.title()} stance/swing percentages are unavailable.")
+            elif not (0.0 <= stance <= 100.0 and 0.0 <= swing <= 100.0):
+                warnings.append(
+                    f"{side.title()} stance/swing percentages are outside 0–100% "
+                    f"({stance:.2f}%/{swing:.2f}%)."
+                )
+            elif abs((stance + swing) - 100.0) > 0.5:
+                warnings.append(
+                    f"{side.title()} stance + swing is {stance + swing:.2f}%, not approximately 100%."
+                )
+        for label, value in (
+            ("Double support", metrics.double_support_pct),
+            ("Single support", metrics.single_support_pct),
+        ):
+            if value is not None and not (0.0 <= value <= 100.0):
+                warnings.append(f"{label} is outside 0–100% ({value:.2f}%).")
+        support_parts = (
+            metrics.double_support_pct,
+            metrics.single_support_pct,
+            metrics.flight_pct,
+        )
+        if all(value is not None for value in support_parts):
+            support_total = sum(value for value in support_parts if value is not None)
+            if abs(support_total - 100.0) > 0.5:
+                warnings.append(
+                    "Double support + single support + flight is "
+                    f"{support_total:.2f}%, not approximately 100%."
+                )
 
     if thresholds is not None and thresholds.clearance_p10_m > thresholds.entry_clearance_m * 1.5:
         warnings.append(

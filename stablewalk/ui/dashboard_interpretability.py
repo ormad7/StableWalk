@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from stablewalk.models.gait_motion import Vec3
+from stablewalk.ui.scientific_labels import LABEL_GAIT_QUALITY, UNIT_CADENCE
 
 if TYPE_CHECKING:
     from stablewalk.analysis.gait_analysis_summary import GaitAnalysisSummary
@@ -143,42 +143,35 @@ def confidence_from_metric(metric: MetricResult | None) -> ConfidenceLevel:
     return "Moderate"
 
 
-# ── Help texts (plain English) ─────────────────────────────────────────────
+# ── Help texts (scientific tooltips; shared with hover tips) ───────────────
 
-METRIC_HELP: dict[str, str] = {
-    "knee_motion": (
-        "Knee flexion is how bent the knee is during walking. "
-        "0 degrees is nearly straight; higher values mean more bend. "
-        "Left and right traces show each leg over time or across repeated steps."
-    ),
-    "foot_clearance": (
-        "Vertical distance from the lowest toe, heel, or ankle landmark to the "
-        "estimated floor plane. Values are in centimeters at body scale. "
-        "CONTACT means the foot is on or near the floor; SWING means the foot "
-        "is elevated during the swing phase."
-    ),
-    "gait_cycle": (
-        "Gait phase shows which foot is on the ground (stance) or swinging. "
-        "Heel strike and toe off mark step timing. Cadence and symmetry summarize "
-        "whether left and right steps are evenly timed."
-    ),
-    "movement_stability": (
-        "Evaluates pelvis and trunk motion control using root-relative kinematic features."
-    ),
-    "gait_quality": (
-        "Evaluates timing, symmetry, foot contact, and repeatability when sufficient "
-        "gait cycles are available."
-    ),
-    "analysis_confidence": (
-        "Indicates whether the pose quality, foot visibility, and amount of gait data "
-        "are sufficient for reliable interpretation."
-    ),
-    "joint_movement_3d": (
-        "This path shows where the selected joint moved relative to the pelvis. "
-        "Use plane views for side or front camera clips; 3D shows the full path. "
-        "Travel, smoothness, and deviation summarize how repeatable the motion is."
-    ),
-}
+def _metric_help_map() -> dict[str, str]:
+    from stablewalk.ui.metric_tooltips import metric_help_body
+
+    keys = (
+        "knee_motion",
+        "foot_clearance",
+        "gait_cycle",
+        "movement_stability",
+        "gait_quality",
+        "analysis_confidence",
+        "joint_movement_3d",
+        "com",
+        "bos",
+        "grf",
+        "rom",
+        "cadence",
+        "symmetry",
+        "stability",
+        "heel_strike",
+        "toe_off",
+        "joint_angle",
+        "pipeline_status",
+    )
+    return {k: metric_help_body(k) for k in keys if metric_help_body(k)}
+
+
+METRIC_HELP: dict[str, str] = _metric_help_map()
 
 
 def default_projection_for_view(view_type: str | None) -> str:
@@ -427,7 +420,7 @@ def interpret_gait_phase(
     m = result.metrics
     extras: list[str] = []
     if m.cadence_steps_per_min is not None:
-        extras.append(f"Cadence {m.cadence_steps_per_min:.0f} spm")
+        extras.append(f"Cadence {m.cadence_steps_per_min:.0f} {UNIT_CADENCE}")
     if m.double_support_pct is not None:
         extras.append(f"DS {m.double_support_pct:.0f}%")
     if extras:
@@ -511,7 +504,7 @@ def interpret_movement_stability(result: StabilityResult | None) -> CompactInter
 def interpret_gait_quality(result: StabilityResult | None) -> CompactInterpretation:
     if result is None or result.gait_summary is None:
         return CompactInterpretation(
-            name="Gait Quality",
+            name=LABEL_GAIT_QUALITY,
             value="—",
             sentence="Combines timing, clearance, symmetry, and detected gait cycles.",
             confidence="Insufficient",
@@ -531,7 +524,7 @@ def interpret_gait_quality(result: StabilityResult | None) -> CompactInterpretat
     else:
         sentence = "Gait quality is mixed; some timing or clearance aspects are inconsistent."
     return CompactInterpretation(
-        name="Gait Quality",
+        name=LABEL_GAIT_QUALITY,
         value=value,
         sentence=sentence,
         confidence=interpret_movement_stability(result).confidence,

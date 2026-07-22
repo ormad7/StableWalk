@@ -13,7 +13,15 @@ from enum import Enum
 import tkinter as tk
 from tkinter import ttk
 
-from stablewalk.ui.theme import BG, PAD_XS
+from stablewalk.ui.theme import (
+    BG,
+    DASHBOARD_GUTTER,
+    PAD_SM,
+    PAD_XS,
+    WIDTH_COMPACT_TRANSPORT,
+    WIDTH_METRIC_REFLOW,
+    WIDTH_STACK_ANALYSIS,
+)
 
 # Supported layout range.
 MIN_WINDOW_WIDTH = 960
@@ -71,15 +79,17 @@ def initial_window_geometry(root: tk.Tk) -> str:
     root.update_idletasks()
     sw = max(MIN_WINDOW_WIDTH, root.winfo_screenwidth())
     sh = max(MIN_WINDOW_HEIGHT, root.winfo_screenheight())
-    w = min(max(MIN_WINDOW_WIDTH, int(sw * 0.86)), sw - 32)
-    h = min(max(MIN_WINDOW_HEIGHT, int(sh * 0.86)), sh - 72)
+    w = min(max(MIN_WINDOW_WIDTH, int(sw * 0.90)), sw - 24)
+    h = min(max(MIN_WINDOW_HEIGHT, int(sh * 0.90)), sh - 56)
     x = max(0, (sw - w) // 2)
     y = max(0, (sh - h) // 2)
     return f"{w}x{h}+{x}+{y}"
 
 
-def install_responsive_shell(gui, parent: tk.Misc) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame]:
-    """Fixed-viewport dashboard notebook (three tabs; no full-page scroll)."""
+def install_responsive_shell(
+    gui, parent: tk.Misc
+) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame]:
+    """Fixed-viewport dashboard notebook (six tabs; no full-page scroll)."""
     from stablewalk.ui.tk.dashboard_notebook import install_dashboard_notebook
 
     return install_dashboard_notebook(gui, parent)
@@ -98,7 +108,9 @@ def _install_sidebar_scroll(gui, sidebar: tk.Misc) -> tk.Misc:
 
 
 def setup_compact_sidebar(gui) -> None:
-    """Section 1 summary column — compact gait scores only."""
+    """Summary dock below video|skeleton — compact gait scores, collapsible."""
+    import tkinter as tk
+
     inner: tk.Misc = gui._sidebar_scroll_inner
     for child in inner.winfo_children():
         try:
@@ -106,13 +118,26 @@ def setup_compact_sidebar(gui) -> None:
         except tk.TclError:
             pass
 
-    ttk.Label(
-        inner,
-        text="Gait Analysis Summary",
-        style="Heading.TLabel",
-    ).pack(anchor=tk.W, pady=(0, PAD_XS))
+    header = ttk.Frame(inner, style="Card.TFrame")
+    header.pack(fill=tk.X, pady=(0, PAD_SM))
+    header.columnconfigure(0, weight=1)
 
-    gui._sidebar_stability_panel.pack(in_=inner, fill=tk.X, pady=(0, 0))
+    expanded = bool(getattr(gui, "_overview_summary_expanded", True))
+    toggle_lbl = "▼" if expanded else "▶"
+    gui._overview_summary_toggle = ttk.Button(
+        header,
+        text=f"{toggle_lbl} Gait Analysis Summary",
+        style="Compact.TButton",
+        command=lambda: _toggle_overview_summary(gui),
+    )
+    gui._overview_summary_toggle.grid(row=0, column=0, sticky="w")
+
+    content = ttk.Frame(inner, style="Card.TFrame")
+    gui._overview_summary_content = content
+    if expanded:
+        content.pack(fill=tk.X)
+
+    gui._sidebar_stability_panel.pack(in_=content, fill=tk.X, pady=(0, 0))
 
     for attr in (
         "_sidebar_gait_cycle_panel",
@@ -132,6 +157,44 @@ def setup_compact_sidebar(gui) -> None:
         except tk.TclError:
             pass
     gui._sidebar_sections = ()
+
+
+def _toggle_overview_summary(gui) -> None:
+    """Expand or collapse the Overview Gait Analysis Summary dock."""
+    import tkinter as tk
+
+    expanded = not bool(getattr(gui, "_overview_summary_expanded", True))
+    gui._overview_summary_expanded = expanded
+    content = getattr(gui, "_overview_summary_content", None)
+    toggle = getattr(gui, "_overview_summary_toggle", None)
+    if content is not None:
+        try:
+            if expanded:
+                content.pack(fill=tk.X)
+            else:
+                content.pack_forget()
+        except tk.TclError:
+            pass
+    if toggle is not None:
+        try:
+            toggle.configure(
+                text=("▼ Gait Analysis Summary" if expanded else "▶ Gait Analysis Summary")
+            )
+        except tk.TclError:
+            pass
+    # Keep video/skeleton free of overlap after collapse — re-fit panels.
+    refit = getattr(gui, "_on_video_label_resize", None)
+    if callable(refit):
+        try:
+            refit()
+        except Exception:
+            pass
+    fit = getattr(gui, "_fit_skeleton_canvas", None)
+    if callable(fit):
+        try:
+            fit()
+        except Exception:
+            pass
 
 
 def layout_sidebar_panels(gui) -> None:
@@ -179,7 +242,21 @@ def _apply_visual_layout(gui, wmode: WidthMode) -> None:
     if host is None or video is None or skel is None:
         return
 
-    from stablewalk.ui.tk.dashboard_layout import DASHBOARD_GUTTER
+    # When the professional View Mode workspace owns the Overview layout, defer
+    # to it instead of forcing the legacy column grid.
+    if getattr(gui, "_overview_view_mode_active", False):
+        from stablewalk.ui.tk.dashboard_overview_view_mode import (
+            apply_overview_view_mode,
+        )
+
+        gui._viz_tabs_active = False
+        try:
+            apply_overview_view_mode(gui, animate=False, persist=False)
+        except Exception:
+            pass
+        return
+
+    from stablewalk.ui.tk.dashboard_layout import _OVERVIEW_COL_GUTTER
 
     use_tabs = wmode is WidthMode.SMALL
     prev_tabs = getattr(gui, "_viz_tabs_active", False)
@@ -213,8 +290,20 @@ def _apply_visual_layout(gui, wmode: WidthMode) -> None:
         host.columnconfigure(0, weight=SEC1_VIDEO_WEIGHT, uniform="sec1")
         host.columnconfigure(1, weight=SEC1_SKELETON_WEIGHT, uniform="sec1")
         host.columnconfigure(2, weight=0, minsize=0)
-        video.grid(row=content_row, column=0, sticky="nsew", padx=(0, DASHBOARD_GUTTER), pady=(0, 0))
-        skel.grid(row=content_row, column=1, sticky="nsew", padx=(0, DASHBOARD_GUTTER), pady=(0, 0))
+        video.grid(
+            row=content_row,
+            column=0,
+            sticky="nsew",
+            padx=(0, _OVERVIEW_COL_GUTTER),
+            pady=(0, 0),
+        )
+        skel.grid(
+            row=content_row,
+            column=1,
+            sticky="nsew",
+            padx=(_OVERVIEW_COL_GUTTER, _OVERVIEW_COL_GUTTER),
+            pady=(0, 0),
+        )
 
     if use_tabs != prev_tabs:
         gui._visuals_stacked = use_tabs
@@ -227,9 +316,12 @@ def _apply_sidebar_layout(gui, wmode: WidthMode, width: int) -> None:
     if section1 is None or sidebar is None:
         return
 
+    # The View Mode workspace decides where the summary/trajectory column goes.
+    if getattr(gui, "_overview_view_mode_active", False):
+        return
+
     from stablewalk.ui.tk.dashboard_sections import (
         SEC1_SKELETON_WEIGHT,
-        SEC1_SUMMARY_WEIGHT,
         SEC1_VIDEO_WEIGHT,
     )
 
@@ -241,12 +333,20 @@ def _apply_sidebar_layout(gui, wmode: WidthMode, width: int) -> None:
     else:
         section1.columnconfigure(0, weight=SEC1_VIDEO_WEIGHT, uniform="sec1")
         section1.columnconfigure(1, weight=SEC1_SKELETON_WEIGHT, uniform="sec1")
-        section1.columnconfigure(2, weight=SEC1_SUMMARY_WEIGHT, uniform="sec1")
+        section1.columnconfigure(2, weight=0, minsize=0)
     section1.rowconfigure(0, weight=1)
     section1.rowconfigure(1, weight=0, minsize=0)
 
     if not use_tabs:
-        sidebar.grid(row=0, column=2, sticky="nsew", padx=(8, 0), pady=(0, 0))
+        summary_row = int(getattr(gui, "_overview_summary_row", 1))
+        sidebar.grid(
+            row=summary_row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=0,
+            pady=(PAD_XS, 0),
+        )
 
     motion = getattr(gui, "_tab_motion", None)
     if motion is not None:
@@ -258,27 +358,89 @@ def _apply_sidebar_layout(gui, wmode: WidthMode, width: int) -> None:
 
 
 def _reflow_analysis_panel_stack(gui, width: int) -> None:
-    """Side-by-side knee + joint path panels; both expand vertically (nsew)."""
+    """Side-by-side knee, joint path, and temporal metrics; contact strip unchanged."""
     bottom = getattr(gui, "_dashboard_bottom_row", None)
     traj = getattr(gui, "traj_panel", None)
     knee = getattr(gui, "knee_panel", None)
+    contact = getattr(gui, "contact_gait_panel", None)
+    metrics = getattr(gui, "_motion_temporal_metrics_panel", None)
     if bottom is None or traj is None or knee is None:
         return
 
-    from stablewalk.ui.tk.dashboard_layout import DASHBOARD_GUTTER
+    from stablewalk.ui.tk.dashboard_layout import (
+        CONTACT_GAIT_CHART_MIN_H,
+        DASHBOARD_GUTTER,
+        MOTION_TOP_COLUMN_WEIGHTS,
+        _MOTION_KNEE_PANEL_MIN_W,
+        _MOTION_METRICS_PANEL_MIN_W,
+        _MOTION_TOP_ROW_MIN_H,
+        _MOTION_TRAJ_PANEL_MIN_W,
+    )
 
-    stack = width < 1180
+    stack = width < WIDTH_STACK_ANALYSIS
     try:
-        bottom.columnconfigure(0, weight=1, minsize=0)
-        bottom.columnconfigure(1, weight=1, minsize=0)
         if stack:
-            bottom.rowconfigure(0, weight=1)
-            bottom.rowconfigure(1, weight=1)
-            knee.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=(0, 0), pady=(0, PAD_XS))
-            traj.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=(0, 0), pady=(0, 0))
+            bottom.columnconfigure(0, weight=1, minsize=0, uniform="")
+            bottom.columnconfigure(1, weight=1, minsize=0, uniform="")
+            bottom.columnconfigure(2, weight=1, minsize=0, uniform="")
+            bottom.rowconfigure(0, weight=1, minsize=300)
+            bottom.rowconfigure(1, weight=1, minsize=_MOTION_TOP_ROW_MIN_H)
+            bottom.rowconfigure(2, weight=0, minsize=180)
+            bottom.rowconfigure(3, weight=0, minsize=CONTACT_GAIT_CHART_MIN_H)
+            knee.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=(0, 0), pady=(0, PAD_XS))
+            traj.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=(0, 0), pady=(0, PAD_XS))
+            if metrics is not None:
+                metrics.grid(
+                    row=2,
+                    column=0,
+                    columnspan=3,
+                    rowspan=1,
+                    sticky="nsew",
+                    padx=(0, 0),
+                    pady=(0, PAD_XS),
+                )
+            if contact is not None:
+                contact.grid(
+                    row=3,
+                    column=0,
+                    columnspan=3,
+                    sticky="nsew",
+                    padx=(0, 0),
+                    pady=(0, 0),
+                )
+            gui._motion_content_min_height = (
+                300
+                + _MOTION_TOP_ROW_MIN_H
+                + 180
+                + CONTACT_GAIT_CHART_MIN_H
+                + 3 * PAD_XS
+            )
+            bottom.configure(height=gui._motion_content_min_height)
         else:
-            bottom.rowconfigure(0, weight=1)
-            bottom.rowconfigure(1, weight=0)
+            # Scientific workstation proportions: angle 30%, trajectory 50%,
+            # temporal metrics 20%; contact / phase / vGRF spans the full row.
+            bottom.columnconfigure(
+                0,
+                weight=MOTION_TOP_COLUMN_WEIGHTS[0],
+                minsize=_MOTION_KNEE_PANEL_MIN_W,
+                uniform="motion_top",
+            )
+            bottom.columnconfigure(
+                1,
+                weight=MOTION_TOP_COLUMN_WEIGHTS[1],
+                minsize=_MOTION_TRAJ_PANEL_MIN_W,
+                uniform="motion_top",
+            )
+            bottom.columnconfigure(
+                2,
+                weight=MOTION_TOP_COLUMN_WEIGHTS[2],
+                minsize=_MOTION_METRICS_PANEL_MIN_W,
+                uniform="motion_top",
+            )
+            bottom.rowconfigure(0, weight=3, minsize=_MOTION_TOP_ROW_MIN_H)
+            bottom.rowconfigure(1, weight=2, minsize=CONTACT_GAIT_CHART_MIN_H)
+            bottom.rowconfigure(2, weight=0, minsize=0)
+            bottom.rowconfigure(3, weight=0, minsize=0)
             knee.grid(
                 row=0,
                 column=0,
@@ -287,7 +449,30 @@ def _reflow_analysis_panel_stack(gui, width: int) -> None:
                 padx=(0, DASHBOARD_GUTTER),
                 pady=(0, 0),
             )
-            traj.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=(0, 0), pady=(0, 0))
+            traj.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=(0, DASHBOARD_GUTTER), pady=(0, 0))
+            if metrics is not None:
+                metrics.grid(
+                    row=0,
+                    column=2,
+                    columnspan=1,
+                    rowspan=1,
+                    sticky="nsew",
+                    padx=(0, 0),
+                    pady=(0, 0),
+                )
+            if contact is not None:
+                contact.grid(
+                    row=1,
+                    column=0,
+                    columnspan=3,
+                    sticky="nsew",
+                    padx=(0, 0),
+                    pady=(PAD_XS, 0),
+                )
+            gui._motion_content_min_height = (
+                _MOTION_TOP_ROW_MIN_H + CONTACT_GAIT_CHART_MIN_H + PAD_XS
+            )
+            bottom.configure(height=gui._motion_content_min_height)
     except tk.TclError:
         pass
 
@@ -295,7 +480,9 @@ def _reflow_analysis_panel_stack(gui, width: int) -> None:
 def _apply_height_layout(gui, hmode: HeightMode, height: int, width: int) -> None:
     """Content-driven section heights — only reflow analysis panel stacking."""
     _reflow_analysis_panel_stack(gui, width)
-    scroll_sync = getattr(gui, "_sync_dashboard_scroll", None)
+    scroll_sync = getattr(gui, "_sync_motion_scroll", None) or getattr(
+        gui, "_sync_dashboard_scroll", None
+    )
     if scroll_sync is not None:
         scroll_sync()
 
@@ -305,7 +492,7 @@ def _reflow_metric_summary(gui, width: int) -> None:
     hosts = getattr(gui, "dof_analysis_summary_hosts", None)
     if not slots or not hosts:
         return
-    cols = 4 if width >= 560 else 2
+    cols = 4 if width >= WIDTH_METRIC_REFLOW else 2
     for idx, host in enumerate(hosts):
         row, col = divmod(idx, cols)
         try:
@@ -335,7 +522,7 @@ def _apply_graph_column_minsizes(gui, width: int) -> None:
 def _apply_transport_layout(gui, width: int) -> None:
     """Compact playback controls on narrow windows; timeline always flexes."""
     compact = width < WIDTH_MEDIUM
-    narrow = width < 1050
+    narrow = width < WIDTH_COMPACT_TRANSPORT
 
     for attr, visible in (
         ("_transport_sep1", not narrow),
@@ -418,6 +605,12 @@ def apply_responsive_layout(gui, *, width: int | None = None, height: int | None
     sync_wrap = getattr(gui, "_sync_utility_sidebar_wrap", None)
     if sync_wrap is not None:
         sync_wrap()
+
+    from stablewalk.ui.theme import bind_responsive_wrap
+
+    overview = getattr(gui, "_overview_metrics_row", None)
+    if overview is not None:
+        bind_responsive_wrap(gui, overview, ("lbl_overview_demo_compare",), margin=12)
 
     refit_video = getattr(gui, "_on_video_label_resize", None)
     if refit_video is not None:

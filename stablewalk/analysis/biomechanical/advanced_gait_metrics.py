@@ -8,10 +8,16 @@ from typing import Any
 import numpy as np
 
 from stablewalk.analysis.biomechanical.types import MetricWithConfidence
+from stablewalk.config import DEFAULT_SUBJECT_HEIGHT_M
+from stablewalk.analysis.biomechanical.walking_speed import (
+    _meters_per_normalized_unit,
+    estimate_walking_speed,
+)
 from stablewalk.analysis.foot_contact_analysis import FootContactAnalysisResult
 from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult
 from stablewalk.analysis.gait_feature_analysis import GaitFeatureAnalysisResult
 from stablewalk.models.gait_motion import GaitMotionRecording
+from stablewalk.models.pose_data import PoseSequence
 
 
 @dataclass
@@ -25,6 +31,10 @@ class AdvancedGaitMetrics:
     step_time: MetricWithConfidence | None = None
     stance_pct: MetricWithConfidence | None = None
     swing_pct: MetricWithConfidence | None = None
+    left_stance_pct: MetricWithConfidence | None = None
+    right_stance_pct: MetricWithConfidence | None = None
+    left_swing_pct: MetricWithConfidence | None = None
+    right_swing_pct: MetricWithConfidence | None = None
     double_support_pct: MetricWithConfidence | None = None
     single_support_pct: MetricWithConfidence | None = None
 
@@ -40,6 +50,10 @@ class AdvancedGaitMetrics:
             "step_time",
             "stance_pct",
             "swing_pct",
+            "left_stance_pct",
+            "right_stance_pct",
+            "left_swing_pct",
+            "right_swing_pct",
             "double_support_pct",
             "single_support_pct",
         ):
@@ -55,49 +69,34 @@ def _m(
     unit: str,
     confidence: float,
     note: str = "",
-) -> MetricWithConfidence | None:
-    if value is None:
-        return None
+) -> MetricWithConfidence:
     return MetricWithConfidence(
-        value=round(value, 4),
+        value=round(value, 4) if value is not None else None,
         unit=unit,
         kind="estimated",
-        confidence=confidence,
+        confidence=confidence if value is not None else 0.0,
         note=note,
     )
 
 
-def _pelvis_speed_m_s(recording: GaitMotionRecording) -> float | None:
-    speeds: list[float] = []
-    prev = None
-    prev_t = None
-    for snap in recording.snapshots:
-        lh = snap.joints.get("left_hip")
-        rh = snap.joints.get("right_hip")
-        if lh is None or rh is None:
-            continue
-        px = (lh.position.x + rh.position.x) * 0.5
-        pz = (lh.position.z + rh.position.z) * 0.5
-        if prev is not None and prev_t is not None:
-            dt = snap.time_s - prev_t
-            if dt > 1e-6:
-                dist = np.hypot(px - prev[0], pz - prev[1])
-                speeds.append(dist / dt)
-        prev = (px, pz)
-        prev_t = snap.time_s
-    if not speeds:
-        return None
-    return float(np.median(speeds))
-
-
 def _mean_step_width(recording: GaitMotionRecording) -> float | None:
-    widths: list[float] = []
+    """Mediolateral ankle separation (orthogonal to estimated progression)."""
+    dx_vals: list[float] = []
+    dz_vals: list[float] = []
     for snap in recording.snapshots:
         la = snap.joints.get("left_ankle")
         ra = snap.joints.get("right_ankle")
         if la and ra:
-            widths.append(abs(la.position.x - ra.position.x))
-    return float(np.median(widths)) if widths else None
+            dx_vals.append(abs(la.position.x - ra.position.x))
+            dz_vals.append(abs(la.position.z - ra.position.z))
+    if not dx_vals:
+        return None
+    # Width is the smaller horizontal component when one axis is progression.
+    # Sagittal gait: progression ≈ X → width ≈ |ΔZ|; frontal: opposite.
+    med_dx = float(np.median(dx_vals))
+    med_dz = float(np.median(dz_vals)) if dz_vals else 0.0
+    width = med_dz if med_dx >= med_dz else med_dx
+    return width if width > 1e-6 else None
 
 
 def analyze_advanced_gait_metrics(
@@ -105,78 +104,168 @@ def analyze_advanced_gait_metrics(
     cycles: GaitCycleAnalysisResult | None,
     features: GaitFeatureAnalysisResult | None,
     contact: FootContactAnalysisResult | None,
+    *,
+    sequence: PoseSequence | None = None,
+    subject_height_m: float = DEFAULT_SUBJECT_HEIGHT_M,
 ) -> AdvancedGaitMetrics:
     """Spatiotemporal gait descriptors with per-metric confidence."""
-    conf = 0.5
-    if cycles:
-        conf = max(conf, cycles.metrics.contact_confidence)
-    if contact:
-        conf = max(conf, contact.metrics.contact_confidence)
-
     m = cycles.metrics if cycles else None
     nf = features.features if features else None
-
     result = AdvancedGaitMetrics()
+    reliable = bool(m and m.metrics_reliable)
+    unavailable_reason = (
+        m.reliability_reason
+        if m is not None
+        else "No gait-cycle analysis was available."
+    )
+    if not reliable:
+        note = f"N/A — {unavailable_reason}"
+        for key, unit in (
+            ("cadence", "steps/min"),
+            ("walking_speed", "m/s"),
+            ("stride_length", "m"),
+            ("step_length", "m"),
+            ("step_width", "m"),
+            ("stride_time", "s"),
+            ("step_time", "s"),
+            ("stance_pct", "%"),
+            ("swing_pct", "%"),
+            ("left_stance_pct", "%"),
+            ("right_stance_pct", "%"),
+            ("left_swing_pct", "%"),
+            ("right_swing_pct", "%"),
+            ("double_support_pct", "%"),
+            ("single_support_pct", "%"),
+        ):
+            setattr(result, key, _m(None, unit=unit, confidence=0.0, note=note))
+        return result
+
+    assert m is not None
+    conf = m.contact_confidence
     result.cadence = _m(
-        m.cadence_steps_per_min if m else None,
+        m.cadence_steps_per_min,
         unit="steps/min",
         confidence=conf,
-        note="From heel-strike intervals",
+        note=f"Alternating heel-strike intervals; {m.reliability_reason}",
     )
     result.stride_time = _m(
-        m.stride_time_s if m else None,
+        m.stride_time_s,
         unit="s",
         confidence=conf,
+        note="Mean interval between same-side heel strikes over complete cycles.",
     )
     result.step_time = _m(
-        m.step_time_s if m else None,
+        m.step_time_s,
         unit="s",
         confidence=conf,
+        note="Mean interval between alternating heel strikes inside complete cycles.",
     )
     result.double_support_pct = _m(
-        m.double_support_pct if m else None,
+        m.double_support_pct,
         unit="%",
         confidence=conf,
+        note=m.double_support_definition,
+    )
+    result.single_support_pct = _m(
+        m.single_support_pct,
+        unit="%",
+        confidence=conf,
+        note=(
+            "Ipsilateral single-limb support as % of the gait cycle "
+            "(mean of left-only and right-only; typically ~40%)."
+        ),
+    )
+    for key in ("left_stance_pct", "right_stance_pct", "left_swing_pct", "right_swing_pct"):
+        setattr(
+            result,
+            key,
+            _m(
+                getattr(m, key),
+                unit="%",
+                confidence=conf,
+                note="Per-foot percentage of complete same-side heel-strike cycles.",
+            ),
+        )
+    stance_values = [v for v in (m.left_stance_pct, m.right_stance_pct) if v is not None]
+    swing_values = [v for v in (m.left_swing_pct, m.right_swing_pct) if v is not None]
+    result.stance_pct = _m(
+        float(np.mean(stance_values)) if stance_values else None,
+        unit="%",
+        confidence=conf,
+        note="Bilateral mean; side-specific percentages are also reported.",
+    )
+    result.swing_pct = _m(
+        float(np.mean(swing_values)) if swing_values else None,
+        unit="%",
+        confidence=conf,
+        note="Bilateral mean; side-specific percentages are also reported.",
     )
 
-    if m:
-        stance = m.average_stance_duration_s
-        swing = m.average_swing_duration_s
-        cycle_d = (stance or 0) + (swing or 0)
-        if cycle_d > 1e-6:
-            result.stance_pct = _m(
-                (stance or 0) / cycle_d * 100.0,
-                unit="%",
-                confidence=conf,
-            )
-            result.swing_pct = _m(
-                (swing or 0) / cycle_d * 100.0,
-                unit="%",
-                confidence=conf,
-            )
-        ds = m.double_support_pct or 0.0
-        result.single_support_pct = _m(
-            100.0 - ds,
-            unit="%",
-            confidence=conf * 0.9,
-            note="100% − double-support %",
+    meters_per_unit = _meters_per_normalized_unit(
+        recording, subject_height_m=subject_height_m
+    )
+    if nf:
+        result.stride_length = _m(
+            nf.stride_length_m * meters_per_unit
+            if nf.stride_length_m is not None
+            else None,
+            unit="m",
+            confidence=conf * 0.85,
+            note=(
+                "Twice mean step length, scaled from body-normalized pose using "
+                f"{subject_height_m:.2f} m subject stature."
+            ),
+        )
+        result.step_length = _m(
+            nf.step_length_m * meters_per_unit
+            if nf.step_length_m is not None
+            else None,
+            unit="m",
+            confidence=conf * 0.85,
+            note=(
+                "Progression-axis distance between feet at heel strike, scaled "
+                f"using {subject_height_m:.2f} m subject stature."
+            ),
+        )
+    else:
+        result.stride_length = _m(
+            None,
+            unit="m",
+            confidence=0.0,
+            note="N/A — no reliable spatial gait features were available.",
+        )
+        result.step_length = _m(
+            None,
+            unit="m",
+            confidence=0.0,
+            note="N/A — no reliable spatial gait features were available.",
         )
 
-    if nf:
-        result.stride_length = _m(nf.stride_length_m, unit="m", confidence=conf * 0.85)
-        result.step_length = _m(nf.step_length_m, unit="m", confidence=conf * 0.85)
-
-    result.walking_speed = _m(
-        _pelvis_speed_m_s(recording),
-        unit="m/s",
-        confidence=conf * 0.8,
-        note="Pelvis horizontal speed — monocular scale",
+    result.walking_speed = estimate_walking_speed(
+        recording,
+        sequence=sequence,
+        cycles=cycles,
+        features=features,
+        contact=contact,
+        subject_height_m=subject_height_m,
+        base_confidence=conf,
     )
+    if result.walking_speed is None:
+        result.walking_speed = _m(
+            None,
+            unit="m/s",
+            confidence=0.0,
+            note="N/A — no scale-aware walking-speed method passed reliability checks.",
+        )
     result.step_width = _m(
-        _mean_step_width(recording),
+        (
+            width * meters_per_unit
+            if (width := _mean_step_width(recording)) is not None
+            else None
+        ),
         unit="m",
         confidence=conf * 0.75,
-        note="Mediolateral ankle separation",
+        note="Mediolateral ankle separation (body-normalized)",
     )
     return result
 

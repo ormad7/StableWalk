@@ -12,6 +12,7 @@ from stablewalk.io.session_bundle import (
     FILE_SELECTED_POINTS,
     FILE_SESSION_METADATA,
     FILE_TRACKING_HISTORY,
+    FILE_WORKSPACE_STATE,
     SessionBundleError,
     SessionBundleSnapshot,
     export_session_bundle,
@@ -113,6 +114,60 @@ class SessionBundleTests(unittest.TestCase):
             self.assertEqual(loaded.metadata["video_source"], "test.mp4")
             self.assertEqual(loaded.metadata.get("active_item_id"), "left_toe")
 
+    def test_workspace_and_overwrite_save(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            recording = _sample_recording()
+            snapshot = SessionBundleSnapshot(
+                video_source="cam.mp4",
+                selected_item_ids={"left_toe"},
+                last_selected="left_toe",
+                active_item_id="left_toe",
+                charted_item_id="left_toe",
+                frame_index=2,
+                frame_float=2.0,
+                fps=30.0,
+                frame_count=recording.frame_count,
+                recording=recording,
+                workspace={
+                    "graphs": {"dof_projection": "Sagittal Plane"},
+                    "cameras": {"trajectory": {"elev": 25.0, "azim": -70.0, "zoom": 1.2}},
+                    "overview_view_mode": "side_by_side",
+                },
+                results={"note": "digest"},
+            )
+            first = export_session_bundle(snapshot, tmp_path, copy_poses=False)
+            self.assertTrue((first / FILE_WORKSPACE_STATE).is_file())
+            loaded = load_session_bundle(first)
+            self.assertEqual(
+                loaded.workspace.get("graphs", {}).get("dof_projection"),
+                "Sagittal Plane",
+            )
+            self.assertEqual(
+                loaded.workspace.get("cameras", {})
+                .get("trajectory", {})
+                .get("elev"),
+                25.0,
+            )
+
+            snapshot.frame_index = 3
+            snapshot.workspace["graphs"]["dof_projection"] = "3D"
+            second = export_session_bundle(
+                snapshot,
+                tmp_path,
+                target_bundle_dir=first,
+                copy_poses=False,
+            )
+            self.assertEqual(second, first)
+            reloaded = load_session_bundle(first)
+            self.assertEqual(reloaded.metadata["playback"]["frame_index"], 3)
+            self.assertEqual(
+                reloaded.workspace.get("graphs", {}).get("dof_projection"),
+                "3D",
+            )
+
     def test_load_missing_metadata_raises(self) -> None:
         import tempfile
 
@@ -182,7 +237,7 @@ class SessionBundleTests(unittest.TestCase):
                 "Vertical Position (m)",
                 "Foot Clearance (m)",
                 "Foot Clearance (cm)",
-                "Contact Status",
+                "Contact State",
                 "Min Clearance (m)",
                 "Max Clearance (m)",
                 "Average Clearance (m)",
@@ -193,7 +248,7 @@ class SessionBundleTests(unittest.TestCase):
             sample = foot_rows[0]
             self.assertTrue(sample.get("Foot Clearance (m)", "").strip())
             self.assertIn(
-                sample.get("Contact Status", ""),
+                sample.get("Contact State", ""),
                 {"On Ground", "Near Ground", "In Air", "Check calibration", ""},
             )
 
@@ -235,7 +290,7 @@ class SessionBundleTests(unittest.TestCase):
                 fieldnames = reader.fieldnames or []
                 rows = list(reader)
             self.assertNotIn("Foot Clearance (m)", fieldnames)
-            self.assertNotIn("Contact Status", fieldnames)
+            self.assertNotIn("Contact State", fieldnames)
             self.assertIn("Speed (m/s)", fieldnames)
             self.assertTrue(rows)
             self.assertTrue(

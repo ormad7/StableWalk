@@ -317,7 +317,9 @@ class ContactDetector:
                 1.0 if result.per_frame_contact[fi].get(side, False) else 0.0
                 for fi in frames_sorted
             ]
-            color = "#3b82f6" if side == "left" else "#ef4444"
+            from stablewalk.ui.colors import SIDE_LEFT, SIDE_RIGHT
+
+            color = SIDE_LEFT if side == "left" else SIDE_RIGHT
             ax_side.fill_between(
                 t_line,
                 0,

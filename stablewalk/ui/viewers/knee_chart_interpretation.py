@@ -216,23 +216,22 @@ def build_knee_motion_summary(
             convention = "Pose interior angle -> flexion (180 deg - theta); 0 deg = extension"
         repeatability = _repeatability_label(cc.cycle_repeatability_score)
         largest_phase = _largest_lr_difference_phase(gait_features)
-        if left_rom is None or right_rom is None:
-            for key, rom_attr in (
-                ("left_knee_angle", "left_rom"),
-                ("right_knee_angle", "right_rom"),
-            ):
-                traj = cc.trajectories.get(key)
-                if traj is None:
-                    continue
-                arr = np.asarray(traj.mean, dtype=float)
-                if cc.angle_source == "mediapipe_angles":
-                    arr = 180.0 - arr
-                if np.any(np.isfinite(arr)):
-                    val = float(np.nanmax(arr) - np.nanmin(arr))
-                    if key.startswith("left"):
-                        left_rom = val
-                    else:
-                        right_rom = val
+        # Match the plotted cycle-mean curves — do not use full-video max−min
+        # (outliers inflate ROM far above the flat cycle-mean plot).
+        left_rom = right_rom = None
+        for key in ("left_knee_angle", "right_knee_angle"):
+            traj = cc.trajectories.get(key)
+            if traj is None or len(getattr(traj, "per_cycle", ())) < MIN_CYCLES_FOR_CYCLE_MODE:
+                continue
+            arr = np.asarray(traj.mean, dtype=float)
+            if cc.angle_source == "mediapipe_angles":
+                arr = 180.0 - arr
+            if np.any(np.isfinite(arr)):
+                val = float(np.nanmax(arr) - np.nanmin(arr))
+                if key.startswith("left"):
+                    left_rom = val
+                else:
+                    right_rom = val
         if left_rom is not None and right_rom is not None:
             mean_rom = (left_rom + right_rom) / 2.0
             if mean_rom > 1e-6:

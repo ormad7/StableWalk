@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 ValueKind = Literal["measured", "estimated", "derived"]
 
-StabilityStateName = Literal["Stable", "Reduced Stability", "Unstable"]
+StabilityStateName = Literal["Stable", "Reduced Stability", "Unstable", "Unavailable"]
 
 
 class StabilityState(str, Enum):
@@ -99,6 +99,7 @@ class JointROMStats:
     std_deg: float | None = None
     confidence: float = 0.0
     kind: ValueKind = "estimated"
+    note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

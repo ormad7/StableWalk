@@ -38,8 +38,8 @@ def main() -> int:
 
     lw = max(app.video_label.winfo_width(), 1)
     lh = max(app.video_label.winfo_height(), 1)
-    box_w = max(lw - 10, 64)
-    box_h = max(lh - 10, 64)
+    box_w = max(lw, 64)
+    box_h = max(lh, 64)
 
     cases = {
         "portrait 720x1280": (1280, 720),  # (h, w)

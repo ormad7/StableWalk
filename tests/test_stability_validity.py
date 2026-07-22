@@ -47,20 +47,20 @@ def test_demo_abnormal_insufficient_data(demo_results):
     assert validity.show_partial_estimate
 
 
-def test_demo_normal_insufficient_data(demo_results):
+def test_demo_normal_provisional(demo_results):
     result = demo_results["normal"]
-    validity = result.validity
-    assert validity is not None
-    assert validity.status == "INSUFFICIENT_DATA"
-    assert validity.comparable_score == "NO"
-
-
-def test_demo_athletic_provisional(demo_results):
-    result = demo_results["athletic"]
     validity = result.validity
     assert validity is not None
     assert validity.status == "PROVISIONAL"
     assert validity.comparable_score == "LIMITED"
+
+
+def test_demo_athletic_insufficient_data(demo_results):
+    result = demo_results["athletic"]
+    validity = result.validity
+    assert validity is not None
+    assert validity.status == "INSUFFICIENT_DATA"
+    assert validity.comparable_score == "NO"
 
 
 def test_abnormal_vs_normal_not_comparable(demo_results):
@@ -99,4 +99,4 @@ def test_does_not_force_abnormal_greater_than_normal_ranking(demo_results):
 def test_stability_result_includes_validity_dict(demo_results):
     payload = demo_results["normal"].to_dict()
     assert "validity" in payload
-    assert payload["validity"]["status"] == "INSUFFICIENT_DATA"
+    assert payload["validity"]["status"] == "PROVISIONAL"

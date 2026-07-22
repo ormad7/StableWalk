@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +32,8 @@ from stablewalk.analysis.biomechanical.stability_margin import (
 from stablewalk.analysis.biomechanical.symmetry_metrics import SymmetryAnalysis, analyze_symmetry
 from stablewalk.analysis.biomechanical.types import GaitQualityScore
 from stablewalk.analysis.biomechanical.video_quality import VideoQualityAssessment, assess_video_quality
+from stablewalk.analysis.biomechanical.walking_speed import _meters_per_normalized_unit
+from stablewalk.config import DEFAULT_SUBJECT_HEIGHT_M
 from stablewalk.analysis.biomech_stability import StabilityResult, analyze_biomech_stability
 from stablewalk.analysis.foot_contact_analysis import FootContactAnalysisResult, analyze_foot_contact
 from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult, analyze_gait_cycles
@@ -84,7 +87,11 @@ def _detect_abnormalities(result: BiomechanicalAnalysisResult) -> list[str]:
         v = result.symmetry.overall_symmetry_pct.value
         if v is not None and v < 65.0:
             flags.append("Reduced left–right symmetry")
-    if result.stability_margin and result.stability_margin.stable_pct < 50.0:
+    if (
+        result.stability_margin
+        and result.stability_margin.stable_pct is not None
+        and result.stability_margin.stable_pct < 50.0
+    ):
         flags.append("Low stability margin — COM frequently near/outside support base")
     if result.gait_quality and result.gait_quality.score < 55.0:
         flags.append("Low composite gait quality score")
@@ -95,6 +102,115 @@ def _detect_abnormalities(result: BiomechanicalAnalysisResult) -> list[str]:
     if result.video_quality and result.video_quality.overall_quality_score < 50.0:
         flags.append("Poor input video quality — interpret metrics cautiously")
     return flags
+
+
+def _validate_final_metrics(result: BiomechanicalAnalysisResult) -> list[str]:
+    """Invalidate mathematically impossible final values and explain why."""
+    warnings: list[str] = []
+
+    def invalidate(metric: Any, label: str, reason: str) -> None:
+        if metric is None:
+            return
+        metric.value = None
+        metric.confidence = 0.0
+        metric.note = f"N/A — validation failed: {reason}"
+        warnings.append(f"{label} invalidated: {reason}")
+
+    gait = result.gait_metrics
+    if gait is not None:
+        for name in (
+            "stance_pct",
+            "swing_pct",
+            "left_stance_pct",
+            "right_stance_pct",
+            "left_swing_pct",
+            "right_swing_pct",
+            "double_support_pct",
+            "single_support_pct",
+        ):
+            metric = getattr(gait, name, None)
+            if metric is not None and metric.value is not None:
+                if not math.isfinite(metric.value) or not 0.0 <= metric.value <= 100.0:
+                    invalidate(metric, name, f"{metric.value!r} is outside 0–100%.")
+        for side in ("left", "right"):
+            stance = getattr(gait, f"{side}_stance_pct", None)
+            swing = getattr(gait, f"{side}_swing_pct", None)
+            if (
+                stance is not None
+                and swing is not None
+                and stance.value is not None
+                and swing.value is not None
+                and abs(stance.value + swing.value - 100.0) > 0.5
+            ):
+                reason = (
+                    f"{side} stance + swing equals "
+                    f"{stance.value + swing.value:.2f}%, expected approximately 100%."
+                )
+                invalidate(stance, f"{side}_stance_pct", reason)
+                invalidate(swing, f"{side}_swing_pct", reason)
+        support_metrics = [
+            gait.double_support_pct,
+            gait.single_support_pct,
+        ]
+        flight_pct = (
+            result.cycles.metrics.flight_pct
+            if result.cycles is not None
+            else None
+        )
+        if (
+            all(metric is not None and metric.value is not None for metric in support_metrics)
+            and flight_pct is not None
+        ):
+            support_total = sum(metric.value for metric in support_metrics if metric and metric.value is not None)
+            support_total += flight_pct
+            if abs(support_total - 100.0) > 0.5:
+                reason = (
+                    f"double + single support + flight equals {support_total:.2f}%, "
+                    "expected approximately 100%."
+                )
+                for metric, label in zip(
+                    support_metrics, ("double_support_pct", "single_support_pct")
+                ):
+                    invalidate(metric, label, reason)
+        for name in ("cadence", "walking_speed", "stride_length", "step_length", "step_width"):
+            metric = getattr(gait, name, None)
+            if metric is not None and metric.value is not None:
+                if not math.isfinite(metric.value) or metric.value < 0.0:
+                    invalidate(metric, name, f"{metric.value!r} must be finite and non-negative.")
+
+    if result.joint_rom is not None:
+        for joint in result.joint_rom.joints:
+            if joint.rom_deg is not None and (
+                not math.isfinite(joint.rom_deg) or not 0.0 <= joint.rom_deg <= 360.0
+            ):
+                warnings.append(
+                    f"{joint.side} {joint.joint} ROM invalidated: "
+                    f"{joint.rom_deg!r}° is outside 0–360°."
+                )
+                joint.rom_deg = None
+                joint.confidence = 0.0
+                joint.note = "N/A — validation failed: ROM must be within 0–360°."
+
+    if result.symmetry is not None:
+        metric = result.symmetry.overall_symmetry_pct
+        if metric is not None and metric.value is not None and (
+            not math.isfinite(metric.value) or not 0.0 <= metric.value <= 100.0
+        ):
+            invalidate(metric, "overall_symmetry_pct", "value is outside 0–100%.")
+
+    margin = result.stability_margin
+    if margin is not None:
+        if margin.stable_pct is not None and (
+            not math.isfinite(margin.stable_pct) or not 0.0 <= margin.stable_pct <= 100.0
+        ):
+            warnings.append(
+                f"Stability percentage invalidated: {margin.stable_pct!r} is outside 0–100%."
+            )
+            margin.stable_pct = None
+        if margin.mean_margin_m is not None and not math.isfinite(margin.mean_margin_m):
+            warnings.append("Mean stability margin invalidated: value is not finite.")
+            margin.mean_margin_m = None
+    return warnings
 
 
 def run_biomechanical_analysis(
@@ -129,7 +245,14 @@ def run_biomechanical_analysis(
 
     com = analyze_center_of_mass(recording, contact)
     bos = analyze_base_of_support(recording, contact)
-    margin = analyze_stability_margin(com, bos)
+    margin = analyze_stability_margin(
+        com,
+        bos,
+        meters_per_unit=_meters_per_normalized_unit(
+            recording,
+            subject_height_m=DEFAULT_SUBJECT_HEIGHT_M,
+        ),
+    )
 
     rom = analyze_joint_rom(
         recording,
@@ -151,16 +274,14 @@ def run_biomechanical_analysis(
         ankle_rom_right=rom_map.get("ankle_rom_right"),
     )
 
-    gait_metrics = analyze_advanced_gait_metrics(recording, cycles, features, contact)
-    gait_quality = compute_gait_quality_score(
-        stability=stability,
-        stability_margin=margin,
-        symmetry=symmetry,
-        gait_metrics=gait_metrics,
-        cycles=cycles,
-        contact=contact,
+    gait_metrics = analyze_advanced_gait_metrics(
+        recording,
+        cycles,
+        features,
+        contact,
+        sequence=sequence,
+        subject_height_m=DEFAULT_SUBJECT_HEIGHT_M,
     )
-
     result = BiomechanicalAnalysisResult(
         video_quality=video_quality,
         center_of_mass=com,
@@ -169,13 +290,34 @@ def run_biomechanical_analysis(
         symmetry=symmetry,
         joint_rom=rom,
         gait_metrics=gait_metrics,
-        gait_quality=gait_quality,
         stability=stability,
         cycles=cycles,
         contact=contact,
         features=features,
         warnings=warnings,
     )
+    result.warnings.extend(cycles.warnings)
+    result.warnings.extend(features.warnings if features is not None else [])
+    result.warnings.extend(margin.warnings)
+    result.warnings.extend(rom.warnings)
+    result.warnings.extend(symmetry.warnings)
+    result.warnings.extend(_validate_final_metrics(result))
+    result.warnings = list(dict.fromkeys(result.warnings))
+
+    if cycles.metrics.metrics_reliable:
+        result.gait_quality = compute_gait_quality_score(
+            stability=stability,
+            stability_margin=margin,
+            symmetry=symmetry,
+            gait_metrics=gait_metrics,
+            cycles=cycles,
+            contact=contact,
+        )
+    else:
+        result.warnings.append(
+            "Gait quality score unavailable: "
+            f"{cycles.metrics.reliability_reason}"
+        )
     result.abnormalities = _detect_abnormalities(result)
     return result
 

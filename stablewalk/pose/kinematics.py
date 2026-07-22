@@ -35,14 +35,40 @@ def angle_at_joint(
     """
     Interior angle at `joint` formed by segments proximal→joint and distal→joint.
 
+    Uses 3D landmark coordinates when depth (z) is informative so sagittal
+    flexion is not collapsed on frontal / near-frontal videos. Falls back to
+    the image plane (x, y) when depth variation is negligible.
+
     Returns angle in degrees [0, 180], or None if landmarks are not reliable.
     """
     if not all(_visible(k, min_visibility) for k in (proximal, joint, distal)):
         return None
 
-    # 2D vectors in image plane (x right, y down)
-    v1 = np.array([proximal.x - joint.x, proximal.y - joint.y], dtype=float)
-    v2 = np.array([distal.x - joint.x, distal.y - joint.y], dtype=float)
+    assert proximal is not None and joint is not None and distal is not None
+    # Prefer 3D when any landmark has usable relative depth; otherwise 2D.
+    zs = (float(proximal.z), float(joint.z), float(distal.z))
+    use_3d = any(abs(z) > 1e-6 for z in zs) or (max(zs) - min(zs)) > 1e-5
+    if use_3d:
+        v1 = np.array(
+            [
+                proximal.x - joint.x,
+                proximal.y - joint.y,
+                proximal.z - joint.z,
+            ],
+            dtype=float,
+        )
+        v2 = np.array(
+            [
+                distal.x - joint.x,
+                distal.y - joint.y,
+                distal.z - joint.z,
+            ],
+            dtype=float,
+        )
+    else:
+        # Image plane (x right, y down)
+        v1 = np.array([proximal.x - joint.x, proximal.y - joint.y], dtype=float)
+        v2 = np.array([distal.x - joint.x, distal.y - joint.y], dtype=float)
 
     n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
     if n1 < 1e-8 or n2 < 1e-8:

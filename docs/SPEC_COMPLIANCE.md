@@ -11,7 +11,8 @@ to the StableWalk implementation.
 | **1. Perception** | Video → 4D motion; stride, cadence, hip sway, arm swing | `stablewalk/real_to_sim/gait_style_extraction.py` | **Implemented** (MediaPipe pose) |
 | **2. Retargeting** | GMR to Unitree G1/H1 URDF morphology | `stablewalk/real_to_sim/retargeting.py` | **Partial** (uniform scale; not full GMR) |
 | **3. Simulation** | Isaac Lab AMP training from reference clip | `stablewalk/real_to_sim/amp_reference_export.py` | **Partial** (export only; training external) |
-| **4. Physics** | Virtual GRF + contact-mask sync reward | `virtual_grf.py`, `contact_sync_reward.py` | **Implemented** (offline proxy forces) |
+| **4. Physics** | Virtual GRF + contact-mask sync reward | `virtual_grf.py`, `contact_sync_reward.py`, `estimated_vgrf_analysis.py` | **Implemented** (Estimated Virtual GRF offline) |
+| **5. Biomechanics** | COM, BoS, stability margin, symmetry, ROM, gait quality | `analysis/biomechanical/` | **Implemented** (pose-based estimates) |
 
 **Offline entry point:**
 
@@ -113,7 +114,8 @@ python main.py --real-to-sim data/demo_videos/normal_gait.mp4
 |---------|----------|
 | 4-stage summary panel | Advanced & Export tab |
 | Run full pipeline | **Real-to-Sim Pipeline** button |
-| Stage refresh from report | Reads `real_to_sim_pipeline_report.json` after pipeline run |
+| Biomechanics tab | Motion Analysis notebook + Biomechanics tab |
+| Terminology tiers | `scientific_labels.py` + export `terminology` blocks |
 
 ---
 

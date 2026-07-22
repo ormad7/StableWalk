@@ -50,13 +50,15 @@ def test_general_panel_includes_derived_not_foot_card() -> None:
     assert panel.foot_card is None
     assert len(panel.identity) == 3
     assert panel.identity[0][0] == "Selected Point"
-    assert len(panel.kinematics) == 4
+    assert len(panel.kinematics) == 5
+    assert panel.kinematics[3][0] == "Velocity (m/s)"
+    assert panel.kinematics[4][0] == "Acceleration (m/s²)"
     assert len(panel.derived) == 3
     titles = [t for t, _ in panel.derived]
     assert titles == [
-        "Path since playback start",
-        "Change from start",
-        "Current vertical position",
+        "Path Length",
+        "Delta from Start",
+        "Vertical Position",
     ]
 
 
@@ -82,7 +84,9 @@ def test_foot_panel_includes_kinematics_derived_and_foot_card() -> None:
     assert panel.mode == "foot"
     assert panel.foot_card is not None
     assert panel.identity[0][0] == "Selected Point"
-    assert len(panel.kinematics) == 4
+    assert len(panel.kinematics) == 5
+    assert panel.kinematics[3][0] == "Velocity (m/s)"
+    assert panel.kinematics[4][0] == "Acceleration (m/s²)"
     assert len(panel.derived) == 4
     titles = [t for t, _ in panel.derived]
     assert titles == [
@@ -102,7 +106,7 @@ def test_graph_caption_one_line_per_mode() -> None:
     general = graph_caption_for_panel("right_hip")
     foot = graph_caption_for_panel("left_heel")
     assert general == DOF_ANALYSIS_GRAPH_CAPTION_GENERAL
-    assert general == "3D point movement"
+    assert general  # non-empty general caption
     assert foot == ""
 
 

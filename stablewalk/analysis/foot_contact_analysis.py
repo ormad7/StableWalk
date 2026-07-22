@@ -109,6 +109,8 @@ class FootContactMetrics:
     valid_gait_cycle_count: int = 0
     gait_event_confidence: float = 0.0
     contact_confidence: float = 0.0
+    metrics_reliable: bool = False
+    reliability_reason: str = "No complete gait cycles were analyzed."
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -416,9 +418,11 @@ def compute_foot_contact_metrics(
         double_support_duration_s=base_metrics.double_support_time_s,
         double_support_pct=base_metrics.double_support_pct,
         left_right_temporal_asymmetry=asym,
-        valid_gait_cycle_count=len(cycles),
+        valid_gait_cycle_count=base_metrics.gait_cycle_count,
         gait_event_confidence=event_conf,
         contact_confidence=base_metrics.contact_confidence,
+        metrics_reliable=base_metrics.metrics_reliable,
+        reliability_reason=base_metrics.reliability_reason,
     )
 
 

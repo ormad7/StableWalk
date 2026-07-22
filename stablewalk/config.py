@@ -79,6 +79,13 @@ DEFAULT_CACHE_FRAMES = True
 DEFAULT_MIN_DETECTION_CONFIDENCE = 0.5
 DEFAULT_MIN_TRACKING_CONFIDENCE = 0.5
 
+# Subject stature (m) for monocular pixel-to-meter scaling (walking speed, clearance cm).
+# Override via STABLEWALK_SUBJECT_HEIGHT_M environment variable.
+_subject_h = os.environ.get("STABLEWALK_SUBJECT_HEIGHT_M", "").strip()
+DEFAULT_SUBJECT_HEIGHT_M: float = (
+    float(_subject_h) if _subject_h else 1.70
+)
+
 # Default gait demo: pose-verified man's walk (full body, ~100% detection).
 DEFAULT_WALKING_VIDEO_URL = "https://www.pexels.com/download/video/5319095/"
 

@@ -233,7 +233,7 @@ def symmetry_index(
     if left is None or right is None:
         return None
     if left < 0 or right < 0:
-        left, right = abs(left), abs(right)
+        return None
     denom = left + right + eps
     if denom <= eps:
         return None
@@ -405,26 +405,10 @@ def _step_lengths_from_events(
     recording: GaitMotionRecording,
     events: list[GaitEvent],
 ) -> tuple[list[float], list[float]]:
-    """Pelvis displacement between consecutive same-side heel strikes."""
-    left_steps: list[float] = []
-    right_steps: list[float] = []
-    pelvis_by_frame: dict[int, Vec3] = {}
-    for snap in recording.snapshots:
-        p = _pelvis_position(snap)
-        if p:
-            pelvis_by_frame[snap.frame_index] = p
+    """Progression-axis foot separation at heel strike."""
+    from stablewalk.analysis.biomechanical.walking_speed import _step_lengths_from_foot_events
 
-    for side, out in (("left", left_steps), ("right", right_steps)):
-        hs = sorted(
-            (e for e in events if e.event_type == f"{side}_heel_strike"),
-            key=lambda e: e.time_s,
-        )
-        for i in range(len(hs) - 1):
-            a = pelvis_by_frame.get(hs[i].frame_index)
-            b = pelvis_by_frame.get(hs[i + 1].frame_index)
-            if a and b:
-                out.append(_distance(a, b))
-    return left_steps, right_steps
+    return _step_lengths_from_foot_events(recording, events)
 
 
 def compute_normalized_gait_features(
@@ -436,7 +420,18 @@ def compute_normalized_gait_features(
     features = NormalizedGaitFeatures()
     norm = features.normalization
 
-    left_steps, right_steps = _step_lengths_from_events(recording, cycles.events)
+    complete_events = [
+        event
+        for event in cycles.events
+        if any(
+            cycle.start_time_s <= event.time_s <= cycle.end_time_s
+            for cycle in cycles.cycles
+        )
+    ]
+    if cycles.metrics.metrics_reliable:
+        left_steps, right_steps = _step_lengths_from_events(recording, complete_events)
+    else:
+        left_steps, right_steps = [], []
     step_l = statistics.mean(left_steps) if left_steps else None
     step_r = statistics.mean(right_steps) if right_steps else None
     if step_l is not None and step_r is not None:
@@ -784,6 +779,11 @@ def analyze_gait_features(
     if dimensions.confidence_tier == "LOW":
         warnings.append(
             "Body segment dimensions estimated from few high-confidence frames."
+        )
+    if not cycles.metrics.metrics_reliable:
+        warnings.append(
+            "Step and stride metrics unavailable: "
+            f"{cycles.metrics.reliability_reason}"
         )
 
     features = compute_normalized_gait_features(recording, cycles, dimensions)

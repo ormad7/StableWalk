@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from stablewalk.analysis.foot_contact_analysis import FootContactAnalysisResult
+from stablewalk.ui.scientific_labels import TIER_ESTIMATED, export_terminology_block
 
 CONTACT_MASK_SCHEMA_VERSION = "1.0"
 
@@ -29,6 +30,8 @@ def export_contact_mask_npz(
     n = len(contact.per_frame)
     payload: dict[str, Any] = {
         "schema_version": CONTACT_MASK_SCHEMA_VERSION,
+        "kind": TIER_ESTIMATED,
+        "terminology": export_terminology_block(),
         "run_name": run_name or output_path.parent.name,
         "frame_count": np.int32(n),
         "fps": np.float64(contact.fps),

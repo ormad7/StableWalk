@@ -40,7 +40,7 @@ from stablewalk.ui.selected_point_analysis import (
 logger = logging.getLogger(__name__)
 
 BUNDLE_SCHEMA = "stablewalk-session-bundle"
-BUNDLE_VERSION = "1.0"
+BUNDLE_VERSION = "1.1"
 
 FILE_SESSION_METADATA = "session_metadata.json"
 FILE_SELECTED_POINTS = "selected_points.json"
@@ -48,6 +48,9 @@ FILE_TRACKING_HISTORY = "tracking_history.csv"
 FILE_ANALYSIS_SUMMARY = "analysis_summary.json"
 FILE_GAIT_MOTION = "gait_motion.json"
 FILE_BILATERAL_FOOT_CLEARANCE = "bilateral_foot_clearance.json"
+FILE_WORKSPACE_STATE = "workspace_state.json"
+FILE_RESULTS_SNAPSHOT = "results_snapshot.json"
+FILE_POSES_COPY = "poses.json"
 
 TRACKING_HISTORY_GENERAL_COLUMNS: tuple[str, ...] = (
     "time_sec",
@@ -113,7 +116,7 @@ TRACKING_HISTORY_HEADINGS: dict[str, str] = {
     "foot_clearance_m": "Foot Clearance (m)",
     "foot_clearance_cm": "Foot Clearance (cm)",
     "ground_level_m": "Ground Level (m)",
-    "contact_status": "Contact Status",
+    "contact_status": "Contact State",
     "min_clearance_m": "Min Clearance (m)",
     "max_clearance_m": "Max Clearance (m)",
     "average_clearance_m": "Average Clearance (m)",
@@ -158,6 +161,11 @@ class SessionBundleSnapshot:
     tracking_samples: list[KinematicSample] = field(default_factory=list)
     recording: GaitMotionRecording | None = None
     notes: str | None = None
+    # Camera / graphs / overlays / view mode — restored exactly on load.
+    workspace: dict[str, Any] = field(default_factory=dict)
+    # Lightweight analysis result digests for dashboard restore.
+    results: dict[str, Any] = field(default_factory=dict)
+    display_name: str | None = None
 
     @property
     def export_item_id(self) -> str | None:
@@ -179,6 +187,8 @@ class SessionBundleLoadResult:
     tracking_rows: list[dict[str, str]]
     analysis_summary: dict[str, Any]
     recording: GaitMotionRecording | None
+    workspace: dict[str, Any] = field(default_factory=dict)
+    results: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -322,15 +332,18 @@ def build_session_metadata(
     *,
     bundle_dir_name: str,
     exported_at: str | None = None,
+    poses_bundle_relative: str | None = None,
 ) -> dict[str, Any]:
     exported = exported_at or _utc_now()
+    poses_path = poses_bundle_relative or snapshot.poses_json_path
     return {
         "schema": BUNDLE_SCHEMA,
         "version": BUNDLE_VERSION,
         "exported_at": exported,
         "bundle_name": bundle_dir_name,
+        "display_name": snapshot.display_name or bundle_dir_name,
         "video_source": snapshot.video_source,
-        "poses_json_path": snapshot.poses_json_path,
+        "poses_json_path": poses_path,
         "fps": snapshot.fps,
         "frame_count": snapshot.frame_count,
         "playback": {
@@ -348,6 +361,7 @@ def build_session_metadata(
             "analysis_mode": snapshot.analysis_mode,
             "last_selected": snapshot.last_selected,
         },
+        "workspace": dict(snapshot.workspace or {}),
         "tracking_sample_count": len(snapshot.tracking_samples),
         "notes": snapshot.notes,
         "files": {
@@ -356,6 +370,9 @@ def build_session_metadata(
             "selected_point_summary": FILE_SELECTED_POINT_SUMMARY,
             "selected_points": FILE_SELECTED_POINTS,
             "gait_motion": FILE_GAIT_MOTION,
+            "workspace_state": FILE_WORKSPACE_STATE,
+            "results_snapshot": FILE_RESULTS_SNAPSHOT,
+            "poses": FILE_POSES_COPY,
         },
     }
 
@@ -388,11 +405,15 @@ def export_session_bundle(
     output_dir: str | Path,
     *,
     include_gait_motion: bool = True,
+    target_bundle_dir: str | Path | None = None,
+    copy_poses: bool = True,
+    bundle_name: str | None = None,
 ) -> Path:
     """
-    Write a complete session bundle folder under ``output_dir``.
+    Write a complete session bundle folder.
 
-    Returns the path to the created bundle directory.
+    When ``target_bundle_dir`` is set, overwrite that folder in place (Save).
+    Otherwise create a new timestamped folder under ``output_dir`` (Save As / Export).
     """
     if not snapshot.selected_item_ids:
         raise SessionBundleError("Select at least one body point before exporting.")
@@ -401,16 +422,22 @@ def export_session_bundle(
     if recording is None or recording.frame_count <= 0:
         raise SessionBundleError("No motion recording available to export.")
 
-    root = Path(output_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    bundle_name = session_bundle_stem()
-    bundle_dir = root / bundle_name
-    bundle_dir.mkdir(parents=True, exist_ok=False)
-
-    exported_at = _utc_now()
     export_item_id = snapshot.export_item_id
     if export_item_id is None:
         raise SessionBundleError("Select an active body point before exporting.")
+
+    if target_bundle_dir is not None:
+        bundle_dir = Path(target_bundle_dir).expanduser().resolve()
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        name = bundle_name or bundle_dir.name
+    else:
+        root = Path(output_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        name = bundle_name or session_bundle_stem()
+        bundle_dir = root / name
+        bundle_dir.mkdir(parents=True, exist_ok=False)
+
+    exported_at = _utc_now()
 
     tracking_rows = build_tracking_history_rows(
         recording,
@@ -461,8 +488,45 @@ def export_session_bundle(
         except (ValueError, IndexError) as exc:
             logger.warning("Could not write %s: %s", FILE_SELECTED_POINT_SUMMARY, exc)
 
+    poses_rel: str | None = None
+    if copy_poses and snapshot.poses_json_path:
+        src = Path(snapshot.poses_json_path)
+        if src.is_file():
+            try:
+                import shutil
+
+                dest = bundle_dir / FILE_POSES_COPY
+                shutil.copy2(src, dest)
+                poses_rel = FILE_POSES_COPY
+            except OSError as exc:
+                logger.warning("Could not copy poses into bundle: %s", exc)
+
+    workspace_payload = {
+        "schema": "stablewalk-workspace-state",
+        "version": BUNDLE_VERSION,
+        "exported_at": exported_at,
+        **dict(snapshot.workspace or {}),
+    }
+    write_json_payload(workspace_payload, bundle_dir / FILE_WORKSPACE_STATE)
+
+    if snapshot.results:
+        write_json_payload(
+            {
+                "schema": "stablewalk-results-snapshot",
+                "version": BUNDLE_VERSION,
+                "exported_at": exported_at,
+                **dict(snapshot.results),
+            },
+            bundle_dir / FILE_RESULTS_SNAPSHOT,
+        )
+
     write_json_payload(
-        build_session_metadata(snapshot, bundle_dir_name=bundle_name, exported_at=exported_at),
+        build_session_metadata(
+            snapshot,
+            bundle_dir_name=name,
+            exported_at=exported_at,
+            poses_bundle_relative=poses_rel,
+        ),
         bundle_dir / FILE_SESSION_METADATA,
     )
 
@@ -609,6 +673,30 @@ def load_session_bundle(path: str | Path) -> SessionBundleLoadResult:
             f"Missing {FILE_GAIT_MOTION}. Video re-analysis may be required for graphs."
         )
 
+    workspace: dict[str, Any] = {}
+    workspace_path = bundle_dir / FILE_WORKSPACE_STATE
+    if workspace_path.is_file():
+        try:
+            workspace = _read_json(workspace_path)
+        except (OSError, json.JSONDecodeError, SessionBundleError) as exc:
+            warnings.append(f"Could not read {FILE_WORKSPACE_STATE}: {exc}")
+    if not workspace:
+        workspace = dict(metadata.get("workspace") or {})
+
+    results: dict[str, Any] = {}
+    results_path = bundle_dir / FILE_RESULTS_SNAPSHOT
+    if results_path.is_file():
+        try:
+            results = _read_json(results_path)
+        except (OSError, json.JSONDecodeError, SessionBundleError) as exc:
+            warnings.append(f"Could not read {FILE_RESULTS_SNAPSHOT}: {exc}")
+
+    # Prefer poses copied into the bundle for offline restore.
+    bundled_poses = bundle_dir / FILE_POSES_COPY
+    if bundled_poses.is_file():
+        metadata = dict(metadata)
+        metadata["poses_json_path"] = str(bundled_poses)
+
     return SessionBundleLoadResult(
         bundle_dir=bundle_dir,
         metadata=metadata,
@@ -616,6 +704,8 @@ def load_session_bundle(path: str | Path) -> SessionBundleLoadResult:
         tracking_rows=tracking_rows,
         analysis_summary=analysis_summary,
         recording=recording,
+        workspace=workspace,
+        results=results,
         warnings=warnings,
     )
 

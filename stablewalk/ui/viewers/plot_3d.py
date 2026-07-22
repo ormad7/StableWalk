@@ -16,24 +16,36 @@ if TYPE_CHECKING:
     from stablewalk.pose.skeleton_3d import Skeleton3D
 
 from stablewalk.ui.colors import (
-    ACCENT,
-    ACCENT_ALT,
     BORDER,
+    COM,
     INFO,
+    METRIC_GLOBAL,
+    MUTED,
     PANEL,
+    SIDE_LEFT,
+    SIDE_RIGHT,
     TEXT,
-    VIZ_JOINT,
     WARNING,
 )
 
 BG = PANEL
-MUTED = "#7d8da6"
+# Blender / OpenSim laboratory default: slight elevation, front-right azimuth.
+DEFAULT_SKELETON_CAMERA_ELEV = 25.0
+DEFAULT_SKELETON_CAMERA_AZIM = 35.0
+# Perspective camera distance — slightly pulled back so head/feet clear the box.
+DEFAULT_SKELETON_CAMERA_DIST = 9.2
+# Target body fill of the cubic view (~70%) with extra margin against clipping.
+_SKELETON_FRAME_FILL = 0.70
+_SKELETON_CLIP_MARGIN = 1.08
+_SKELETON_BOX_ZOOM = 0.88
+_SKELETON_CAMERA_RESET_MS = 280
+_SKELETON_CAMERA_RESET_STEPS = 14
 
 # Accent hints on painted body (left / right / center)
-COLOR_LEFT = ACCENT
-COLOR_RIGHT = WARNING
-COLOR_TORSO = ACCENT_ALT
-COLOR_HEAD = VIZ_JOINT
+COLOR_LEFT = SIDE_LEFT
+COLOR_RIGHT = SIDE_RIGHT
+COLOR_TORSO = COM
+COLOR_HEAD = WARNING
 COLOR_VEL = INFO
 
 # Human figure palette (person in clothes — not colored robot segments)
@@ -108,11 +120,63 @@ def _bone_color(a: str, b: str) -> str:
     return COLOR_TORSO
 
 
-def setup_3d_axes(ax: Axes, *, elev: float = 90.0, azim: float = -90.0) -> None:
-    """Top-down on the body plane — painted figure faces you (not edge-on cylinders)."""
+def _view_skeleton_camera(ax: Axes, *, elev: float, azim: float) -> None:
+    """Apply the Y-up laboratory camera across supported Matplotlib versions."""
+    try:
+        ax.view_init(elev=elev, azim=azim, vertical_axis="y")
+    except TypeError:
+        ax.view_init(elev=elev, azim=azim)
+    try:
+        ax.dist = float(DEFAULT_SKELETON_CAMERA_DIST)
+    except AttributeError:
+        pass
+
+
+def remember_skeleton_camera(ax: Axes) -> None:
+    """Persist the user orbit so playback redraws never reset the camera."""
+    try:
+        camera = (float(ax.elev), float(ax.azim))
+    except (AttributeError, TypeError, ValueError):
+        return
+    ax._stablewalk_skeleton_camera = camera  # type: ignore[attr-defined]
+
+
+def _cancel_skeleton_camera_reset(ax: Axes, scheduler=None) -> None:
+    """Stop an in-flight smooth reset so a new gesture owns the camera."""
+    job = getattr(ax, "_stablewalk_skeleton_camera_reset_job", None)
+    if job is None or scheduler is None:
+        ax._stablewalk_skeleton_camera_reset_job = None  # type: ignore[attr-defined]
+        return
+    cancel = getattr(scheduler, "after_cancel", None)
+    if callable(cancel):
+        try:
+            cancel(job)
+        except Exception:
+            pass
+    ax._stablewalk_skeleton_camera_reset_job = None  # type: ignore[attr-defined]
+
+
+def setup_3d_axes(
+    ax: Axes,
+    *,
+    elev: float = DEFAULT_SKELETON_CAMERA_ELEV,
+    azim: float = DEFAULT_SKELETON_CAMERA_AZIM,
+) -> None:
+    """Professional Y-up perspective while preserving a remembered user orbit."""
     ax.set_facecolor(BG)
     ax.figure.patch.set_facecolor(BG)
-    ax.view_init(elev=elev, azim=azim)
+    remembered = getattr(ax, "_stablewalk_skeleton_camera", None)
+    if isinstance(remembered, (tuple, list)) and len(remembered) == 2:
+        elev, azim = float(remembered[0]), float(remembered[1])
+    _view_skeleton_camera(ax, elev=elev, azim=azim)
+    ax._stablewalk_skeleton_camera = (float(elev), float(azim))  # type: ignore[attr-defined]
+    try:
+        ax.set_proj_type("persp", focal_length=1.12)
+    except (AttributeError, TypeError, ValueError):
+        try:
+            ax.set_proj_type("persp")
+        except (AttributeError, ValueError):
+            pass
     ax.set_xlabel("← left · right →", color=MUTED, fontsize=8)
     ax.set_ylabel("height", color=MUTED, fontsize=8)
     ax.set_zlabel("", color=MUTED, fontsize=8)
@@ -120,7 +184,57 @@ def setup_3d_axes(ax: Axes, *, elev: float = 90.0, azim: float = -90.0) -> None:
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.pane.fill = False
         axis.pane.set_edgecolor(BORDER)
-    ax.grid(True, color=BORDER, alpha=0.4)
+    ax.grid(True, color=BORDER, alpha=0.16, linewidth=0.4)
+
+
+def smooth_reset_skeleton_camera(
+    ax: Axes,
+    *,
+    canvas=None,
+    scheduler=None,
+    duration_ms: int = _SKELETON_CAMERA_RESET_MS,
+    steps: int = _SKELETON_CAMERA_RESET_STEPS,
+) -> None:
+    """Ease the current orbit back to the default Blender/OpenSim-like view."""
+    _cancel_skeleton_camera_reset(ax, scheduler)
+    try:
+        start_elev, start_azim = float(ax.elev), float(ax.azim)
+    except (AttributeError, TypeError, ValueError):
+        start_elev, start_azim = (
+            DEFAULT_SKELETON_CAMERA_ELEV,
+            DEFAULT_SKELETON_CAMERA_AZIM,
+        )
+    target_elev = DEFAULT_SKELETON_CAMERA_ELEV
+    target_azim = DEFAULT_SKELETON_CAMERA_AZIM
+    # Follow the shortest azimuth arc instead of spinning through ±180°.
+    azim_delta = (target_azim - start_azim + 180.0) % 360.0 - 180.0
+    steps = max(1, int(steps))
+    interval = max(1, int(duration_ms) // steps)
+
+    def _frame(index: int) -> None:
+        t = min(max(index / steps, 0.0), 1.0)
+        # Smoothstep ease-in-out for a laboratory camera reset.
+        eased = t * t * (3.0 - 2.0 * t)
+        elev = start_elev + (target_elev - start_elev) * eased
+        azim = start_azim + azim_delta * eased
+        _view_skeleton_camera(ax, elev=elev, azim=azim)
+        ax._stablewalk_skeleton_camera = (elev, azim)  # type: ignore[attr-defined]
+        if canvas is not None:
+            canvas.draw_idle()
+        if index < steps and scheduler is not None:
+            job = scheduler.after(interval, lambda: _frame(index + 1))
+            ax._stablewalk_skeleton_camera_reset_job = job  # type: ignore[attr-defined]
+        else:
+            ax._stablewalk_skeleton_camera_reset_job = None  # type: ignore[attr-defined]
+            ax._stablewalk_skeleton_camera = (
+                target_elev,
+                target_azim,
+            )  # type: ignore[attr-defined]
+
+    if scheduler is None:
+        _frame(steps)
+    else:
+        _frame(0)
 
 
 def _rotation_matrix(from_vec: np.ndarray, to_vec: np.ndarray) -> np.ndarray:
@@ -185,19 +299,24 @@ def apply_display_limits(
     skeleton: Skeleton3D,
     sequence_limit: float | None = None,
     *,
-    padding: float = 1.15,
-    flat_frontal: bool = True,
+    padding: float | None = None,
+    flat_frontal: bool = False,
 ) -> None:
-    """Zoom to the painted figure (flat frontal = fill the panel)."""
+    """Center and frame the complete skeleton with equal 3D unit scaling.
+
+    The body is auto-framed to about 70% of the cubic viewport, then padded a
+    little more so perspective foreshortening cannot clip the head or feet.
+    """
     if flat_frontal and skeleton.joints:
         xs = [j.x for j in skeleton.joints.values()]
         ys = [j.y for j in skeleton.joints.values()]
+        pad = float(padding) if padding is not None else (1.0 / _SKELETON_FRAME_FILL)
         lim_xy = max(
             max(abs(v) for v in xs),
             max(abs(v) for v in ys),
             _body_height(skeleton) * 0.42,
             0.25,
-        ) * padding
+        ) * pad
         lim_xy = max(0.45, lim_xy)
         if sequence_limit is not None:
             lim_xy = min(lim_xy, max(0.45, sequence_limit))
@@ -205,12 +324,41 @@ def apply_display_limits(
         ax.set_ylim(-lim_xy, lim_xy)
         ax.set_zlim(-0.06, 0.06)
         return
-    lim = _skeleton_axis_limit(skeleton, padding=padding)
+    if not skeleton.joints:
+        return
+    xs = [joint.x for joint in skeleton.joints.values()]
+    ys = [joint.y for joint in skeleton.joints.values()]
+    zs = [joint.z for joint in skeleton.joints.values()]
+    centers = (
+        0.5 * (min(xs) + max(xs)),
+        0.5 * (min(ys) + max(ys)),
+        0.5 * (min(zs) + max(zs)),
+    )
+    max_span = max(
+        max(xs) - min(xs),
+        max(ys) - min(ys),
+        max(zs) - min(zs),
+        _body_height(skeleton) * 0.55,
+        0.40,
+    )
+    # Expand so the body occupies ~70% of the cube, then add a clip margin for
+    # perspective projection (corners otherwise crop extremities).
+    fill_pad = float(padding) if padding is not None else (1.0 / _SKELETON_FRAME_FILL)
+    half = max_span * max(fill_pad, 1.08) * 0.5 * _SKELETON_CLIP_MARGIN
     if sequence_limit is not None:
-        lim = min(lim, max(0.42, sequence_limit))
-    ax.set_xlim(-lim, lim)
-    ax.set_ylim(-lim, lim)
-    ax.set_zlim(-lim, lim)
+        half = max(half, float(sequence_limit))
+    ax.set_xlim(centers[0] - half, centers[0] + half)
+    ax.set_ylim(centers[1] - half, centers[1] + half)
+    ax.set_zlim(centers[2] - half, centers[2] + half)
+    try:
+        ax.set_box_aspect((1, 1, 1), zoom=_SKELETON_BOX_ZOOM)
+    except TypeError:
+        try:
+            ax.set_box_aspect((1, 1, 1))
+        except (AttributeError, ValueError):
+            pass
+    except (AttributeError, ValueError):
+        pass
 
 
 def scale_skeleton_uniform(skeleton: Skeleton3D, factor: float) -> Skeleton3D:
@@ -1077,7 +1225,7 @@ def _draw_selection_highlights_2d(
             [p0[0], p1[0]],
             [p0[1], p1[1]],
             color=HIGHLIGHT_BONE,
-            linewidth=4.5,
+            linewidth=2.65,
             solid_capstyle="round",
             zorder=12,
             alpha=0.95,
@@ -1147,7 +1295,7 @@ def draw_painted_human_2d(
 
     joints = skeleton.joints
     if not joints:
-        ax.text(0.5, 0.5, "No body pose", transform=ax.transAxes, ha="center", color=MUTED, fontsize=10)
+        ax.text(0.5, 0.5, "No body pose", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
         return skeleton
 
     display = orient_skeleton_for_display(skeleton) if orient_upright else skeleton
@@ -1237,13 +1385,15 @@ def draw_skeleton_3d(
 ) -> Skeleton3D:
     """Draw a painted 3D human figure; returns display-oriented skeleton."""
     if clear:
+        if hasattr(ax, "_stablewalk_skeleton_camera"):
+            remember_skeleton_camera(ax)
         ax.cla()
         setup_3d_axes(ax)
 
     joints = skeleton.joints
     if not joints:
         ax.text2D(
-            0.5, 0.5, "No 3D skeleton", transform=ax.transAxes, ha="center", color=MUTED, fontsize=10
+            0.5, 0.5, "No 3D skeleton", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9
         )
         return skeleton
 
@@ -1283,14 +1433,10 @@ def draw_skeleton_3d(
     if show_velocity_hint and lin_vel:
         _draw_pelvis_velocity_arrow(ax, display, lin_vel)
 
-    apply_display_limits(ax, display, view_limit, flat_frontal=True)
-    try:
-        ax.set_box_aspect((1, 1, 0.08))
-    except AttributeError:
-        pass
+    apply_display_limits(ax, display, view_limit, flat_frontal=False)
 
-    title = frame_label or "Painted body (front view)"
-    ax.set_title(title, color=TEXT, fontsize=10, fontweight="medium", pad=6)
+    title = frame_label or "3D gait reconstruction"
+    ax.set_title(title, color=TEXT, fontsize=9.5, fontweight="medium", pad=5)
     return display
 
 
@@ -1360,8 +1506,8 @@ def draw_joint_positions_chart(
 
     y = np.arange(len(names))
     h = 0.18
-    ax.barh(y - 1.5 * h, xs, height=h, color=ACCENT, alpha=0.9, label="X")
-    ax.barh(y - 0.5 * h, ys, height=h, color=ACCENT_ALT, alpha=0.9, label="Y")
+    ax.barh(y - 1.5 * h, xs, height=h, color=SIDE_LEFT, alpha=0.9, label="X")
+    ax.barh(y - 0.5 * h, ys, height=h, color=COM, alpha=0.9, label="Y")
     ax.barh(y + 0.5 * h, zs, height=h, color=COLOR_TORSO, alpha=0.9, label="Z")
     ax.barh(y + 1.5 * h, speeds, height=h, color=COLOR_VEL, alpha=0.9, label="|v|")
     ax.set_yticks(y)
@@ -1413,7 +1559,7 @@ def draw_dof_motion_chart(
 
     y = np.arange(len(labels))
     h = 0.35
-    ax.barh(y - h / 4, angle_vals, height=h / 2, color=ACCENT, alpha=0.85, label="Angle °")
+    ax.barh(y - h / 4, angle_vals, height=h / 2, color=METRIC_GLOBAL, alpha=0.85, label="Angle °")
     ax.barh(y + h / 4, omega_vals, height=h / 2, color=COLOR_VEL, alpha=0.85, label="ω °/s")
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=7, color=TEXT)
@@ -1469,7 +1615,7 @@ def draw_robot_geometry(
             [pa[0], pb[0]],
             [pa[1], pb[1]],
             [pa[2], pb[2]],
-            color=ACCENT_ALT,
+            color=COM,
             linewidth=2.5,
         )
 
@@ -1477,11 +1623,11 @@ def draw_robot_geometry(
         xs = [p[0] for p in pts.values()]
         ys = [p[1] for p in pts.values()]
         zs = [p[2] for p in pts.values()]
-        ax.scatter(xs, ys, zs, c=VIZ_JOINT, s=35, edgecolors="white", linewidths=0.6)
+        ax.scatter(xs, ys, zs, c=WARNING, s=35, edgecolors="white", linewidths=0.6)
 
     if "pelvis" in pts:
         p = pts["pelvis"]
-        ax.scatter([p[0]], [p[1]], [p[2]], c=WARNING, s=55, depthshade=True)
+        ax.scatter([p[0]], [p[1]], [p[2]], c=COM, s=55, depthshade=True)
 
     ax.set_xlabel("X", color=MUTED, fontsize=8)
     ax.set_ylabel("Y (forward)", color=MUTED, fontsize=8)

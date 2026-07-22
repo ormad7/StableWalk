@@ -54,7 +54,7 @@ def test_gait_summary_attached_to_result(demo_results):
     for result in demo_results.values():
         assert result.gait_summary is not None
         assert result.gait_summary.movement_stability.label == "Movement Stability"
-        assert result.gait_summary.gait_quality.label == "Gait Quality"
+        assert result.gait_summary.gait_quality.label == "Gait Quality (derived)"
 
 
 def test_explanation_uses_no_demo_labels(demo_results):

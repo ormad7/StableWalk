@@ -306,6 +306,26 @@ Each result includes a plain-language explanation, e.g.
 
 ---
 
+## Data tiers (scientific labeling)
+
+Every GUI metric and export field is tagged by **data tier** so estimated
+capabilities are never presented as measured:
+
+| Tier | Meaning in StableWalk |
+| --- | --- |
+| **measured** | Force plate, calibrated mocap, or verified OpenSim IK after calibration |
+| **estimated** | Pose-derived proxies (COM, virtual GRF, monocular walking speed) |
+| **derived** | Composite indices from estimated inputs (symmetry %, stability margin, gait quality) |
+| **calculated** | Deterministic post-processing (cadence, phase %, finite differences) |
+
+Monocular video alone does **not** produce measured ground reaction forces,
+clinical-grade joint angles, or absolute overground speed without scale assumptions.
+
+See **[FINAL_VALIDATION_REPORT.md](FINAL_VALIDATION_REPORT.md)** for cross-tab
+validation, known limitations, and test results.
+
+---
+
 ## Installation
 
 ```bash

@@ -26,7 +26,7 @@ from stablewalk.analysis.ground_reference import (
     bilateral_foot_clearance,
     estimate_ground_plane,
 )
-from stablewalk.models.gait_motion import GaitMotionRecording, SkeletonSnapshot
+from stablewalk.ui.scientific_labels import LABEL_FOOT_CLEARANCE_CONFIDENCE
 
 FOOT_CLEARANCE_FLOOR_REFERENCE = "Estimated floor plane (sequence-level heel/toe)"
 FOOT_CLEARANCE_FOOT_REFERENCE = "min(heel, toe) height above floor"
@@ -58,12 +58,12 @@ def _confidence_title(confidence: FootClearanceConfidence | str) -> str:
 
 def measurement_confidence_label(confidence: FootClearanceConfidence | str) -> str:
     """Overview header confidence line."""
-    return f"Measurement Confidence: {_confidence_title(confidence)}"
+    return f"{LABEL_FOOT_CLEARANCE_CONFIDENCE}: {_confidence_title(confidence)}"
 
 
 def foot_clearance_confidence_label(confidence: FootClearanceConfidence | str) -> str:
     """Scientific Details dialog confidence line."""
-    return f"Foot Clearance Confidence: {_confidence_title(confidence)}"
+    return f"{LABEL_FOOT_CLEARANCE_CONFIDENCE}: {_confidence_title(confidence)}"
 
 
 def overview_unavailable_reason(raw_reason: str) -> str:

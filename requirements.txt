@@ -3,3 +3,7 @@ mediapipe>=0.10.9
 numpy>=1.24.0
 matplotlib>=3.7.0
 Pillow>=10.0.0
+reportlab>=4.0.0
+
+# Development / validation
+pytest>=7.0.0

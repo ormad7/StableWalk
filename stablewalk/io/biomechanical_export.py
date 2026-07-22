@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from stablewalk.analysis.biomechanical.orchestrator import BiomechanicalAnalysisResult
+from stablewalk.ui.scientific_labels import TIER_ESTIMATED, export_terminology_block
 
 BIOMECH_SCHEMA_VERSION = "1.0"
 
@@ -116,6 +117,8 @@ def export_video_quality_json(result: BiomechanicalAnalysisResult, path: Path) -
     path.parent.mkdir(parents=True, exist_ok=True)
     vq = result.video_quality
     payload = vq.to_dict() if vq else {"overall_quality_score": 0.0, "warnings": ["No sequence"]}
+    payload["kind"] = "derived"
+    payload["terminology"] = export_terminology_block()
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
 
@@ -125,11 +128,7 @@ def export_biomechanical_report_json(result: BiomechanicalAnalysisResult, path: 
     path.parent.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
         "schema_version": BIOMECH_SCHEMA_VERSION,
-        "terminology": {
-            "measured": "Instrumented or direct sensor data (not available from monocular video alone).",
-            "estimated": "Pose-derived proxy with anthropometric or heuristic models.",
-            "derived": "Computed from estimated inputs (e.g., stability margin, symmetry index).",
-        },
+        "terminology": export_terminology_block(),
         "summary": result.to_dict(),
         "gait_quality": None if result.gait_quality is None else result.gait_quality.to_dict(),
         "abnormalities": list(result.abnormalities),

@@ -22,6 +22,8 @@ import numpy as np
 from stablewalk.analysis.gait_feature_analysis import read_opensim_mot_timeseries
 from stablewalk.models.pose_data import PoseSequence
 from stablewalk.pose.kinematics import compute_joint_angles
+from stablewalk.ui.viewers.chart_hover import ChartHoverPoint, append_line_hover_points
+from stablewalk.ui.viewers.chart_playhead import PlayheadState
 
 KneeAngleSource = Literal["opensim_ik", "pose_derived"]
 KneeAngleSourcePreference = Literal["auto", "opensim_ik", "pose_derived"]
@@ -69,10 +71,22 @@ class KneeAngleSeries:
 
 
 def knee_flexion_rom_deg(values: np.ndarray) -> float | None:
+    """Robust flexion ROM so single-frame spikes do not dominate the HUD."""
     finite = values[np.isfinite(values)]
     if finite.size < 2:
         return None
-    return float(np.max(finite) - np.min(finite))
+    if finite.size < 5:
+        return float(np.max(finite) - np.min(finite))
+    lo = float(np.percentile(finite, 10))
+    hi = float(np.percentile(finite, 90))
+    med = float(np.median(finite))
+    mad = float(np.median(np.abs(finite - med)))
+    if mad < 1e-6:
+        mad = 1.0
+    gate = 3.5 * mad
+    lo = max(lo, med - gate)
+    hi = min(hi, med + gate)
+    return max(0.0, hi - lo)
 
 
 def largest_frame_jump_deg(values: np.ndarray) -> float | None:
@@ -295,7 +309,7 @@ def _plot_knee_trace(
         masked,
         color=color,
         label=legend_label,
-        linewidth=2.0,
+        linewidth=1.85,
         solid_capstyle="round",
         zorder=4,
     )
@@ -305,10 +319,10 @@ def _plot_knee_trace(
         ax.annotate(
             end_label,
             xy=(float(times[last]), float(values[last])),
-            xytext=(4, 0),
+            xytext=(5, 0),
             textcoords="offset points",
             color=color,
-            fontsize=7,
+            fontsize=8,
             fontweight="bold",
             va="center",
             ha="left",
@@ -317,53 +331,70 @@ def _plot_knee_trace(
         )
 
 
-def _draw_gait_event_markers(ax, events, *, y_lo: float, y_hi: float) -> list:
-    from stablewalk.ui.colors import ACCENT, MUTED, WARNING
-
-    if not events:
-        return []
-
-    marker_y = y_lo - (y_hi - y_lo) * 0.06
-    event_styles = {
-        "left_heel_strike": ("L HS", ACCENT, "Heel strike (left)"),
-        "right_heel_strike": ("R HS", WARNING, "Heel strike (right)"),
-        "left_toe_off": ("L TO", ACCENT, "Toe off (left)"),
-        "right_toe_off": ("R TO", WARNING, "Toe off (right)"),
+def _event_times_by_type(events) -> dict[str, list[float]]:
+    buckets: dict[str, list[float]] = {
+        "left_heel_strike": [],
+        "right_heel_strike": [],
+        "left_toe_off": [],
+        "right_toe_off": [],
     }
-    legend_entries: list[tuple] = []
-    seen_legend: set[str] = set()
+    for ev in events or []:
+        key = getattr(ev, "event_type", None)
+        if key in buckets:
+            buckets[key].append(float(ev.time_s))
+    return buckets
 
-    for ev in events:
-        style = event_styles.get(ev.event_type)
-        if style is None:
-            continue
-        abbrev, color, _desc = style
-        ax.axvline(
-            ev.time_s,
-            color=color,
-            linestyle="--",
-            linewidth=0.7,
-            alpha=0.45,
-            zorder=2,
-        )
-        ax.text(
-            ev.time_s,
-            marker_y,
-            abbrev,
-            rotation=90,
-            va="top",
-            ha="center",
-            color=color,
-            fontsize=6,
-            alpha=0.85,
-            clip_on=True,
-            zorder=3,
-        )
-        if ev.event_type not in seen_legend:
-            seen_legend.add(ev.event_type)
-            legend_entries.append((abbrev, color))
 
-    return legend_entries
+def _draw_gait_event_markers(ax, events, *, y_lo: float, y_hi: float) -> list:
+    """Publication HS/TO markers (OpenSim / Vicon style)."""
+    from stablewalk.ui.viewers.chart_reference import draw_gait_event_markers
+
+    del y_lo, y_hi  # ylim used internally by shared helper
+    buckets = _event_times_by_type(events)
+    draw_gait_event_markers(
+        ax,
+        left_hs=buckets["left_heel_strike"],
+        right_hs=buckets["right_heel_strike"],
+        left_to=buckets["left_toe_off"],
+        right_to=buckets["right_toe_off"],
+        show_legend=True,
+    )
+    return []
+
+
+def _knee_confidence_series(times: np.ndarray, gait_cycle) -> np.ndarray | None:
+    """Mean foot visibility as a display-only confidence proxy."""
+    if gait_cycle is None or not getattr(gait_cycle, "per_frame", None):
+        return None
+    frames = gait_cycle.per_frame
+    if not frames or len(frames) != len(times):
+        # Interpolate by time when lengths differ.
+        t_src = np.asarray([float(f.time_s) for f in frames], dtype=float)
+        conf_src = np.asarray(
+            [
+                0.5
+                * (
+                    float(getattr(f.left, "visibility", 1.0))
+                    + float(getattr(f.right, "visibility", 1.0))
+                )
+                for f in frames
+            ],
+            dtype=float,
+        )
+        if t_src.size < 2:
+            return None
+        return np.interp(times.astype(float), t_src, conf_src)
+    return np.asarray(
+        [
+            0.5
+            * (
+                float(getattr(f.left, "visibility", 1.0))
+                + float(getattr(f.right, "visibility", 1.0))
+            )
+            for f in frames
+        ],
+        dtype=float,
+    )
 
 
 def _draw_stance_swing_regions(
@@ -437,12 +468,27 @@ def draw_knee_time_chart(
     ax,
     series: KneeAngleSeries,
     *,
+    playhead: PlayheadState | None = None,
     playhead_list_pos: int | None = None,
     gait_events: list | None = None,
     gait_cycle=None,
 ) -> None:
     """Draw full-video left/right knee flexion with playhead, events, and legend."""
-    from stablewalk.ui.colors import ACCENT, MUTED, TEXT, WARNING
+    from stablewalk.ui.colors import MUTED, SIDE_LEFT, SIDE_RIGHT, TEXT
+    from stablewalk.ui.viewers.chart_playhead import draw_chart_playhead
+    from stablewalk.ui.viewers.chart_reference import (
+        KNEE_FLEXION_ABNORMAL_ABOVE_DEG,
+        KNEE_FLEXION_NORMAL_DEG,
+        draw_confidence_overlay,
+        draw_reference_y_bands,
+    )
+    from stablewalk.ui.viewers.chart_style import (
+        style_chart_legend,
+        style_chart_title,
+        style_single_time_series_chart,
+    )
+
+    style_single_time_series_chart(ax, ylabel="Knee flexion (°)")
 
     times = series.times_s
     left = series.left_deg
@@ -454,12 +500,27 @@ def draw_knee_time_chart(
     if finite.size:
         y_lo = float(np.min(finite))
         y_hi = float(np.max(finite))
-        margin = max(5.0, (y_hi - y_lo) * 0.12)
+        # Include normative band headroom for Visual3D-style range context.
+        y_lo = min(y_lo, KNEE_FLEXION_NORMAL_DEG[0])
+        y_hi = max(y_hi, KNEE_FLEXION_NORMAL_DEG[1], KNEE_FLEXION_ABNORMAL_ABOVE_DEG)
+        margin = max(6.0, (y_hi - y_lo) * 0.12)
         ax.set_ylim(y_lo - margin, y_hi + margin)
     elif len(times) >= 2:
         ax.set_xlim(float(times[0]), float(times[-1]))
-        y_lo, y_hi = 0.0, 90.0
+        y_lo, y_hi = 0.0, 95.0
         ax.set_ylim(y_lo - margin, y_hi + margin)
+
+    draw_reference_y_bands(
+        ax,
+        normal=KNEE_FLEXION_NORMAL_DEG,
+        abnormal_below=-5.0,
+        abnormal_above=KNEE_FLEXION_ABNORMAL_ABOVE_DEG,
+        label_normal=True,
+    )
+
+    conf = _knee_confidence_series(times, gait_cycle)
+    if conf is not None:
+        draw_confidence_overlay(ax, times, conf, threshold=0.55)
 
     _draw_stance_swing_regions(ax, gait_cycle, times)
 
@@ -467,7 +528,7 @@ def draw_knee_time_chart(
         ax,
         times,
         left,
-        color=ACCENT,
+        color=SIDE_LEFT,
         legend_label=f"{LABEL_LEFT_KNEE} flexion",
         end_label=LABEL_LEFT_KNEE,
     )
@@ -475,65 +536,65 @@ def draw_knee_time_chart(
         ax,
         times,
         right,
-        color=WARNING,
+        color=SIDE_RIGHT,
         legend_label=f"{LABEL_RIGHT_KNEE} flexion",
         end_label=LABEL_RIGHT_KNEE,
     )
 
     _draw_gait_event_markers(ax, gait_events or [], y_lo=y_lo, y_hi=y_hi)
 
-    if playhead_list_pos is not None and 0 <= playhead_list_pos < len(times):
-        t = float(times[playhead_list_pos])
-        ax.axvline(
-            t,
-            color=TEXT,
-            linestyle="-",
-            linewidth=1.4,
-            alpha=0.95,
-            zorder=8,
-            label="Current time",
+    list_pos = playhead_list_pos
+    if playhead is not None and playhead.list_pos is not None:
+        list_pos = playhead.list_pos
+    if playhead is None and list_pos is not None and 0 <= list_pos < len(times):
+        playhead = PlayheadState(
+            time_s=float(times[list_pos]),
+            frame_index=0,
+            list_pos=list_pos,
         )
-        ax.text(
-            t,
-            y_hi + margin * 0.35,
-            f" t={t:.2f}s",
-            color=TEXT,
-            fontsize=7,
-            va="bottom",
-            ha="left",
-            clip_on=False,
-            zorder=9,
+    elif playhead is None and list_pos is not None:
+        list_pos = None
+
+    if playhead is not None:
+        value_parts: list[str] = []
+        value_y = None
+        if list_pos is not None and 0 <= list_pos < len(times):
+            t = float(times[list_pos])
+            for arr, color, leg in (
+                (left, SIDE_LEFT, "L"),
+                (right, SIDE_RIGHT, "R"),
+            ):
+                if np.isfinite(arr[list_pos]):
+                    val = float(arr[list_pos])
+                    value_parts.append(f"{leg} {val:.1f}°")
+                    if value_y is None:
+                        value_y = val
+                    ax.scatter(
+                        [t],
+                        [val],
+                        color=color,
+                        s=42,
+                        zorder=25,
+                        edgecolors=TEXT,
+                        linewidths=0.65,
+                        label=f"Now ({leg})",
+                    )
+        value_label = "  ·  ".join(value_parts) if value_parts else None
+        draw_chart_playhead(
+            ax,
+            playhead,
+            show_label=True,
+            value_label=value_label,
+            value_y=value_y,
         )
-        for arr, color, leg in (
-            (left, ACCENT, "L"),
-            (right, WARNING, "R"),
-        ):
-            if np.isfinite(arr[playhead_list_pos]):
-                ax.scatter(
-                    [t],
-                    [arr[playhead_list_pos]],
-                    color=color,
-                    s=36,
-                    zorder=10,
-                    edgecolors=TEXT,
-                    linewidths=0.6,
-                    label=f"Now ({leg})",
-                )
 
     if len(times) >= 2:
         pad = max(0.05, (float(times[-1]) - float(times[0])) * 0.02)
         ax.set_xlim(float(times[0]) - pad, float(times[-1]) + pad)
 
-    ax.set_xlabel("Time (s)", color=MUTED, fontsize=8)
-    ax.set_ylabel("Knee flexion (deg)", color=MUTED, fontsize=8)
     src_label = "OpenSim IK" if series.source == "opensim_ik" else "Pose-derived"
-    ax.set_title(
-        f"Knee flexion · Video Time  ·  Angle Source: {src_label}",
-        color=TEXT,
-        fontsize=10,
-        fontweight="medium",
-        pad=6,
-    )
+    style_chart_title(ax, f"Knee flexion · {src_label}")
+    style_chart_legend(ax, loc="upper right", fontsize=8.0)
 
     if not np.any(np.isfinite(left)) and not np.any(np.isfinite(right)):
         ax.text(
@@ -543,7 +604,7 @@ def draw_knee_time_chart(
             transform=ax.transAxes,
             ha="center",
             color=MUTED,
-            fontsize=9,
+            fontsize=10,
         )
 
     if float(series.metadata.get("nan_pct", 0.0)) >= 8.0:
@@ -555,7 +616,44 @@ def draw_knee_time_chart(
             ha="left",
             va="bottom",
             color=MUTED,
-            fontsize=6,
+            fontsize=7,
             style="italic",
             zorder=11,
         )
+
+
+def register_knee_time_chart_hover_points(
+    ax,
+    series: KneeAngleSeries,
+    pose_indices: list[int],
+    hover_points: list[ChartHoverPoint],
+) -> None:
+    """Register hover targets for left/right knee flexion time-series."""
+    list_positions = list(range(len(series.times_s)))
+    frame_indices = [
+        pose_indices[i] if i < len(pose_indices) else None for i in range(len(series.times_s))
+    ]
+    append_line_hover_points(
+        ax,
+        series.times_s,
+        series.left_deg,
+        metric_name="Knee flexion",
+        joint_name=LABEL_LEFT_KNEE,
+        unit="deg",
+        frame_indices=frame_indices,
+        list_positions=list_positions,
+        timestamps=series.times_s,
+        hover_points=hover_points,
+    )
+    append_line_hover_points(
+        ax,
+        series.times_s,
+        series.right_deg,
+        metric_name="Knee flexion",
+        joint_name=LABEL_RIGHT_KNEE,
+        unit="deg",
+        frame_indices=frame_indices,
+        list_positions=list_positions,
+        timestamps=series.times_s,
+        hover_points=hover_points,
+    )

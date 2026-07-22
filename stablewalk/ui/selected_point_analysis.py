@@ -33,6 +33,7 @@ from stablewalk.analysis.ground_reference import (
 from stablewalk.models.gait_motion import GaitMotionRecording, SkeletonSnapshot, Vec3
 from stablewalk.ui.dof_position_table import kinematic_sample_for_item
 from stablewalk.ui.dof_selection import anchor_joint_for_item, label_for_item
+from stablewalk.ui.scientific_labels import LABEL_CONTACT_STATE
 
 # Re-export for callers that already import FOOT_ITEM_IDS from this module.
 FOOT_ITEM_IDS = FOOT_POINT_IDS
@@ -184,7 +185,7 @@ def _foot_metrics(
                 ("Min Ground Distance (m)", "—"),
                 ("Max Ground Distance (m)", "—"),
                 ("Average Ground Distance (m)", "—"),
-                ("Contact Status", "—"),
+                (LABEL_CONTACT_STATE, "—"),
             ]
         )
         return metrics
@@ -197,7 +198,7 @@ def _foot_metrics(
             ("Min Ground Distance (m)", _dash(stats.min_clearance_m)),
             ("Max Ground Distance (m)", _dash(stats.max_clearance_m)),
             ("Average Ground Distance (m)", _dash(stats.avg_clearance_m)),
-            ("Contact Status", reading.contact_state),
+            (LABEL_CONTACT_STATE, reading.contact_state),
         ]
     )
     return metrics
@@ -874,7 +875,7 @@ def derived_metrics_for_panel(
             ("Min Ground Distance (m)", lookup.get("Min Ground Distance (m)", "—")),
             ("Max Ground Distance (m)", lookup.get("Max Ground Distance (m)", "—")),
             ("Avg Ground Distance (m)", lookup.get("Average Ground Distance (m)", "—")),
-            ("Contact Status", lookup.get("Contact Status", "—")),
+            (LABEL_CONTACT_STATE, lookup.get(LABEL_CONTACT_STATE, "—")),
         )
 
     if item_id in KNEE_ITEM_IDS:
@@ -942,6 +943,39 @@ def _format_panel_path_meters(raw: str | None) -> str:
         return raw
 
 
+def _format_panel_acceleration(
+    item_id: str,
+    snapshot: SkeletonSnapshot,
+    recording: GaitMotionRecording | None,
+) -> str:
+    """Display-only acceleration from consecutive frame velocities (m/s²)."""
+    if recording is None or recording.frame_count < 2:
+        return "—"
+    anchor = anchor_joint_for_item(item_id)
+    if not anchor:
+        return "—"
+    cur = snapshot.joints.get(anchor)
+    if cur is None or cur.velocity is None:
+        return "—"
+    prev_idx = snapshot.frame_index - 1
+    if prev_idx < 0:
+        return "—"
+    prev_snap = recording.snapshot_at(prev_idx)
+    if prev_snap is None:
+        return "—"
+    prev = prev_snap.joints.get(anchor)
+    if prev is None or prev.velocity is None:
+        return "—"
+    dt = float(snapshot.time_s) - float(prev_snap.time_s)
+    if dt <= 1e-6:
+        fps = float(getattr(recording, "fps", 0.0) or 0.0)
+        dt = 1.0 / fps if fps > 1e-6 else 0.0
+    if dt <= 1e-6:
+        return "—"
+    accel = (float(cur.velocity) - float(prev.velocity)) / dt
+    return f"{accel:.2f}"
+
+
 def panel_movement_metrics_for_panel(
     item_id: str,
     snapshot: SkeletonSnapshot,
@@ -1002,7 +1036,7 @@ def panel_foot_secondary_metrics_for_panel(
         clearance = _meters_raw_to_cm_display(clearance_raw)
         if clearance != "—" and not clearance.endswith("cm"):
             clearance = f"{clearance} cm"
-        contact = lookup.get("Contact Status", "—")
+        contact = lookup.get(LABEL_CONTACT_STATE, "—")
 
     vertical = _format_panel_path_meters(lookup.get("Y (m)"))
     return (
@@ -1034,7 +1068,11 @@ def metrics_for_analysis_panel(
         ("X (m)", _format_panel_coordinate(lookup.get("X (m)", "—"))),
         ("Y (m)", _format_panel_coordinate(lookup.get("Y (m)", "—"))),
         ("Z (m)", _format_panel_coordinate(lookup.get("Z (m)", "—"))),
-        ("Speed (m/s)", _format_panel_speed(_strip_speed_mps(lookup))),
+        ("Velocity (m/s)", _format_panel_speed(_strip_speed_mps(lookup))),
+        (
+            "Acceleration (m/s²)",
+            _format_panel_acceleration(item_id, snapshot, recording),
+        ),
     )
 
     plane = (
@@ -1205,7 +1243,7 @@ def foot_analysis_card_for_panel(
         from stablewalk.analysis.ground_reference import format_foot_clearance_display
 
         clearance_raw = lookup.get("Foot Clearance (m)") or lookup.get("Ground Distance (m)")
-        contact = lookup.get("Contact Status", "—")
+        contact = lookup.get(LABEL_CONTACT_STATE, "—")
         cal = contact == "Check calibration" or (
             _metric_float(clearance_raw) is not None
             and clearance_sanity_flag(_metric_float(clearance_raw))
@@ -1310,7 +1348,7 @@ def foot_metrics_card_for_panel(analysis: SelectedPointAnalysis) -> tuple[Analys
         ("Min Clearance", _meters_raw_to_cm_display(lookup.get("Min Ground Distance (m)"))),
         ("Max Clearance", _meters_raw_to_cm_display(lookup.get("Max Ground Distance (m)"))),
         ("Average Clearance", _meters_raw_to_cm_display(lookup.get("Average Ground Distance (m)"))),
-        ("Contact Status", lookup.get("Contact Status", "—")),
+        (LABEL_CONTACT_STATE, lookup.get(LABEL_CONTACT_STATE, "—")),
     )
 
 
@@ -1752,7 +1790,7 @@ def joint_metrics_for_panel(
             ("Min Ground Distance (m)", "Min (m)"),
             ("Max Ground Distance (m)", "Max (m)"),
             ("Average Ground Distance (m)", "Avg (m)"),
-            ("Contact Status", "Contact"),
+            (LABEL_CONTACT_STATE, "Contact"),
         ):
             if key in lookup and lookup[key] != "—":
                 candidates.append((label, lookup[key]))
@@ -2022,7 +2060,7 @@ def analysis_export_row(
     min_clearance_m = lookup.get("Min Ground Distance (m)")
     max_clearance_m = lookup.get("Max Ground Distance (m)")
     avg_clearance_m = lookup.get("Average Ground Distance (m)")
-    contact = _export_cell(lookup.get("Contact Status"))
+    contact = _export_cell(lookup.get(LABEL_CONTACT_STATE))
     distance_from_ground_m = _export_meters_numeric(ground_m)
     foot_clearance_m = _export_meters_numeric(clearance_m or ground_m)
     time_sec = f"{snapshot.time_s:.3f}"

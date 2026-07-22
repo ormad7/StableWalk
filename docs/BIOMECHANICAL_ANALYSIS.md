@@ -8,7 +8,10 @@ StableWalk's advanced biomechanical analysis extends the pose → gait → conta
 |-------|---------|
 | **Measured** | Instrumented data (force plates, IMU, mocap). Not available from monocular video alone. |
 | **Estimated** | Pose-derived proxy using anthropometric or heuristic models (COM, BoS, ROM). |
+| **Calculated** | Deterministic post-processing (cadence from intervals, phase %, finite-difference kinematics). |
 | **Derived** | Computed from estimated inputs (symmetry index, stability margin, gait quality score). |
+
+GUI and export strings: `stablewalk/ui/scientific_labels.py`.
 
 ## Pipeline position
 
@@ -104,7 +107,7 @@ Reuses gait-cycle temporal metrics plus pelvis horizontal speed:
 |--------|--------|
 | Cadence, step/stride time | Heel-strike intervals |
 | Stance/swing/double-support % | Contact masks |
-| Walking speed | Median pelvis horizontal displacement / Δt |
+| Walking speed | Multi-method: cadence × step length, image pelvis drift, COM/ankle velocity (see `walking_speed.py`) |
 | Step width | Median \|x_left_ankle − x_right_ankle\| |
 
 Each metric includes a **confidence** field (0–1).
@@ -154,9 +157,11 @@ Real-to-Sim report (`real_to_sim_pipeline_report.json`) includes `biomechanical`
 
 ## 10. GUI
 
-**Biomechanics** tab: summary cards + synchronized timeline plots.
+**Biomechanics** tab: estimated biomechanical parameters + synchronized timeline plots.
 
-**3D Overview overlays:** COM marker (red), support polygon (blue), gait direction arrow (green), foot contact labels.
+**3D Overview overlays:** COM (est.), BoS (est.), gait direction, foot contact labels — toggleable.
+
+Terminology is centralized in `stablewalk/ui/scientific_labels.py`.
 
 ## 11. Validation
 
@@ -185,6 +190,7 @@ stablewalk/analysis/biomechanical/
   advanced_gait_metrics.py
   gait_quality_score.py
   video_quality.py
+  walking_speed.py
   orchestrator.py
 stablewalk/io/biomechanical_export.py
 ```

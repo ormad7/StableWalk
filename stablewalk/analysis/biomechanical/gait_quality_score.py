@@ -21,6 +21,21 @@ def _norm_symmetry(sym: SymmetryAnalysis) -> float | None:
     return None
 
 
+def _movement_stability_score(stability: StabilityResult) -> float | None:
+    """Prefer Movement Stability domains — avoid the legacy 8-domain composite."""
+    summary = getattr(stability, "gait_summary", None)
+    if summary is not None and summary.movement_stability.score is not None:
+        return float(summary.movement_stability.score)
+    return None
+
+
+def _joint_smoothness_score(stability: StabilityResult) -> float | None:
+    metric = stability.metric("joint_smoothness")
+    if metric is None or metric.score is None:
+        return None
+    return float(metric.score)
+
+
 def compute_gait_quality_score(
     *,
     stability: StabilityResult | None = None,
@@ -33,7 +48,11 @@ def compute_gait_quality_score(
     """
     Composite 0–100 gait quality score combining stability, symmetry,
     cadence consistency, cycle consistency, joint motion, and contact reliability.
+
+    Distinct from Overview "Gait Coordination", which averages a different
+    domain set (temporal/spatial symmetry, clearance, cycle consistency, contact).
     """
+    del gait_metrics  # Reserved for future cadence-derived components.
     components: dict[str, float] = {}
     weights: dict[str, float] = {
         "stability": 0.22,
@@ -46,12 +65,17 @@ def compute_gait_quality_score(
     }
 
     if stability:
-        components["stability"] = float(stability.score)
-        if stability.gait_summary and stability.gait_summary.movement_stability.score is not None:
-            components["motion_quality"] = float(stability.gait_summary.movement_stability.score)
+        move = _movement_stability_score(stability)
+        if move is not None:
+            components["stability"] = move
+        else:
+            components["stability"] = float(stability.score)
+        smooth = _joint_smoothness_score(stability)
+        if smooth is not None:
+            components["motion_quality"] = smooth
 
-    if stability_margin:
-        components["stability_margin"] = stability_margin.stable_pct
+    if stability_margin and stability_margin.stable_pct is not None:
+        components["stability_margin"] = float(stability_margin.stable_pct)
 
     sym_score = _norm_symmetry(symmetry) if symmetry else None
     if sym_score is not None:
@@ -96,7 +120,9 @@ def compute_gait_quality_score(
     if strong:
         factors.extend(f"strong {k.replace('_', ' ')}" for k in strong[:2])
 
-    explanation_parts = [f"Gait Quality Score {_clamp_score(score):.0f}/100 (estimated)."]
+    explanation_parts = [
+        f"Composite Gait Quality {_clamp_score(score):.0f}/100 (derived)."
+    ]
     if weak:
         explanation_parts.append(
             "Primary limitations: " + ", ".join(weak[:3]).replace("_", " ") + "."

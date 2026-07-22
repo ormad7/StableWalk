@@ -17,6 +17,8 @@ import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from stablewalk.ui.scientific_labels import LABEL_GAIT_QUALITY
+
 if TYPE_CHECKING:
     from stablewalk.analysis.stability_scoring import MetricResult, StabilityResult
     from stablewalk.analysis.stability_validity import StabilityResultValidity
@@ -445,7 +447,7 @@ def build_gait_analysis_summary(result: StabilityResult) -> GaitAnalysisSummary:
     )
     gait_quality = _group_score(
         result.metrics,
-        label="Gait Quality",
+        label=LABEL_GAIT_QUALITY,
         domain_keys=GAIT_QUALITY_DOMAIN_KEYS,
     )
     analysis_confidence = _build_analysis_confidence(

@@ -101,11 +101,40 @@ def anchor_joint_for_item(item_id: str) -> str | None:
 
 
 def item_for_joint(joint_id: str) -> str | None:
-    return _JOINT_TO_ITEM.get(joint_id)
+    if not joint_id:
+        return None
+    direct = _JOINT_TO_ITEM.get(joint_id)
+    if direct:
+        return direct
+    return normalize_gui_dof_id(joint_id)
 
 
 def label_for_item(item_id: str) -> str:
     return GUI_DOF_LABELS.get(item_id, item_id.replace("_", " ").title())
+
+
+def normalize_gui_dof_id(raw: str | None) -> str | None:
+    """Map display labels / mixed casing to a canonical GUI DOF id (``right_hip``)."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    key = text.lower().replace("-", "_").replace(" ", "_")
+    while "__" in key:
+        key = key.replace("__", "_")
+    if key in GUI_DOF_LABELS:
+        return key
+    mapped = _JOINT_TO_ITEM.get(key)
+    if mapped:
+        return mapped
+    lowered = text.lower()
+    for item_id, label in GUI_DOF_LABELS.items():
+        if label.lower() == lowered:
+            return item_id
+        if label.lower().replace(" ", "_") == key:
+            return item_id
+    return None
 
 
 @dataclass

@@ -20,6 +20,7 @@ from stablewalk.analysis.biomechanical.symmetry_metrics import analyze_symmetry
 from stablewalk.analysis.biomechanical.video_quality import assess_video_quality
 from stablewalk.analysis.foot_contact_analysis import FootContactFrame, FootContactAnalysisResult
 from stablewalk.analysis.gait_cycle_analysis import (
+    DetectedGaitCycle,
     FrameContactState,
     FootLandmarkSample,
     GaitCycleAnalysisResult,
@@ -108,12 +109,32 @@ def _cycles(n: int = 20) -> GaitCycleAnalysisResult:
         )
         for i in range(n)
     ]
+    split = max(n // 2, 1)
+    detected = [
+        DetectedGaitCycle(0, 0, split - 1, 0.0, split / 30.0, split / 30.0, "left"),
+        DetectedGaitCycle(
+            1,
+            split,
+            n - 1,
+            split / 30.0,
+            n / 30.0,
+            (n - split) / 30.0,
+            "left",
+        ),
+    ]
     return GaitCycleAnalysisResult(
         per_frame=per_frame,
+        cycles=detected,
         metrics=GaitTemporalMetrics(
             contact_confidence=0.8,
             cadence_steps_per_min=110.0,
             gait_cycle_consistency=0.85,
+            left_stance_time_s=0.3,
+            right_stance_time_s=0.31,
+            left_swing_time_s=0.2,
+            right_swing_time_s=0.19,
+            metrics_reliable=True,
+            reliability_reason="Synthetic complete-cycle test fixture.",
         ),
         fps=30.0,
     )
@@ -173,7 +194,7 @@ def test_stability_margin_states() -> None:
     sm = analyze_stability_margin(com, bos)
     assert sm.per_frame
     states = {f.stability_state for f in sm.per_frame}
-    assert states <= {"Stable", "Reduced Stability", "Unstable"}
+    assert states <= {"Stable", "Reduced Stability", "Unstable", "Unavailable"}
 
 
 def test_symmetry_analysis() -> None:
@@ -213,3 +234,94 @@ def test_export_biomechanical_artifacts(tmp_path: Path) -> None:
     assert exports.biomechanical_report_path.is_file()
     com = np.load(exports.center_of_mass_path)
     assert com["kind"] == "estimated"
+
+
+def test_walking_speed_from_cadence_and_step_length() -> None:
+    from stablewalk.analysis.biomechanical.walking_speed import (
+        estimate_walking_speed,
+        is_plausible_walking_speed,
+        is_reportable_walking_speed,
+    )
+    from stablewalk.analysis.gait_feature_analysis import (
+        BodySegmentDimensions,
+        CycleConsistencyResult,
+        GaitFeatureAnalysisResult,
+        NormalizedGaitFeatures,
+    )
+
+    rec = _recording(30)
+    cycles = _cycles(30)
+    cycles.metrics.cadence_steps_per_min = 120.0
+    features = GaitFeatureAnalysisResult(
+        dimensions=BodySegmentDimensions(
+            hip_width=0.3,
+            shoulder_width=0.4,
+            leg_length_left=0.9,
+            leg_length_right=0.9,
+            leg_length_average=0.9,
+            thigh_length_left=0.45,
+            thigh_length_right=0.45,
+            shank_length_left=0.45,
+            shank_length_right=0.45,
+        ),
+        features=NormalizedGaitFeatures(
+            step_length_m=0.38,
+            stride_length_m=0.76,
+            normalized_step_length=0.42,
+            normalized_stride_length=0.84,
+        ),
+        cycle_consistency=CycleConsistencyResult(),
+    )
+    speed = estimate_walking_speed(rec, cycles=cycles, features=features, contact=_contact(30))
+    assert speed is not None
+    assert speed.value is not None
+    assert is_plausible_walking_speed(speed.value)
+    assert is_reportable_walking_speed(speed)
+    assert 0.5 <= speed.value <= 2.5
+
+
+def test_walking_speed_rejects_implausible_low_values() -> None:
+    from stablewalk.analysis.biomechanical.walking_speed import (
+        estimate_walking_speed,
+        format_walking_speed_display,
+        is_plausible_walking_speed,
+    )
+    from stablewalk.analysis.gait_feature_analysis import (
+        BodySegmentDimensions,
+        CycleConsistencyResult,
+        GaitFeatureAnalysisResult,
+        NormalizedGaitFeatures,
+    )
+
+    rec = _recording(30)
+    cycles = _cycles(30)
+    cycles.metrics.cadence_steps_per_min = 120.0
+    # Tiny hip-centered step length that previously produced ~0.02 m/s —
+    # must not invent an anthropometric substitute.
+    features = GaitFeatureAnalysisResult(
+        dimensions=BodySegmentDimensions(
+            hip_width=0.3,
+            shoulder_width=0.4,
+            leg_length_left=0.9,
+            leg_length_right=0.9,
+            leg_length_average=0.9,
+            thigh_length_left=0.45,
+            thigh_length_right=0.45,
+            shank_length_left=0.45,
+            shank_length_right=0.45,
+        ),
+        features=NormalizedGaitFeatures(step_length_m=0.02, stride_length_m=0.04),
+        cycle_consistency=CycleConsistencyResult(),
+    )
+    speed = estimate_walking_speed(rec, cycles=cycles, features=features, contact=_contact(30))
+    assert speed is None or not is_plausible_walking_speed(speed.value)
+    assert "Not available" in format_walking_speed_display(speed)
+
+
+def test_video_quality_items_present() -> None:
+    vq = assess_video_quality(_sequence())
+    assert vq.items
+    labels = {item.label for item in vq.items}
+    assert "Full body visible" in labels
+    assert "Static camera" in labels
+    assert vq.summary_explanation

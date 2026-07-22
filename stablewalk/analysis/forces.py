@@ -589,15 +589,17 @@ class GRFAnalyzer:
         else:
             fig = ax.figure
 
+        from stablewalk.ui.colors import SIDE_LEFT, SIDE_RIGHT
+
         t = series.time_s
         if show_bw:
-            ax.plot(t, series.left_force, color="#4dabf7", linewidth=2, label="Left foot")
-            ax.plot(t, series.right_force, color="#ff6b6b", linewidth=2, label="Right foot")
+            ax.plot(t, series.left_force, color=SIDE_LEFT, linewidth=2, label="Left foot")
+            ax.plot(t, series.right_force, color=SIDE_RIGHT, linewidth=2, label="Right foot")
             ax.set_ylabel("Vertical GRF (body weights, BW)")
             ax.axhline(1.0, color="#888", linestyle="--", linewidth=1, label="1 BW")
         else:
-            ax.plot(t, series.left_force_n, color="#4dabf7", linewidth=2, label="Left foot")
-            ax.plot(t, series.right_force_n, color="#ff6b6b", linewidth=2, label="Right foot")
+            ax.plot(t, series.left_force_n, color=SIDE_LEFT, linewidth=2, label="Left foot")
+            ax.plot(t, series.right_force_n, color=SIDE_RIGHT, linewidth=2, label="Right foot")
             ax.set_ylabel("Vertical GRF (N)")
 
         ax.set_xlabel("Time (s)")
@@ -614,7 +616,7 @@ class GRFAnalyzer:
                     prof.time_s_start,
                     prof.time_s_end,
                     alpha=0.08,
-                    color="#4dabf7" if prof.side == "left" else "#ff6b6b",
+                    color=SIDE_LEFT if prof.side == "left" else SIDE_RIGHT,
                 )
 
         fig.tight_layout()
