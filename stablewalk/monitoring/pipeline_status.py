@@ -26,9 +26,9 @@ STATUS_PARTIAL = "partial"
 STATUS_UNAVAILABLE = "unavailable"
 
 STATUS_SYMBOL = {
-    STATUS_COMPLETED: "\u2713",  # ✓
-    STATUS_PARTIAL: "\u26a0",  # ⚠
-    STATUS_UNAVAILABLE: "\u2717",  # ✗
+    STATUS_COMPLETED: "",
+    STATUS_PARTIAL: "",
+    STATUS_UNAVAILABLE: "",
 }
 
 STATUS_LABEL = {
@@ -50,7 +50,7 @@ class PipelineStageItem:
     tooltip: str
 
     def display_line(self) -> str:
-        return f"{STATUS_SYMBOL[self.status]} {STATUS_LABEL[self.status]}"
+        return STATUS_LABEL[self.status]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,7 +108,7 @@ class PipelineDiagramStage:
     item_keys: tuple[str, ...] = ()
 
     def display_line(self) -> str:
-        return f"{STATUS_SYMBOL[self.status]} {STATUS_LABEL[self.status]}"
+        return STATUS_LABEL[self.status]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -219,7 +219,7 @@ def _combine_stage_details(items: list[PipelineStageItem], *, max_parts: int = 2
 
 
 def _opensim_diagram_detail(items_by_key: dict[str, PipelineStageItem]) -> str:
-    """Full OpenSim checklist for the pipeline diagram (not truncated Partial)."""
+    """Short OpenSim card line — full checklist lives in the stage dialog."""
     order = (
         "osim_model",
         "osim_trc",
@@ -231,10 +231,23 @@ def _opensim_diagram_detail(items_by_key: dict[str, PipelineStageItem]) -> str:
     parts: list[str] = []
     for key in order:
         item = items_by_key.get(key)
-        if item is None or not item.detail:
+        if item is None or item.status == STATUS_UNAVAILABLE:
             continue
-        parts.append(item.detail)
-    return " · ".join(parts) if parts else "OpenSim not assessed"
+        label = (item.label or key).replace("OpenSim ", "")
+        parts.append(label)
+        if len(parts) >= 3:
+            break
+    if not parts:
+        return "OpenSim not assessed"
+    extra = sum(
+        1
+        for key in order
+        if key in items_by_key and items_by_key[key].status != STATUS_UNAVAILABLE
+    ) - len(parts)
+    text = " · ".join(parts)
+    if extra > 0:
+        text = f"{text} · +{extra} more"
+    return text
 
 
 def _aggregate_stage_status(

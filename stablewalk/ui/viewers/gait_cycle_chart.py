@@ -147,12 +147,21 @@ def draw_knee_chart_cycle_mode(
 
     style_single_time_series_chart(ax, ylabel="Knee flexion (°)", x_is_percent=True)
 
-    def _plot_traj(traj, color: str, line_label: str, end_label: str) -> None:
+    def _plot_traj(traj, color: str, line_label: str, end_label: str, side: str) -> None:
         if traj is None or len(traj.per_cycle) < MIN_CYCLES_FOR_CYCLE_MODE:
             return
+        from stablewalk.ui.viewers.chart_style import (
+            _ANNOTATION_SIZE,
+            series_plot_kwargs,
+        )
+
         pct = np.asarray(traj.percent)
         mean = _to_flexion(traj.mean, cc.angle_source)
-        ax.plot(pct, mean, color=color, label=f"{line_label} (mean)", linewidth=1.85, zorder=4)
+        ax.plot(
+            pct,
+            mean,
+            **series_plot_kwargs(color=color, label=f"{line_label} (mean)", side=side),
+        )
         if show_envelope and len(traj.per_cycle) >= min_cycles_for_envelope:
             std = np.asarray(traj.std, dtype=float)
             ax.fill_between(
@@ -171,7 +180,7 @@ def draw_knee_chart_cycle_mode(
                 xytext=(5, 0),
                 textcoords="offset points",
                 color=color,
-                fontsize=8,
+                fontsize=_ANNOTATION_SIZE,
                 fontweight="bold",
                 va="center",
                 ha="left",
@@ -179,8 +188,8 @@ def draw_knee_chart_cycle_mode(
                 zorder=7,
             )
 
-    _plot_traj(left, SIDE_LEFT, LABEL_LEFT_KNEE, LABEL_LEFT_KNEE)
-    _plot_traj(right, SIDE_RIGHT, LABEL_RIGHT_KNEE, LABEL_RIGHT_KNEE)
+    _plot_traj(left, SIDE_LEFT, LABEL_LEFT_KNEE, LABEL_LEFT_KNEE, "left")
+    _plot_traj(right, SIDE_RIGHT, LABEL_RIGHT_KNEE, LABEL_RIGHT_KNEE, "right")
 
     if not ax.lines:
         ax.text(
@@ -225,7 +234,7 @@ def draw_knee_chart_cycle_mode(
         label_normal=True,
     )
     _draw_cycle_phase_regions(ax)
-    style_chart_legend(ax, loc="upper right", fontsize=8.0)
+    style_chart_legend(ax, loc="upper right")
     return True
 
 
@@ -259,31 +268,9 @@ def style_gait_chart(ax: Axes, fig) -> None:
 
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        dedup_h, dedup_l, seen = [], [], set()
-        for h, lab in zip(handles, labels):
-            if lab in seen or lab.startswith("_"):
-                continue
-            seen.add(lab)
-            dedup_h.append(h)
-            dedup_l.append(lab)
-        if dedup_h:
-            leg = ax.legend(
-                dedup_h,
-                dedup_l,
-                facecolor=PANEL,
-                edgecolor=BORDER,
-                labelcolor=TEXT,
-                fontsize=8.0,
-                framealpha=0.94,
-                fancybox=False,
-                loc="upper right",
-                borderpad=0.4,
-                handlelength=1.8,
-                handletextpad=0.55,
-                labelspacing=0.4,
-            )
-            if leg is not None:
-                leg.get_frame().set_linewidth(0.7)
+        from stablewalk.ui.viewers.chart_style import style_chart_legend
+
+        style_chart_legend(ax, loc="upper right", handles=handles, labels=labels)
     if ax.get_xlabel() != "Gait Cycle (%)":
         ax.text(
             0.01,

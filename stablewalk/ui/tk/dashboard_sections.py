@@ -88,7 +88,7 @@ def apply_overview_joint_motion_row_weight(
     expanded: bool,
     row: int = 2,
 ) -> None:
-    """Give Joint Graphs height only when expanded; otherwise header-only strip."""
+    """Give Joint Graphs height only when expanded; zero when collapsed."""
     try:
         if expanded:
             parent.rowconfigure(
@@ -97,11 +97,7 @@ def apply_overview_joint_motion_row_weight(
                 minsize=SEC1_JOINT_MOTION_ROW_MINSIZE,
             )
         else:
-            parent.rowconfigure(
-                row,
-                weight=0,
-                minsize=SEC1_JOINT_MOTION_ROW_MINSIZE,
-            )
+            parent.rowconfigure(row, weight=0, minsize=0)
     except tk.TclError:
         pass
 
@@ -189,7 +185,7 @@ _OVERVIEW_HUD_BORDER = HUD_BORDER
 
 
 def build_overview_playback_hud(gui, host: tk.Misc) -> tk.Frame:
-    """A compact playback info bar floated over the video (2 rows, no clipping)."""
+    """Compact analysis strip over the video — no duplicate frame/time/joint."""
     hud = tk.Frame(
         host,
         bg=_OVERVIEW_HUD_BG,
@@ -197,53 +193,46 @@ def build_overview_playback_hud(gui, host: tk.Misc) -> tk.Frame:
         highlightbackground=_OVERVIEW_HUD_BORDER,
         highlightcolor=_OVERVIEW_HUD_BORDER,
     )
-    # Two rows so long values (joint name, speed) are not truncated.
-    row_a = (
-        ("frame", "FRAME"),
-        ("time", "TIME"),
-        ("joint", "JOINT"),
+    # Frame / Time / Joint / Speed live on the transport bar — HUD keeps
+    # analysis cues only (phase, confidence, ROM).
+    fields = (
         ("phase", "PHASE"),
-    )
-    row_b = (
-        ("speed", "SPEED"),
         ("confidence", "CONF"),
         ("rom", "ROM"),
     )
-    for r in (0, 1):
-        hud.rowconfigure(r, weight=1)
-    for col in range(max(len(row_a), len(row_b))):
+    hud.rowconfigure(0, weight=1)
+    for col in range(len(fields)):
         hud.columnconfigure(col, weight=1)
 
     gui._overview_hud_value_labels = {}
-    for row_i, fields in enumerate((row_a, row_b)):
-        for col, (key, caption) in enumerate(fields):
-            cell = tk.Frame(hud, bg=_OVERVIEW_HUD_BG, highlightthickness=0)
-            cell.grid(
-                row=row_i,
-                column=col,
-                sticky="nsew",
-                padx=(8 if col == 0 else 6, 6),
-                pady=(4 if row_i == 0 else 2, 4 if row_i == 1 else 2),
-            )
-            tk.Label(
-                cell,
-                text=caption,
-                bg=_OVERVIEW_HUD_BG,
-                fg=MUTED,
-                font=FONT_UI_XS,
-                anchor="w",
-            ).pack(fill=tk.X)
-            value_lbl = tk.Label(
-                cell,
-                text="\u2014",
-                bg=_OVERVIEW_HUD_BG,
-                fg=TEXT,
-                font=(FONT_UI_SM[0], max(FONT_UI_SM[1], 9), "bold"),
-                anchor="w",
-                justify=tk.LEFT,
-            )
-            value_lbl.pack(fill=tk.X)
-            gui._overview_hud_value_labels[key] = value_lbl
+    for col, (key, caption) in enumerate(fields):
+        cell = tk.Frame(hud, bg=_OVERVIEW_HUD_BG, highlightthickness=0)
+        cell.grid(
+            row=0,
+            column=col,
+            sticky="nsew",
+            padx=(8 if col == 0 else 6, 6),
+            pady=4,
+        )
+        tk.Label(
+            cell,
+            text=caption,
+            bg=_OVERVIEW_HUD_BG,
+            fg=MUTED,
+            font=FONT_UI_XS,
+            anchor="w",
+        ).pack(fill=tk.X)
+        value_lbl = tk.Label(
+            cell,
+            text="\u2014",
+            bg=_OVERVIEW_HUD_BG,
+            fg=TEXT,
+            font=(FONT_UI_SM[0], max(FONT_UI_SM[1], 9), "bold"),
+            anchor="w",
+            justify=tk.LEFT,
+        )
+        value_lbl.pack(fill=tk.X)
+        gui._overview_hud_value_labels[key] = value_lbl
 
     gui._overview_playback_hud = hud
     return hud
@@ -268,7 +257,9 @@ def build_overview_metrics_row(gui, parent: tk.Misc) -> tk.Frame:
         anchor="w",
         justify=tk.LEFT,
     )
-    gui.lbl_overview_demo_compare.grid(row=0, column=0, sticky="ew", padx=(PAD_XS, 0))
+    # COMPARE banner is redundant with the header demo buttons — keep the
+    # widget for API compatibility but never show it on Overview.
+    gui.lbl_overview_demo_compare.grid_remove()
 
     # Start collapsed so the three visualization panels own ~75–80%+ of height.
     gui._overview_metrics_expanded = False
@@ -752,9 +743,7 @@ def build_data_export_section(gui, parent: tk.Misc) -> ttk.LabelFrame:
     export_intro = tk.Label(
         section,
         text=(
-            "Export motion for Isaac Lab / OpenSim. "
-            "Real-to-Sim Pipeline runs all 4 stages and writes "
-            "stablewalk_motion.npz + amp_reference_motion.npz."
+            "Export reports, OpenSim files, and Real-to-Sim packages."
         ),
         bg=PANEL,
         fg=MUTED,
@@ -799,33 +788,63 @@ def build_data_export_section(gui, parent: tk.Misc) -> ttk.LabelFrame:
     gui.lbl_pose_backend_status.pack(side=tk.LEFT, padx=(8, 0))
     gui._refresh_pose_backend_status_label()
 
+    # Grouped export rows — quieter density than a flat 3×3 grid.
+    groups: tuple[tuple[str, tuple[tuple[str, str, str, bool], ...]], ...] = (
+        (
+            "Session",
+            (
+                ("btn_view_detailed_data", "View Joint Data", "_toggle_collected_data_table", False),
+                ("btn_save_session", "Save Session", "_save_session_to_files", True),
+                ("btn_export_analysis_report", "Export Analysis Report", "_export_analysis_report", False),
+                ("btn_export_pdf_report", "Export PDF Report", "_export_professional_pdf_report", True),
+                ("btn_export_gait_metrics", "Export Gait Metrics", "_export_gait_metrics", False),
+            ),
+        ),
+        (
+            "OpenSim",
+            (
+                ("btn_opensim_export_data", "Export OpenSim Files", "_export_opensim_session", True),
+            ),
+        ),
+        (
+            "Real-to-Sim",
+            (
+                ("btn_export_motion_reference", "Export Motion Reference", "_export_motion_reference", False),
+                ("btn_real_to_sim_pipeline", "Real-to-Sim Pipeline", "_run_real_to_sim_pipeline", True),
+                ("btn_export_amp_reference", "Export AMP Reference", "_export_amp_reference", False),
+            ),
+        ),
+    )
+
     btn_host = ttk.Frame(section)
     btn_host.grid(row=2, column=0, sticky="ew")
     btn_host.columnconfigure(0, weight=1)
     btn_host.columnconfigure(1, weight=1)
     btn_host.columnconfigure(2, weight=1)
 
-    buttons = (
-        ("btn_view_detailed_data", "View Joint Data", "_toggle_collected_data_table", False),
-        ("btn_save_session", "Save Session", "_save_session_to_files", True),
-        ("btn_export_analysis_report", "Export Analysis Report", "_export_analysis_report", False),
-        (
-            "btn_export_pdf_report",
-            "Export Professional PDF",
-            "_export_professional_pdf_report",
-            True,
-        ),
-        ("btn_export_gait_metrics", "Export Gait Metrics", "_export_gait_metrics", False),
-        ("btn_opensim_export_data", "Export OpenSim Files", "_export_opensim_session", True),
-        ("btn_export_motion_reference", "Export Motion Reference", "_export_motion_reference", False),
-        ("btn_real_to_sim_pipeline", "Real-to-Sim Pipeline", "_run_real_to_sim_pipeline", True),
-        ("btn_export_amp_reference", "Export AMP Reference", "_export_amp_reference", False),
-    )
-    for index, (attr, text, cmd, accent) in enumerate(buttons):
-        style = "ExportAccent.TButton" if accent else "Export.TButton"
-        btn = ttk.Button(btn_host, text=text, style=style, command=getattr(gui, cmd))
-        setattr(gui, attr, btn)
-        btn.grid(row=index // 3, column=index % 3, sticky="ew", padx=(0, PAD_XS), pady=(0, PAD_XS))
+    row_i = 0
+    for group_title, buttons in groups:
+        tk.Label(
+            btn_host,
+            text=group_title,
+            bg=PANEL,
+            fg=MUTED,
+            font=FONT_UI_XS,
+            anchor="w",
+        ).grid(row=row_i, column=0, columnspan=3, sticky="ew", pady=(4 if row_i else 0, 2))
+        row_i += 1
+        for index, (attr, text, cmd, accent) in enumerate(buttons):
+            style = "ExportAccent.TButton" if accent else "Export.TButton"
+            btn = ttk.Button(btn_host, text=text, style=style, command=getattr(gui, cmd))
+            setattr(gui, attr, btn)
+            btn.grid(
+                row=row_i + index // 3,
+                column=index % 3,
+                sticky="ew",
+                padx=(0, PAD_XS),
+                pady=(0, PAD_XS),
+            )
+        row_i += (len(buttons) + 2) // 3
 
     gui.btn_view_table_data = gui.btn_view_detailed_data
     gui.btn_export_tracking = None

@@ -10,15 +10,16 @@ from stablewalk.ui.tk.dashboard_advanced import (
 
 
 def test_engineering_status_labels_match_spec() -> None:
-    assert ENGINEERING_STATUS_SYMBOL["completed"] == "\u2713"
-    assert ENGINEERING_STATUS_SYMBOL["partial"] == "\u26a0"
-    assert ENGINEERING_STATUS_SYMBOL["unavailable"] == "\u2717"
+    # Text-first lab chrome (color strip carries meaning; no glyph prefix).
+    assert ENGINEERING_STATUS_SYMBOL["completed"] == ""
+    assert ENGINEERING_STATUS_SYMBOL["partial"] == ""
+    assert ENGINEERING_STATUS_SYMBOL["unavailable"] == ""
     assert ENGINEERING_STATUS_LABEL["completed"] == "Completed"
     assert ENGINEERING_STATUS_LABEL["partial"] == "Partial"
     assert ENGINEERING_STATUS_LABEL["unavailable"] == "Missing"
 
 
 def test_status_display_formats_badge() -> None:
-    assert _status_display("completed") == "\u2713 Completed"
-    assert _status_display("partial") == "\u26a0 Partial"
-    assert _status_display("unavailable") == "\u2717 Missing"
+    assert _status_display("completed") == "Completed"
+    assert _status_display("partial") == "Partial"
+    assert _status_display("unavailable") == "Missing"

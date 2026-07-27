@@ -54,6 +54,7 @@ def test_focus_joint_select_only_then_compare(monkeypatch) -> None:
     app.update_joint_3d_graph = MagicMock()
     app._schedule_dof_traj_reflow = MagicMock()
     app._ensure_playback_continues_after_pick = MagicMock()
+    app._expand_overview_joint_dof_analysis = MagicMock()
     app._analysis_motion_recording = MagicMock(
         return_value=SimpleNamespace(frame_count=40)
     )

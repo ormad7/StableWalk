@@ -21,7 +21,7 @@ from stablewalk.ui.viewers.chart_playhead import (
 
 def test_format_playhead_label() -> None:
     state = PlayheadState(time_s=1.25, frame_index=42)
-    assert format_playhead_label(state) == "F42 · 1.25s"
+    assert format_playhead_label(state) == "1.25s"
 
 
 def test_playhead_pulse_is_static_for_lab_cursor() -> None:
@@ -51,7 +51,7 @@ def test_draw_chart_playhead_adds_artists() -> None:
 
     after = len(ax.lines) + len(ax.collections) + len(ax.texts)
     assert after > before
-    assert any("F10" in t.get_text() for t in ax.texts)
+    assert any("1.00s" in t.get_text() for t in ax.texts)
 
 
 def test_apply_playhead_to_axes_syncs_all_rows() -> None:
@@ -67,7 +67,7 @@ def test_apply_playhead_to_axes_syncs_all_rows() -> None:
 
     for ax in axes:
         assert len(ax.lines) >= 3
-        assert any("F3" in t.get_text() for t in ax.texts)
+        assert any("0.50s" in t.get_text() for t in ax.texts)
 
 
 def test_update_chart_playhead_reuses_existing_artists() -> None:
@@ -86,7 +86,7 @@ def test_update_chart_playhead_reuses_existing_artists() -> None:
     assert (len(ax.lines), len(ax.collections), len(ax.texts)) == counts
     artists = ax._stablewalk_playhead_artists
     assert list(artists[2].get_xdata()) == [1.5, 1.5]
-    assert "F9" in artists[4].get_text()
+    assert "1.50s" in artists[4].get_text()
 
 
 def test_draw_chart_playhead_tolerates_stale_artist_after_axes_clear() -> None:

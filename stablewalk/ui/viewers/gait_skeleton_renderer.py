@@ -1,13 +1,11 @@
 """
-Human manikin renderer for ``GaitMotionRecording`` / ``SkeletonSnapshot``.
+Anatomical biomechanical avatar for ``GaitMotionRecording`` / ``SkeletonSnapshot``.
 
-OpenSim / Visual3D–style articulated body: layered torso, tapered limbs,
-rounded joints, feet (heel→toe), and display-only hand stubs.
+OpenSim / SMPL / Unitree-style manikin: chest volume, rounded shoulders, pelvic
+bowl, neck, tapered thighs/shanks with knee caps, and oriented feet.
 
-Tracked joints are projected without repositioning. Human proportions come
-from render-only torso envelopes and tapered segment thicknesses; biomechanics
-coordinates and animation samples are never modified. Motion follows the
-video frame-by-frame with no artificial temporal smoothing.
+Tracked joints are projected without repositioning. Segment thicknesses and
+envelopes are render-only; biomechanics coordinates are never modified.
 """
 
 from __future__ import annotations
@@ -56,36 +54,56 @@ from stablewalk.ui.colors import (
 _COLOR_LEFT = SIDE_LEFT
 _COLOR_RIGHT = SIDE_RIGHT
 _COLOR_CENTER = ACCENT_ALT
-_COLOR_JOINT_FILL = "#e8d5c4"
-_COLOR_JOINT_EDGE = "#c4a484"
-_COLOR_SELECT_BONE = "#ffb020"
-_COLOR_SELECT_JOINT = "#ffe566"
-_COLOR_SELECT_RING = "#ff3d5a"
+_COLOR_JOINT_FILL = "#d0dae6"
+_COLOR_JOINT_EDGE = "#5a6a7c"
+_COLOR_SELECT_BONE = "#c9a45a"
+_COLOR_SELECT_JOINT = "#f2d28a"
+_COLOR_SELECT_RING = "#ef6b7a"
 # When a joint is selected, non-selected joints/bones stay readable (not ghosted).
-_DIMMED_JOINT_ALPHA = 0.42
-_DIMMED_BONE_ALPHA = 0.55
+_DIMMED_JOINT_ALPHA = 0.48
+_DIMMED_BONE_ALPHA = 0.50
 # Soft de-emphasis for non-selected limbs (still readable — not ghost sticks).
-_UNSELECTED_LIMB_ALPHA = 0.78
-_COLOR_MOTION_ARROW = "#a78bfa"
-_COLOR_GROUND = BORDER
+_UNSELECTED_LIMB_ALPHA = 0.88
+_COLOR_MOTION_ARROW = "#7eb6dc"
+_COLOR_GROUND = "#3a4658"
+_COLOR_GROUND_FILL = "#151c28"
+_COLOR_GROUND_GRID = "#2a3548"
+_COLOR_CONTACT_SHADOW = "#0a0e14"
 # Contrast under-stroke so bones stay visible over BoS / ground fills.
-_COLOR_BONE_OUTLINE = "#1a1520"
+_COLOR_BONE_OUTLINE = "#1a222c"
 
-# OpenSim / Visual3D–inspired anatomical paint (high contrast on dark panels).
-_SKIN = "#e8c4a0"
-_SKIN_SHADOW = "#c9a078"
-_SKIN_HIGHLIGHT = "#f6e2c8"
-_SKIN_ARM = "#f0d4b8"
-_CLOTH_SHIRT = "#9ec8e4"
-_CLOTH_SHIRT_EDGE = "#6a9bb8"
-_CLOTH_SHIRT_HIGHLIGHT = "#c5e0f2"
-_CLOTH_PANTS = "#6b849c"
-_CLOTH_PANTS_EDGE = "#8aa0b4"
-_CLOTH_PANTS_SHADOW = "#556a7e"
-_CLOTH_SHOES = "#3a4550"
-_NECK_SKIN = "#deb892"
-_HAIR = "#4a3828"
-_MANIKIN_EDGE = "#5a4a38"
+# Anatomical mannequin / OpenSim-style soft body (not MediaPipe stick cylinders).
+# Cool laboratory steel-taupe — reads as SMPL / Unitree / Visual3D manikin.
+_METAL = "#a8b4c0"
+_METAL_MID = "#8796a6"
+_METAL_DARK = "#5c6a78"
+_METAL_LIGHT = "#d2dbe4"
+_METAL_EDGE = "#3a4654"
+_METAL_ARM = "#b4c0cc"
+_METAL_LEG = "#9aabba"
+_METAL_TORSO = "#8fa0b0"
+_METAL_PELVIS = "#6e7f90"
+_METAL_FOOT = "#4a5866"
+_METAL_HEAD = "#c5d0da"
+_METAL_NECK = "#a3b1be"
+_METAL_HIGHLIGHT = "#e8eef4"
+# Laboratory manikin materials (OpenSim / SMPL-like steel-taupe — not soft skin).
+_SKIN = _METAL_LIGHT
+_SKIN_SHADOW = _METAL_DARK
+_SKIN_HIGHLIGHT = _METAL_HIGHLIGHT
+_SKIN_ARM = _METAL_ARM
+_CLOTH_SHIRT = _METAL_TORSO
+_CLOTH_SHIRT_EDGE = _METAL_EDGE
+_CLOTH_SHIRT_HIGHLIGHT = _METAL_LIGHT
+_CLOTH_PANTS = _METAL_LEG
+_CLOTH_PANTS_EDGE = _METAL_EDGE
+_CLOTH_PANTS_SHADOW = _METAL_DARK
+_CLOTH_SHOES = _METAL_FOOT
+_NECK_SKIN = _METAL_NECK
+_HAIR = _METAL_DARK
+_MANIKIN_EDGE = _METAL_EDGE
+# Shared key-light direction in screen space (upper-left) for cylindrical limbs.
+_MANIKIN_LIGHT_DIR = (-0.55, 0.78)
 
 
 def _blend_hex(color: str, toward: str, amount: float) -> str:
@@ -226,8 +244,8 @@ _PICK_HITBOX_SCALE = 2.9
 # the panel edge (the label uses a padded bbox drawn with clip_on=False).
 _LABEL_VIEW_PAD_FRAC = 0.04
 # Selected / hovered marker scale vs normal joint radius.
-_HOVER_JOINT_SCALE = 1.55
-_SELECTED_JOINT_SCALE = 1.70
+_HOVER_JOINT_SCALE = 1.35
+_SELECTED_JOINT_SCALE = 1.45
 # Small perspective camera offset for the default walking view. Orthographic
 # rotation preserves measured scale and joint positions. Matches the laboratory
 # 3D camera azimuth (~35°) used by the true 3D skeleton viewer.
@@ -351,7 +369,9 @@ _BIOMECH_JOINT_DOTS: frozenset[str] = frozenset(
 def setup_skeleton_axes(ax: Axes, *, display_mode: str = DEFAULT_SKELETON_DISPLAY_MODE) -> None:
     """Front-view 2D axes tuned for the dashboard skeleton panel."""
     del display_mode  # axis styling is mode-neutral in the dashboard
-    ax.set_facecolor(PANEL)
+    # Cooler lab stage than flat PANEL — slight depth behind the manikin.
+    stage = "#0e141e"
+    ax.set_facecolor(stage)
     ax.figure.patch.set_facecolor(PANEL)
     ax.set_aspect("equal", adjustable="box", anchor="C")
     ax.set_xlabel("")
@@ -966,19 +986,73 @@ def _is_torso_structure_edge(parent: str, child: str) -> bool:
 
 
 def _limb_paint_color(parent: str, child: str, side: str) -> str:
-    """Anatomical limb fill with subtle L/R biomechanics tint on the rim only."""
+    """OpenSim-style steel manikin limb fill (display-only; L/R on joint rings)."""
+    del side  # side colour reserved for analysis markers, not limb bulk
     pair = f"{parent}_{child}".lower()
     if "hip" in pair and "knee" in pair:
-        return _CLOTH_PANTS
+        return _METAL_LEG
     if "knee" in pair and "ankle" in pair:
-        return _CLOTH_PANTS
+        return _blend_hex(_METAL_LEG, _METAL_FOOT, 0.35)
     if any(t in pair for t in ("heel", "toe", "foot")):
-        return _CLOTH_SHOES
+        return _METAL_FOOT
     if "shoulder" in pair and "elbow" in pair:
-        return _SKIN_ARM
+        return _METAL_ARM
     if "elbow" in pair and "wrist" in pair:
-        return _SKIN
-    return _side_color(side)
+        return _blend_hex(_METAL_ARM, _METAL_LIGHT, 0.18)
+    return _METAL
+
+
+def _draw_articulation_cap(
+    ax: Axes,
+    center: tuple[float, float],
+    *,
+    radius: float,
+    color: str,
+    zorder: float,
+    alpha: float,
+    rim: str | None = None,
+) -> None:
+    """Smooth knee / elbow / shoulder disc at a tracked joint (no position change)."""
+    from matplotlib.patches import Circle, Ellipse
+
+    fill_a = min(1.0, max(0.92, alpha))
+    ax.add_patch(
+        Ellipse(
+            center,
+            width=radius * 2.15,
+            height=radius * 1.85,
+            facecolor=_blend_hex(color, _SKIN_HIGHLIGHT, 0.22),
+            edgecolor=_MANIKIN_EDGE,
+            linewidth=0.55,
+            zorder=zorder,
+            alpha=fill_a,
+            antialiased=True,
+        )
+    )
+    ax.add_patch(
+        Circle(
+            (center[0] - radius * 0.18, center[1] + radius * 0.12),
+            radius * 0.42,
+            facecolor=_SKIN_HIGHLIGHT,
+            edgecolor="none",
+            zorder=zorder + 0.02,
+            alpha=0.35 * fill_a,
+            antialiased=True,
+        )
+    )
+    if rim:
+        ax.add_patch(
+            Circle(
+                center,
+                radius * 1.12,
+                facecolor="none",
+                edgecolor=rim,
+                linewidth=0.70,
+                zorder=zorder + 0.04,
+                alpha=0.55 * fill_a,
+                antialiased=True,
+            )
+        )
 
 
 def _bone_width(
@@ -1104,50 +1178,48 @@ def _anatomical_segment_profile(
 ) -> tuple[float, float, float] | None:
     """Data-space half-widths (proximal, mid-bulge, distal) for limb segments.
 
-    Fractions of standing height follow Visual3D / OpenSim manikin
-    anthropometry. Display-only — joint coordinates are never moved.
+    Fractions of standing height follow SMPL / OpenSim manikin anthropometry.
+    Display-only — joint coordinates are never moved.
     """
     pair = frozenset((parent, child))
-    # (proximal, mid muscle bulge, distal) — reads as thigh/arm, not cylinder.
+    # (proximal, mid muscle bulge, distal) — clear thigh vs shank / arm vs forearm.
     profiles: dict[frozenset[str], tuple[float, float, float]] = {
-        # Legs — thicker thigh / calf so the manikin reads less like sticks
-        frozenset(("left_hip", "left_knee")): (0.108, 0.122, 0.078),
-        frozenset(("right_hip", "right_knee")): (0.108, 0.122, 0.078),
-        frozenset(("left_knee", "left_ankle")): (0.072, 0.068, 0.046),
-        frozenset(("right_knee", "right_ankle")): (0.072, 0.068, 0.046),
-        # Arms
-        frozenset(("left_shoulder", "left_elbow")): (0.070, 0.078, 0.054),
-        frozenset(("right_shoulder", "right_elbow")): (0.070, 0.078, 0.054),
-        frozenset(("left_elbow", "left_wrist")): (0.050, 0.048, 0.038),
-        frozenset(("right_elbow", "right_wrist")): (0.050, 0.048, 0.038),
+        # Legs — thigh thick → knee taper; shank thinner (separated look)
+        frozenset(("left_hip", "left_knee")): (0.078, 0.092, 0.058),
+        frozenset(("right_hip", "right_knee")): (0.078, 0.092, 0.058),
+        frozenset(("left_knee", "left_ankle")): (0.052, 0.048, 0.036),
+        frozenset(("right_knee", "right_ankle")): (0.052, 0.048, 0.036),
+        # Arms — deltoid→elbow taper, thinner forearm
+        frozenset(("left_shoulder", "left_elbow")): (0.052, 0.058, 0.040),
+        frozenset(("right_shoulder", "right_elbow")): (0.052, 0.058, 0.040),
+        frozenset(("left_elbow", "left_wrist")): (0.036, 0.034, 0.028),
+        frozenset(("right_elbow", "right_wrist")): (0.036, 0.034, 0.028),
         # Feet
-        frozenset(("left_ankle", "left_heel")): (0.036, 0.038, 0.034),
-        frozenset(("right_ankle", "right_heel")): (0.036, 0.038, 0.034),
-        frozenset(("left_heel", "left_toe")): (0.036, 0.044, 0.048),
-        frozenset(("right_heel", "right_toe")): (0.036, 0.044, 0.048),
-        frozenset(("left_ankle", "left_toe")): (0.034, 0.042, 0.046),
-        frozenset(("right_ankle", "right_toe")): (0.034, 0.042, 0.046),
-        # Neck / clavicles / torso rails
-        frozenset(("neck", "head")): (0.038, 0.042, 0.044),
-        frozenset(("spine", "neck")): (0.048, 0.046, 0.036),
-        frozenset((ROOT_JOINT_ID, "spine")): (0.055, 0.050, 0.045),
-        frozenset(("neck", "left_shoulder")): (0.030, 0.038, 0.044),
-        frozenset(("neck", "right_shoulder")): (0.030, 0.038, 0.044),
-        frozenset(("spine", "left_shoulder")): (0.034, 0.042, 0.046),
-        frozenset(("spine", "right_shoulder")): (0.034, 0.042, 0.046),
-        frozenset(("left_hip", "left_shoulder")): (0.042, 0.048, 0.048),
-        frozenset(("right_hip", "right_shoulder")): (0.042, 0.048, 0.048),
-        frozenset(("left_shoulder", "right_shoulder")): (0.032, 0.034, 0.032),
-        frozenset(("left_hip", "right_hip")): (0.048, 0.052, 0.048),
-        frozenset((ROOT_JOINT_ID, "left_hip")): (0.044, 0.050, 0.048),
-        frozenset((ROOT_JOINT_ID, "right_hip")): (0.044, 0.050, 0.048),
+        frozenset(("left_ankle", "left_heel")): (0.028, 0.030, 0.026),
+        frozenset(("right_ankle", "right_heel")): (0.028, 0.030, 0.026),
+        frozenset(("left_heel", "left_toe")): (0.030, 0.036, 0.038),
+        frozenset(("right_heel", "right_toe")): (0.030, 0.036, 0.038),
+        frozenset(("left_ankle", "left_toe")): (0.028, 0.034, 0.036),
+        frozenset(("right_ankle", "right_toe")): (0.028, 0.034, 0.036),
+        # Neck / clavicles / torso rails (thin structural, torso fill owns volume)
+        frozenset(("neck", "head")): (0.032, 0.036, 0.040),
+        frozenset(("spine", "neck")): (0.040, 0.038, 0.032),
+        frozenset((ROOT_JOINT_ID, "spine")): (0.044, 0.042, 0.038),
+        frozenset(("neck", "left_shoulder")): (0.022, 0.028, 0.034),
+        frozenset(("neck", "right_shoulder")): (0.022, 0.028, 0.034),
+        frozenset(("spine", "left_shoulder")): (0.026, 0.032, 0.036),
+        frozenset(("spine", "right_shoulder")): (0.026, 0.032, 0.036),
+        frozenset(("left_hip", "left_shoulder")): (0.030, 0.036, 0.036),
+        frozenset(("right_hip", "right_shoulder")): (0.030, 0.036, 0.036),
+        frozenset(("left_shoulder", "right_shoulder")): (0.022, 0.026, 0.022),
+        frozenset(("left_hip", "right_hip")): (0.036, 0.042, 0.036),
+        frozenset((ROOT_JOINT_ID, "left_hip")): (0.032, 0.038, 0.036),
+        frozenset((ROOT_JOINT_ID, "right_hip")): (0.032, 0.038, 0.036),
     }
     profile = profiles.get(pair)
     if profile is None:
         return None
     start, mid, end = profile
-    # Profiles are authored proximal→distal. Reverse when an edge is supplied
-    # in the opposite direction.
     proximal_names = ("shoulder", "elbow", "hip", "knee", "ankle", "heel", "spine", ROOT_JOINT_ID, "neck")
     parent_is_proximal = any(name in parent for name in proximal_names)
     if not parent_is_proximal:
@@ -1159,16 +1231,16 @@ def _limb_stroke_points(parent: str, child: str) -> float:
     """Screen-space stroke width so limbs stay visible at any data scale."""
     pair = f"{parent}_{child}".lower()
     if "hip" in pair and "knee" in pair:
-        return 16.0
+        return 14.5
     if "knee" in pair and "ankle" in pair:
-        return 13.5
+        return 12.0
     if "shoulder" in pair and "elbow" in pair:
-        return 12.5
+        return 11.5
     if "elbow" in pair and "wrist" in pair:
-        return 10.5
-    if any(t in pair for t in ("heel", "toe", "foot", "ankle")):
         return 9.5
-    return 11.0
+    if any(t in pair for t in ("heel", "toe", "foot", "ankle")):
+        return 8.5
+    return 10.0
 
 
 def _draw_limb_segment(
@@ -1182,42 +1254,41 @@ def _draw_limb_segment(
     height: float,
     zorder: float,
     alpha: float,
+    lite: bool = False,
 ) -> None:
-    """Human limb: thick rounded stroke (always visible) + soft volume fill."""
+    """Anatomical tapered limb (thigh/shank/arm) locked to tracked endpoints."""
     dx, dy = p1[0] - p0[0], p1[1] - p0[1]
     length = math.hypot(dx, dy)
     if length < 1e-9:
         return
-    fill_a = min(1.0, max(0.88, alpha))
-    lw = _limb_stroke_points(parent, child)
-    # Guaranteed silhouette in screen points (not data units).
+    fill_a = min(1.0, max(0.95, alpha))
+    profile = _anatomical_segment_profile(parent, child, height)
+    lw = _limb_stroke_points(parent, child) * 0.28
     ax.plot(
         [p0[0], p1[0]],
         [p0[1], p1[1]],
         color=_MANIKIN_EDGE,
-        linewidth=lw + 2.4,
+        linewidth=lw + 0.9,
         solid_capstyle="round",
         solid_joinstyle="round",
         zorder=zorder,
-        alpha=fill_a,
+        alpha=fill_a * 0.55,
         antialiased=True,
     )
-    ax.plot(
-        [p0[0], p1[0]],
-        [p0[1], p1[1]],
-        color=color,
-        linewidth=lw,
-        solid_capstyle="round",
-        solid_joinstyle="round",
-        zorder=zorder + 0.02,
-        alpha=fill_a,
-        antialiased=True,
-    )
-    profile = _anatomical_segment_profile(parent, child, height)
-    if profile is None:
+    if lite or profile is None:
+        ax.plot(
+            [p0[0], p1[0]],
+            [p0[1], p1[1]],
+            color=color,
+            linewidth=max(lw, 5.0),
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            zorder=zorder + 0.02,
+            alpha=fill_a,
+            antialiased=True,
+        )
         return
-    # Extra soft volume when the segment is long enough in the view.
-    if length >= height * 0.045:
+    if length >= height * 0.022:
         _draw_tapered_capsule(
             ax,
             p0,
@@ -1227,7 +1298,55 @@ def _draw_limb_segment(
             mid_half_width=profile[1],
             color=color,
             zorder=zorder + 0.05,
-            alpha=fill_a * 0.92,
+            alpha=fill_a,
+        )
+    # Explicit articulation discs — knees / elbows / hips read as joints, not
+    # as cylinder seams (OpenSim / anatomical mannequin cue).
+    pair = f"{parent}_{child}".lower()
+    rim = None
+    if "left" in pair:
+        rim = _COLOR_LEFT
+    elif "right" in pair:
+        rim = _COLOR_RIGHT
+    if "knee" in child:
+        _draw_articulation_cap(
+            ax,
+            p1,
+            radius=max(profile[2] * 1.15, height * 0.022),
+            color=_blend_hex(color, _SKIN_HIGHLIGHT, 0.18),
+            zorder=zorder + 0.25,
+            alpha=fill_a,
+            rim=rim,
+        )
+    elif "elbow" in child:
+        _draw_articulation_cap(
+            ax,
+            p1,
+            radius=max(profile[2] * 1.05, height * 0.018),
+            color=_blend_hex(color, _SKIN_HIGHLIGHT, 0.12),
+            zorder=zorder + 0.25,
+            alpha=fill_a,
+            rim=rim,
+        )
+    elif "hip" in parent and "knee" in child:
+        _draw_articulation_cap(
+            ax,
+            p0,
+            radius=max(profile[0] * 0.95, height * 0.024),
+            color=_CLOTH_PANTS,
+            zorder=zorder + 0.20,
+            alpha=fill_a,
+            rim=rim,
+        )
+    elif "shoulder" in parent and "elbow" in child:
+        _draw_articulation_cap(
+            ax,
+            p0,
+            radius=max(profile[0] * 1.05, height * 0.026),
+            color=_SKIN_ARM,
+            zorder=zorder + 0.20,
+            alpha=fill_a,
+            rim=rim,
         )
 
 
@@ -1252,13 +1371,13 @@ def _draw_tapered_capsule(
         return
     ux, uy = dx / length, dy / length
     nx, ny = -uy, ux
-    # Shrink thickness when foreshortened so limbs do not become plate stubs.
-    fores = min(1.0, length / max(start_half_width * 7.0, end_half_width * 7.0, 1e-6))
-    fores = max(0.40, fores)
-    w0 = min(max(start_half_width * fores, length * 0.07), length * 0.40)
-    w1 = min(max(end_half_width * fores, length * 0.06), length * 0.36)
-    wm_raw = mid_half_width if mid_half_width is not None else max(w0, w1) * 1.10
-    wm = min(max(wm_raw * fores, length * 0.08), length * 0.44)
+    # Preserve taper when foreshortened — avoid fat "bubble" links.
+    fores = min(1.0, length / max(start_half_width * 6.5, end_half_width * 6.5, 1e-6))
+    fores = max(0.48, fores)
+    w0 = min(max(start_half_width * fores, length * 0.055), length * 0.36)
+    w1 = min(max(end_half_width * fores, length * 0.048), length * 0.32)
+    wm_raw = mid_half_width if mid_half_width is not None else max(w0, w1) * 1.06
+    wm = min(max(wm_raw * fores, length * 0.060), length * 0.38)
     mx, my = p0[0] + ux * length * 0.48, p0[1] + uy * length * 0.48
     # Opaque silhouette (no fragile Bezier paths — always fills solidly).
     verts = [
@@ -1283,25 +1402,50 @@ def _draw_tapered_capsule(
             antialiased=True,
         )
     )
-    # Soft volume: thin highlight strip on the light side of the limb.
-    hi_w0, hi_w1, hi_wm = w0 * 0.42, w1 * 0.42, wm * 0.42
+    # Cylindrical shading from a shared upper-left key light (lab manikin look).
+    lx, ly = _MANIKIN_LIGHT_DIR
+    light_side = 1.0 if (nx * lx + ny * ly) >= 0.0 else -1.0
+    hx, hy = nx * light_side, ny * light_side
+    sx, sy = -hx, -hy
+    hi_w0, hi_w1, hi_wm = w0 * 0.48, w1 * 0.48, wm * 0.48
     hi_verts = [
-        (p0[0] + nx * hi_w0 * 0.15, p0[1] + ny * hi_w0 * 0.15),
-        (mx + nx * hi_wm * 0.20, my + ny * hi_wm * 0.20),
-        (p1[0] + nx * hi_w1 * 0.15, p1[1] + ny * hi_w1 * 0.15),
-        (p1[0] + nx * hi_w1, p1[1] + ny * hi_w1),
-        (mx + nx * hi_wm, my + ny * hi_wm),
-        (p0[0] + nx * hi_w0, p0[1] + ny * hi_w0),
+        (p0[0] + hx * hi_w0 * 0.10, p0[1] + hy * hi_w0 * 0.10),
+        (mx + hx * hi_wm * 0.15, my + hy * hi_wm * 0.15),
+        (p1[0] + hx * hi_w1 * 0.10, p1[1] + hy * hi_w1 * 0.10),
+        (p1[0] + hx * hi_w1, p1[1] + hy * hi_w1),
+        (mx + hx * hi_wm, my + hy * hi_wm),
+        (p0[0] + hx * hi_w0, p0[1] + hy * hi_w0),
     ]
     ax.add_patch(
         Polygon(
             hi_verts,
             closed=True,
-            facecolor=_blend_hex(color, "#ffffff", 0.28),
+            facecolor=_blend_hex(color, _METAL_HIGHLIGHT, 0.42),
             edgecolor="none",
-            alpha=fill_a * 0.38,
+            alpha=fill_a * 0.50,
             joinstyle="round",
             zorder=zorder + 0.015,
+            antialiased=True,
+        )
+    )
+    sh_w0, sh_w1, sh_wm = w0 * 0.55, w1 * 0.55, wm * 0.55
+    sh_verts = [
+        (p0[0] + sx * sh_w0 * 0.08, p0[1] + sy * sh_w0 * 0.08),
+        (mx + sx * sh_wm * 0.12, my + sy * sh_wm * 0.12),
+        (p1[0] + sx * sh_w1 * 0.08, p1[1] + sy * sh_w1 * 0.08),
+        (p1[0] + sx * sh_w1, p1[1] + sy * sh_w1),
+        (mx + sx * sh_wm, my + sy * sh_wm),
+        (p0[0] + sx * sh_w0, p0[1] + sy * sh_w0),
+    ]
+    ax.add_patch(
+        Polygon(
+            sh_verts,
+            closed=True,
+            facecolor=_blend_hex(color, _METAL_EDGE, 0.48),
+            edgecolor="none",
+            alpha=fill_a * 0.32,
+            joinstyle="round",
+            zorder=zorder + 0.012,
             antialiased=True,
         )
     )
@@ -1366,12 +1510,12 @@ def _depth_alpha(
     depth: float,
     depth_limits: tuple[float, float],
 ) -> float:
-    """Subtle far→near shading without changing left/right identity."""
+    """Far→near shading — stronger depth cue for laboratory readability."""
     lo, hi = depth_limits
     if hi - lo < 1e-9:
         return 0.96
     t = max(0.0, min(1.0, (depth - lo) / (hi - lo)))
-    return 0.76 + 0.22 * t
+    return 0.68 + 0.30 * t
 
 
 def _draw_articulated_body_structure(
@@ -1379,323 +1523,304 @@ def _draw_articulated_body_structure(
     snapshot: SkeletonSnapshot,
     height: float,
 ) -> None:
-    """Layered ribcage / waist / pelvis envelopes from tracked landmarks only.
+    """SMPL / OpenSim-style torso: chest volume, rounded shoulders, pelvis, neck.
 
-    Display-only soft-body fill (Visual3D / OpenSim manikin style). Joint
-    positions are never moved — envelopes widen around measured shoulders/hips.
+    Display-only envelopes around measured shoulder/hip landmarks — joint
+    positions are never moved.
     """
-    from matplotlib.patches import PathPatch
-    from matplotlib.path import Path
+    from matplotlib.patches import Ellipse, Polygon as MplPolygon
 
     ls = _xy(snapshot, "left_shoulder")
     rs = _xy(snapshot, "right_shoulder")
     lh = _xy(snapshot, "left_hip")
     rh = _xy(snapshot, "right_hip")
     neck = _xy(snapshot, "neck")
-    spine = _xy(snapshot, "spine")
-
-    def _body_pair(
-        left: tuple[float, float],
-        right: tuple[float, float],
-        min_half_width: float,
-    ) -> tuple[tuple[float, float], tuple[float, float]]:
-        cx = 0.5 * (left[0] + right[0])
-        cy = 0.5 * (left[1] + right[1])
-        dx, dy = right[0] - left[0], right[1] - left[1]
-        span = math.hypot(dx, dy)
-        if span > 1e-9:
-            ux, uy = dx / span, dy / span
-        else:
-            ux, uy = 1.0, 0.0
-        half = max(span * 0.5, min_half_width)
-        return (cx - ux * half, cy - uy * half), (cx + ux * half, cy + uy * half)
+    head = _xy(snapshot, "head")
 
     def _lerp(
         a: tuple[float, float], b: tuple[float, float], t: float
     ) -> tuple[float, float]:
         return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
 
-    def _add_torso_band(
-        left_a: tuple[float, float],
-        right_a: tuple[float, float],
-        left_b: tuple[float, float],
-        right_b: tuple[float, float],
-        *,
-        face: str,
-        edge: str,
-        alpha: float,
-        zorder: float,
-        linewidth: float = 0.9,
-    ) -> None:
-        # Soft curved band (Bezier sides) — less “blocky rectangle”.
-        mid_top = (
-            0.5 * (left_a[0] + right_a[0]),
-            0.5 * (left_a[1] + right_a[1]),
-        )
-        mid_bot = (
-            0.5 * (left_b[0] + right_b[0]),
-            0.5 * (left_b[1] + right_b[1]),
-        )
-        # Outward bulge for a cylindrical torso silhouette.
-        bulge = height * 0.012
-        dx = right_a[0] - left_a[0]
-        dy = right_a[1] - left_a[1]
-        span = math.hypot(dx, dy) or 1.0
-        nx, ny = -dy / span, dx / span
-        c_left = (
-            0.5 * (left_a[0] + left_b[0]) - nx * bulge,
-            0.5 * (left_a[1] + left_b[1]) - ny * bulge,
-        )
-        c_right = (
-            0.5 * (right_a[0] + right_b[0]) + nx * bulge,
-            0.5 * (right_a[1] + right_b[1]) + ny * bulge,
-        )
-        verts = [
-            left_a,
-            mid_top,
-            right_a,
-            c_right,
-            right_b,
-            mid_bot,
-            left_b,
-            c_left,
-            left_a,
-        ]
-        codes = [
-            Path.MOVETO,
-            Path.CURVE3,
-            Path.CURVE3,
-            Path.CURVE3,
-            Path.CURVE3,
-            Path.CURVE3,
-            Path.CURVE3,
-            Path.CURVE3,
-            Path.CURVE3,
-        ]
-        ax.add_patch(
-            PathPatch(
-                Path(verts, codes),
-                facecolor=face,
-                edgecolor=edge,
-                linewidth=linewidth,
-                alpha=alpha,
-                zorder=zorder,
-                antialiased=True,
-                joinstyle="round",
-            )
+    def _perp(ux: float, uy: float) -> tuple[float, float]:
+        return (-uy, ux)
+
+    if not (ls and rs and lh and rh):
+        return
+
+    sh_span = math.hypot(rs[0] - ls[0], rs[1] - ls[1])
+    hp_span = math.hypot(rh[0] - lh[0], rh[1] - lh[1])
+    shoulder_c = (0.5 * (ls[0] + rs[0]), 0.5 * (ls[1] + rs[1]))
+    pelvis_c = (0.5 * (lh[0] + rh[0]), 0.5 * (lh[1] + rh[1]))
+    waist_c = _lerp(shoulder_c, pelvis_c, 0.58)
+    chest_c = _lerp(shoulder_c, pelvis_c, 0.22)
+
+    axis_dx = rs[0] - ls[0]
+    axis_dy = rs[1] - ls[1]
+    axis_len = max(math.hypot(axis_dx, axis_dy), 1e-9)
+    ax_u = (axis_dx / axis_len, axis_dy / axis_len)
+    nx, ny = _perp(ax_u[0], ax_u[1])
+
+    # Anthropometric half-widths from measured girdles (clamped for readability).
+    chest_half = max(min(sh_span * 0.52, height * 0.14), height * 0.085)
+    waist_half = max(min(sh_span * 0.36, height * 0.10), height * 0.058)
+    hip_half = max(min(hp_span * 0.55, height * 0.12), height * 0.072)
+    rib_depth = height * 0.028  # outward bulge → chest volume, not a flat plate
+
+    def _girdle(center: tuple[float, float], half: float) -> tuple[tuple[float, float], tuple[float, float]]:
+        return (
+            (center[0] - ax_u[0] * half, center[1] - ax_u[1] * half),
+            (center[0] + ax_u[0] * half, center[1] + ax_u[1] * half),
         )
 
-    if ls and rs and lh and rh:
-        from matplotlib.patches import Ellipse, Polygon as MplPolygon
+    chest_l, chest_r = _girdle(chest_c, chest_half)
+    waist_l, waist_r = _girdle(waist_c, waist_half)
+    hip_l, hip_r = _girdle(pelvis_c, hip_half)
+    # Shoulder line slightly wider than chest for rounded deltoid read.
+    sh_l = (ls[0] - ax_u[0] * height * 0.012, ls[1] - ax_u[1] * height * 0.012)
+    sh_r = (rs[0] + ax_u[0] * height * 0.012, rs[1] + ax_u[1] * height * 0.012)
 
-        # Solid vest torso anchored to measured shoulders/hips (opaque).
-        # Prefer measured girdle span so frontal-narrow tracks do not balloon.
-        sh_span = math.hypot(rs[0] - ls[0], rs[1] - ls[1])
-        hp_span = math.hypot(rh[0] - lh[0], rh[1] - lh[1])
-        chest_l, chest_r = _body_pair(ls, rs, max(sh_span * 0.55, height * 0.10))
-        pelvis_l, pelvis_r = _body_pair(lh, rh, max(hp_span * 0.55, height * 0.08))
-        shoulder_c = (
-            0.5 * (chest_l[0] + chest_r[0]),
-            0.5 * (chest_l[1] + chest_r[1]),
-        )
-        pelvis_c = (
-            0.5 * (pelvis_l[0] + pelvis_r[0]),
-            0.5 * (pelvis_l[1] + pelvis_r[1]),
-        )
-        waist_c = _lerp(shoulder_c, pelvis_c, 0.62)
-        axis_dx = chest_r[0] - chest_l[0]
-        axis_dy = chest_r[1] - chest_l[1]
-        axis_len = max(math.hypot(axis_dx, axis_dy), 1e-9)
-        ax_u = (axis_dx / axis_len, axis_dy / axis_len)
-        waist_half = max(axis_len * 0.38, height * 0.07)
-        chest_half = max(axis_len * 0.52, height * 0.10)
-        hip_half = max(axis_len * 0.45, height * 0.085)
-        # Rebuild vest from measured centers with anthropometric widths.
-        chest_l = (shoulder_c[0] - ax_u[0] * chest_half, shoulder_c[1] - ax_u[1] * chest_half)
-        chest_r = (shoulder_c[0] + ax_u[0] * chest_half, shoulder_c[1] + ax_u[1] * chest_half)
-        waist_l = (waist_c[0] - ax_u[0] * waist_half, waist_c[1] - ax_u[1] * waist_half)
-        waist_r = (waist_c[0] + ax_u[0] * waist_half, waist_c[1] + ax_u[1] * waist_half)
-        pelvis_l = (pelvis_c[0] - ax_u[0] * hip_half, pelvis_c[1] - ax_u[1] * hip_half)
-        pelvis_r = (pelvis_c[0] + ax_u[0] * hip_half, pelvis_c[1] + ax_u[1] * hip_half)
-        # Soft side bulge for a cylindrical torso (not a flat rectangle).
-        bulge = height * 0.018
-        nx, ny = -ax_u[1], ax_u[0]
-        mid_shirt_l = (
-            0.5 * (chest_l[0] + waist_l[0]) - nx * bulge,
-            0.5 * (chest_l[1] + waist_l[1]) - ny * bulge,
-        )
-        mid_shirt_r = (
-            0.5 * (chest_r[0] + waist_r[0]) + nx * bulge,
-            0.5 * (chest_r[1] + waist_r[1]) + ny * bulge,
-        )
+    # Soft side bulge control points (cylindrical torso silhouette).
+    mid_chest_l = (
+        0.5 * (sh_l[0] + chest_l[0]) - nx * rib_depth * 0.55,
+        0.5 * (sh_l[1] + chest_l[1]) - ny * rib_depth * 0.55,
+    )
+    mid_chest_r = (
+        0.5 * (sh_r[0] + chest_r[0]) + nx * rib_depth * 0.55,
+        0.5 * (sh_r[1] + chest_r[1]) + ny * rib_depth * 0.55,
+    )
+    mid_rib_l = (
+        0.5 * (chest_l[0] + waist_l[0]) - nx * rib_depth,
+        0.5 * (chest_l[1] + waist_l[1]) - ny * rib_depth,
+    )
+    mid_rib_r = (
+        0.5 * (chest_r[0] + waist_r[0]) + nx * rib_depth,
+        0.5 * (chest_r[1] + waist_r[1]) + ny * rib_depth,
+    )
 
-        ax.add_patch(
-            MplPolygon(
-                [chest_l, chest_r, mid_shirt_r, waist_r, waist_l, mid_shirt_l],
-                closed=True,
-                facecolor=_CLOTH_SHIRT,
-                edgecolor=_MANIKIN_EDGE,
-                linewidth=0.65,
-                alpha=1.0,
-                joinstyle="round",
-                zorder=2.6,
-                antialiased=True,
-            )
-        )
-        # Soft chest highlight — reads as volume, not a flat plate.
-        hi_l = _lerp(chest_l, waist_l, 0.18)
-        hi_r = _lerp(chest_r, waist_r, 0.18)
-        hi_lb = _lerp(chest_l, waist_l, 0.48)
-        hi_rb = _lerp(chest_r, waist_r, 0.48)
-        mid_hi_l = (
-            0.5 * (hi_l[0] + hi_lb[0]) - nx * bulge * 0.45,
-            0.5 * (hi_l[1] + hi_lb[1]) - ny * bulge * 0.45,
-        )
-        mid_hi_r = (
-            0.5 * (hi_r[0] + hi_rb[0]) + nx * bulge * 0.20,
-            0.5 * (hi_r[1] + hi_rb[1]) + ny * bulge * 0.20,
-        )
-        ax.add_patch(
-            MplPolygon(
-                [hi_l, hi_r, mid_hi_r, hi_rb, hi_lb, mid_hi_l],
-                closed=True,
-                facecolor=_CLOTH_SHIRT_HIGHLIGHT,
-                edgecolor="none",
-                alpha=0.28,
-                joinstyle="round",
-                zorder=2.62,
-                antialiased=True,
-            )
-        )
-        ax.add_patch(
-            MplPolygon(
-                [waist_l, waist_r, pelvis_r, pelvis_l],
-                closed=True,
-                facecolor=_CLOTH_PANTS,
-                edgecolor=_MANIKIN_EDGE,
-                linewidth=0.65,
-                alpha=1.0,
-                joinstyle="round",
-                zorder=2.7,
-                antialiased=True,
-            )
-        )
-        # Soft waist shadow so shirt/pants read as separate layers.
-        shade_t = _lerp(waist_l, waist_r, 0.0)
-        shade_b = _lerp(pelvis_l, pelvis_r, 0.0)
-        ax.add_patch(
-            MplPolygon(
-                [
-                    waist_l,
-                    waist_r,
-                    _lerp(waist_r, pelvis_r, 0.35),
-                    _lerp(waist_l, pelvis_l, 0.35),
-                ],
-                closed=True,
-                facecolor=_CLOTH_PANTS_SHADOW,
-                edgecolor="none",
-                alpha=0.22,
-                joinstyle="round",
-                zorder=2.72,
-                antialiased=True,
-            )
-        )
-        del shade_t, shade_b
-        ax.plot(
-            [shoulder_c[0], waist_c[0]],
-            [shoulder_c[1], waist_c[1]],
-            color="#ffffff",
-            linewidth=2.2,
-            alpha=0.20,
-            solid_capstyle="round",
-            zorder=2.85,
+    # --- Upper torso / chest volume ---
+    ax.add_patch(
+        MplPolygon(
+            [sh_l, sh_r, mid_chest_r, chest_r, mid_rib_r, waist_r, waist_l, mid_rib_l, chest_l, mid_chest_l],
+            closed=True,
+            facecolor=_METAL_TORSO,
+            edgecolor=_METAL_EDGE,
+            linewidth=0.70,
+            alpha=1.0,
+            joinstyle="round",
+            zorder=2.55,
             antialiased=True,
         )
-        deltoid_w = min(height * 0.072, max(sh_span * 0.28, height * 0.035))
-        deltoid_h = deltoid_w * 0.75
-        for sh in (ls, rs):
-            ax.add_patch(
-                Ellipse(
-                    sh,
-                    width=deltoid_w,
-                    height=deltoid_h,
-                    facecolor=_SKIN_ARM,
-                    edgecolor=_MANIKIN_EDGE,
-                    linewidth=0.40,
-                    alpha=1.0,
-                    zorder=3.05,
-                    antialiased=True,
-                )
+    )
+    # Chest highlight ellipse — depth cue (SMPL pectoral volume).
+    torso_h = max(abs(shoulder_c[1] - pelvis_c[1]), height * 0.20)
+    ax.add_patch(
+        Ellipse(
+            chest_c,
+            width=max(chest_half * 1.55, height * 0.14),
+            height=max(torso_h * 0.28, height * 0.06),
+            facecolor=_METAL_HIGHLIGHT,
+            edgecolor="none",
+            alpha=0.32,
+            zorder=2.58,
+            antialiased=True,
+        )
+    )
+    # Soft rib bands (biomechanical, not cartoon).
+    for frac, w_scale in ((0.18, 0.92), (0.32, 0.82), (0.46, 0.70)):
+        cy = shoulder_c[1] + (pelvis_c[1] - shoulder_c[1]) * frac
+        cx = shoulder_c[0] + (pelvis_c[0] - shoulder_c[0]) * frac
+        ax.add_patch(
+            Ellipse(
+                (cx, cy),
+                width=max(axis_len * w_scale * 0.78, height * 0.10),
+                height=max(height * 0.016, torso_h * 0.05),
+                facecolor="none",
+                edgecolor=_blend_hex(_METAL_EDGE, _METAL_HIGHLIGHT, 0.35),
+                linewidth=0.65,
+                alpha=0.40,
+                zorder=2.60,
+                antialiased=True,
             )
-        if neck is not None:
-            collar = _lerp(shoulder_c, neck, 0.45)
-            _draw_tapered_capsule(
-                ax,
-                collar,
-                neck,
-                start_half_width=height * 0.045,
-                end_half_width=height * 0.038,
-                mid_half_width=height * 0.042,
-                color=_NECK_SKIN,
-                zorder=3.0,
+        )
+
+    # --- Abdomen / waist taper into pelvis ---
+    mid_waist_l = (
+        0.5 * (waist_l[0] + hip_l[0]) - nx * rib_depth * 0.35,
+        0.5 * (waist_l[1] + hip_l[1]) - ny * rib_depth * 0.35,
+    )
+    mid_waist_r = (
+        0.5 * (waist_r[0] + hip_r[0]) + nx * rib_depth * 0.35,
+        0.5 * (waist_r[1] + hip_r[1]) + ny * rib_depth * 0.35,
+    )
+    ax.add_patch(
+        MplPolygon(
+            [waist_l, waist_r, mid_waist_r, hip_r, hip_l, mid_waist_l],
+            closed=True,
+            facecolor=_CLOTH_PANTS,
+            edgecolor=_CLOTH_PANTS_EDGE,
+            linewidth=0.65,
+            alpha=1.0,
+            joinstyle="round",
+            zorder=2.65,
+            antialiased=True,
+        )
+    )
+    ax.add_patch(
+        MplPolygon(
+            [
+                waist_l,
+                waist_r,
+                _lerp(waist_r, hip_r, 0.40),
+                _lerp(waist_l, hip_l, 0.40),
+            ],
+            closed=True,
+            facecolor=_CLOTH_PANTS_SHADOW,
+            edgecolor="none",
+            alpha=0.28,
+            joinstyle="round",
+            zorder=2.67,
+            antialiased=True,
+        )
+    )
+
+    # --- Rounded deltoid / shoulder caps (tracked shoulder joints) ---
+    deltoid_r = max(min(sh_span * 0.22, height * 0.055), height * 0.032)
+    for sh, side in ((ls, "left"), (rs, "right")):
+        rim = _COLOR_LEFT if side == "left" else _COLOR_RIGHT
+        ax.add_patch(
+            Ellipse(
+                sh,
+                width=deltoid_r * 2.05,
+                height=deltoid_r * 1.70,
+                facecolor=_SKIN_ARM,
+                edgecolor=_MANIKIN_EDGE,
+                linewidth=0.50,
                 alpha=1.0,
+                zorder=3.10,
+                antialiased=True,
             )
+        )
+        ax.add_patch(
+            Ellipse(
+                (sh[0] - deltoid_r * 0.15, sh[1] + deltoid_r * 0.10),
+                width=deltoid_r * 0.95,
+                height=deltoid_r * 0.55,
+                facecolor=_SKIN_HIGHLIGHT,
+                edgecolor="none",
+                alpha=0.35,
+                zorder=3.12,
+                antialiased=True,
+            )
+        )
+        ax.add_patch(
+            Ellipse(
+                sh,
+                width=deltoid_r * 2.20,
+                height=deltoid_r * 1.85,
+                facecolor="none",
+                edgecolor=rim,
+                linewidth=0.65,
+                alpha=0.40,
+                zorder=3.14,
+                antialiased=True,
+            )
+        )
 
-    if lh and rh:
-        from matplotlib.patches import Ellipse
+    # --- Neck column (shoulders → neck → toward head) ---
+    if neck is not None:
+        neck_anchor = neck
+    elif head is not None:
+        neck_anchor = _lerp(shoulder_c, head, 0.55)
+    else:
+        neck_anchor = shoulder_c
+    collar = _lerp(shoulder_c, neck_anchor, 0.28)
+    _draw_tapered_capsule(
+        ax,
+        collar,
+        neck_anchor,
+        start_half_width=height * 0.038,
+        end_half_width=height * 0.032,
+        mid_half_width=height * 0.036,
+        color=_NECK_SKIN,
+        zorder=3.05,
+        alpha=1.0,
+    )
+    if head is not None:
+        _draw_tapered_capsule(
+            ax,
+            neck_anchor,
+            _lerp(neck_anchor, head, 0.55),
+            start_half_width=height * 0.032,
+            end_half_width=height * 0.038,
+            mid_half_width=height * 0.034,
+            color=_NECK_SKIN,
+            zorder=3.06,
+            alpha=1.0,
+        )
 
-        pelvis_l, pelvis_r = _body_pair(lh, rh, height * 0.15)
-        dx, dy = pelvis_r[0] - pelvis_l[0], pelvis_r[1] - pelvis_l[1]
-        span = math.hypot(dx, dy)
-        if span > height * 0.012:
-            # Rounded pelvic bowl (ellipse) instead of a grey box.
-            mid = (0.5 * (lh[0] + rh[0]), 0.5 * (lh[1] + rh[1]))
-            angle = math.degrees(math.atan2(dy, dx))
-            pw = max(span * 1.22, height * 0.22)
-            ph = max(height * 0.095, span * 0.42)
-            ax.add_patch(
-                Ellipse(
-                    mid,
-                    width=pw,
-                    height=ph,
-                    angle=angle,
-                    facecolor=_CLOTH_PANTS,
-                    edgecolor=_MANIKIN_EDGE,
-                    linewidth=0.70,
-                    alpha=1.0,
-                    zorder=3.3,
-                    antialiased=True,
-                )
+    # --- Realistic pelvic bowl between measured hips ---
+    mid = pelvis_c
+    angle = math.degrees(math.atan2(rh[1] - lh[1], rh[0] - lh[0]))
+    pw = max(hp_span * 1.15, height * 0.20)
+    ph = max(height * 0.085, hp_span * 0.38)
+    ax.add_patch(
+        Ellipse(
+            mid,
+            width=pw,
+            height=ph,
+            angle=angle,
+            facecolor=_CLOTH_PANTS,
+            edgecolor=_CLOTH_PANTS_EDGE,
+            linewidth=0.70,
+            alpha=1.0,
+            zorder=3.25,
+            antialiased=True,
+        )
+    )
+    ax.add_patch(
+        Ellipse(
+            (mid[0], mid[1] + ph * 0.08),
+            width=pw * 0.72,
+            height=ph * 0.42,
+            angle=angle,
+            facecolor=_blend_hex(_CLOTH_PANTS, "#ffffff", 0.20),
+            edgecolor="none",
+            alpha=0.30,
+            zorder=3.27,
+            antialiased=True,
+        )
+    )
+    # Hip sockets at tracked hip joints.
+    for hip_pt, side in ((lh, "left"), (rh, "right")):
+        rim = _COLOR_LEFT if side == "left" else _COLOR_RIGHT
+        hw = min(height * 0.042, max(hp_span * 0.18, height * 0.022))
+        ax.add_patch(
+            Ellipse(
+                hip_pt,
+                width=hw * 2.0,
+                height=hw * 1.70,
+                facecolor=_CLOTH_PANTS,
+                edgecolor=_CLOTH_PANTS_EDGE,
+                linewidth=0.45,
+                alpha=1.0,
+                zorder=3.30,
+                antialiased=True,
             )
-            # Soft highlight on the upper pelvis rim.
-            ax.add_patch(
-                Ellipse(
-                    (mid[0], mid[1] + ph * 0.08),
-                    width=pw * 0.72,
-                    height=ph * 0.42,
-                    angle=angle,
-                    facecolor=_blend_hex(_CLOTH_PANTS, "#ffffff", 0.22),
-                    edgecolor="none",
-                    alpha=0.30,
-                    zorder=3.32,
-                    antialiased=True,
-                )
+        )
+        ax.add_patch(
+            Ellipse(
+                hip_pt,
+                width=hw * 2.15,
+                height=hw * 1.85,
+                facecolor="none",
+                edgecolor=rim,
+                linewidth=0.60,
+                alpha=0.45,
+                zorder=3.32,
+                antialiased=True,
             )
-            for hip_pt in (lh, rh):
-                hw = min(height * 0.058, max(span * 0.26, height * 0.028))
-                ax.add_patch(
-                    Ellipse(
-                        hip_pt,
-                        width=hw,
-                        height=hw * 0.88,
-                        facecolor=_CLOTH_PANTS,
-                        edgecolor=_MANIKIN_EDGE,
-                        linewidth=0.35,
-                        alpha=1.0,
-                        zorder=3.35,
-                        antialiased=True,
-                    )
-                )
+        )
 
 
 def _stability_overlay_color(stability_state: str | None) -> str:
@@ -1739,12 +1864,12 @@ def _com_floor_projection_display(
 def _stability_polygon_style(stability_state: str | None) -> tuple[str, str, float, float]:
     """Face color, edge color, face alpha, edge alpha for BoS floor polygon."""
     if stability_state == "Stable":
-        return BOS_FILL_STABLE, BOS_EDGE_STABLE, 0.12, 0.58
+        return BOS_FILL_STABLE, BOS_EDGE_STABLE, 0.08, 0.42
     if stability_state == "Reduced Stability":
-        return BOS_FILL_REDUCED, BOS_EDGE_REDUCED, 0.14, 0.62
+        return BOS_FILL_REDUCED, BOS_EDGE_REDUCED, 0.09, 0.48
     if stability_state == "Unstable":
-        return BOS_FILL_UNSTABLE, BOS_EDGE_UNSTABLE, 0.16, 0.66
-    return MUTED, BORDER, 0.10, 0.48
+        return BOS_FILL_UNSTABLE, BOS_EDGE_UNSTABLE, 0.10, 0.52
+    return MUTED, BORDER, 0.07, 0.38
 
 
 def _support_edge_accent(support_type: str | None) -> str | None:
@@ -1978,12 +2103,12 @@ def _draw_com_velocity_arrow(
     ax.text(
         origin[0] + dx * scale * 1.05,
         origin[1] + dy * scale * 1.05,
-        "v",
+        "COM vel",
         color=edge_color,
-        fontsize=6,
+        fontsize=7,
         ha="left",
         va="center",
-        fontweight="bold",
+        fontweight="medium",
         zorder=15,
     )
 
@@ -2046,6 +2171,8 @@ def _draw_ground(
     display_mode: str = "biomechanical",
     show_ground_plane: bool = True,
 ) -> float:
+    from matplotlib.patches import Ellipse
+
     foot_pts = [
         _xy(snapshot, j)
         for j in ("left_toe", "right_toe", "left_heel", "right_heel", "left_ankle", "right_ankle")
@@ -2057,18 +2184,58 @@ def _draw_ground(
 
     pelvis = _xy(snapshot, ROOT_JOINT_ID) or _xy(snapshot, "spine")
     cx = pelvis[0] if pelvis else 0.0
-    half = height * 0.32
+    half = height * 0.38
 
     if show_ground_plane:
+        # Soft laboratory floor pad (Visual3D / OpenSim stage cue).
+        ax.add_patch(
+            Ellipse(
+                (cx, y_floor - height * 0.008),
+                width=half * 2.15,
+                height=height * 0.085,
+                facecolor=_COLOR_GROUND_FILL,
+                edgecolor=_COLOR_GROUND,
+                linewidth=0.9,
+                alpha=0.92,
+                zorder=0.05,
+                antialiased=True,
+            )
+        )
+        # Faint perspective grid lines on the pad.
+        for t in (-0.66, -0.33, 0.0, 0.33, 0.66):
+            gx = cx + half * t
+            ax.plot(
+                [gx, gx],
+                [y_floor - height * 0.028, y_floor + height * 0.012],
+                color=_COLOR_GROUND_GRID,
+                linewidth=0.55,
+                alpha=0.35,
+                zorder=0.08,
+                solid_capstyle="round",
+            )
         ax.plot(
-            [cx - half, cx + half],
+            [cx - half * 0.95, cx + half * 0.95],
             [y_floor, y_floor],
             color=_COLOR_GROUND,
-            linewidth=1.05,
-            linestyle=(0, (4, 3)),
-            alpha=0.62,
-            zorder=0,
+            linewidth=1.15,
+            alpha=0.72,
+            zorder=0.1,
+            solid_capstyle="round",
         )
+        # Contact shadows under the lowest foot points.
+        for pt in foot_pts[:4]:
+            ax.add_patch(
+                Ellipse(
+                    (pt[0], y_floor - height * 0.004),
+                    width=height * 0.055,
+                    height=height * 0.016,
+                    facecolor=_COLOR_CONTACT_SHADOW,
+                    edgecolor="none",
+                    alpha=0.28,
+                    zorder=0.12,
+                    antialiased=True,
+                )
+            )
 
     if floor_y is not None and display_mode != "2d_pose" and show_ground_plane:
         for _side, joints in (
@@ -2102,8 +2269,8 @@ def _draw_head(
     dimmed: bool = False,
     selected: bool = False,
 ) -> None:
-    """Oval head + hair cap + jaw + neck (OpenSim / Vicon manikin style)."""
-    from matplotlib.patches import Circle, Ellipse
+    """Anatomical cranial oval + neck blend (mannequin / SMPL-style)."""
+    from matplotlib.patches import Ellipse
 
     head = _xy(snapshot, "head")
     neck = _xy(snapshot, "neck")
@@ -2112,91 +2279,58 @@ def _draw_head(
     if selected:
         return  # drawn by selection highlights
 
-    alpha = _DIMMED_JOINT_ALPHA if dimmed else 0.97
-    # Slightly elongated cranial oval (not a flat sphere).
-    rx = max(height * 0.070, 0.034)
-    ry = max(height * 0.085, 0.040)
-    # Lift center slightly above the nose landmark toward the cranium.
-    cy = head[1] + ry * 0.18
-    # Neck connection from neck landmark up toward the head.
+    alpha = _DIMMED_JOINT_ALPHA if dimmed else 0.98
+    rx = max(height * 0.062, 0.030)
+    ry = max(height * 0.074, 0.036)
+    cy = head[1] + ry * 0.08
     if neck is not None:
         _draw_tapered_capsule(
             ax,
             neck,
             (head[0], cy - ry * 0.62),
-            start_half_width=height * 0.028,
-            end_half_width=height * 0.034,
-            mid_half_width=height * 0.030,
+            start_half_width=height * 0.030,
+            end_half_width=height * 0.042,
+            mid_half_width=height * 0.034,
             color=_NECK_SKIN,
             zorder=5.8,
-            alpha=alpha * 0.95,
+            alpha=alpha * 0.96,
         )
+    # Cranial shell
     ax.add_patch(
         Ellipse(
             (head[0], cy),
             width=rx * 2.0,
             height=ry * 2.0,
             facecolor=_SKIN,
-            edgecolor=_SKIN_SHADOW,
+            edgecolor=_MANIKIN_EDGE,
             linewidth=0.85,
             zorder=6.2,
             alpha=alpha,
             antialiased=True,
         )
     )
-    # Soft jaw / chin disc for a more human silhouette.
-    jaw_r = rx * 0.58
-    ax.add_patch(
-        Circle(
-            (head[0], cy - ry * 0.42),
-            jaw_r,
-            facecolor=_SKIN,
-            edgecolor=_SKIN_SHADOW,
-            linewidth=0.55,
-            zorder=6.15,
-            alpha=alpha * 0.94,
-            antialiased=True,
-        )
-    )
-    # Hair cap on the upper skull (wedge — not a flat brown bar).
-    from matplotlib.patches import Wedge
-
-    ax.add_patch(
-        Wedge(
-            (head[0], cy + ry * 0.12),
-            ry * 1.05,
-            15,
-            165,
-            width=ry * 0.58,
-            facecolor=_HAIR,
-            edgecolor="none",
-            zorder=6.22,
-            alpha=0.92 * alpha,
-        )
-    )
-    # Ambient highlight on the upper skull.
     ax.add_patch(
         Ellipse(
-            (head[0] - rx * 0.22, cy + ry * 0.14),
+            (head[0] - rx * 0.22, cy + ry * 0.20),
             width=rx * 0.95,
-            height=ry * 0.52,
-            facecolor="#ffffff",
+            height=ry * 0.50,
+            facecolor=_SKIN_HIGHLIGHT,
             edgecolor="none",
             zorder=6.28,
-            alpha=0.16 * alpha,
+            alpha=0.32 * alpha,
             antialiased=True,
         )
     )
-    # Soft cheek rim for a less flat face silhouette.
+    # Soft facial plane (not a cartoon face / robot sensor).
     ax.add_patch(
         Ellipse(
-            (head[0] + rx * 0.28, cy - ry * 0.05),
-            width=rx * 0.42,
+            (head[0], cy - ry * 0.12),
+            width=rx * 0.70,
             height=ry * 0.55,
-            facecolor=_SKIN_SHADOW,
+            facecolor=_blend_hex(_SKIN, _SKIN_SHADOW, 0.18),
             edgecolor="none",
-            zorder=6.24,
-            alpha=0.22 * alpha,
+            zorder=6.30,
+            alpha=0.35 * alpha,
             antialiased=True,
         )
     )
@@ -2228,8 +2362,8 @@ def _draw_foot_sole(
     *,
     alpha: float = 0.88,
 ) -> None:
-    """Filled foot wedge (heel → toe) so foot orientation reads clearly."""
-    from matplotlib.patches import PathPatch
+    """Anatomical foot plate: heel pad → midfoot → toe, locked to tracked points."""
+    from matplotlib.patches import Circle, Ellipse, PathPatch
     from matplotlib.path import Path
 
     heel = _xy(snapshot, f"{side}_heel")
@@ -2241,43 +2375,86 @@ def _draw_foot_sole(
     length = math.hypot(dx, dy)
     if length < 1e-9:
         return
-    nx, ny = -dy / length, dx / length
-    half = max(height * 0.024, length * 0.22)
-    # Slightly wider at the toe for a natural foot silhouette.
-    heel_w, toe_w = half * 0.88, half * 1.22
+    ux, uy = dx / length, dy / length
+    nx, ny = -uy, ux
+    half = max(height * 0.034, length * 0.30)
+    heel_w, mid_w, toe_w = half * 0.95, half * 1.15, half * 1.40
+    mid = (heel[0] + ux * length * 0.45, heel[1] + uy * length * 0.45)
     verts = [
         (heel[0] + nx * heel_w, heel[1] + ny * heel_w),
+        (mid[0] + nx * mid_w, mid[1] + ny * mid_w),
         (toe[0] + nx * toe_w, toe[1] + ny * toe_w),
         (toe[0] - nx * toe_w, toe[1] - ny * toe_w),
+        (mid[0] - nx * mid_w, mid[1] - ny * mid_w),
         (heel[0] - nx * heel_w, heel[1] - ny * heel_w),
         (heel[0] + nx * heel_w, heel[1] + ny * heel_w),
+    ]
+    codes = [
+        Path.MOVETO,
+        Path.LINETO,
+        Path.LINETO,
+        Path.LINETO,
+        Path.LINETO,
+        Path.LINETO,
+        Path.CLOSEPOLY,
     ]
     color = _CLOTH_SHOES
     ax.add_patch(
         PathPatch(
-            Path(
-                verts,
-                [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO, Path.CLOSEPOLY],
-            ),
+            Path(verts, codes),
             facecolor=color,
-            edgecolor=_COLOR_BONE_OUTLINE,
-            linewidth=0.65,
-            alpha=alpha * 0.92,
+            edgecolor=_MANIKIN_EDGE,
+            linewidth=0.70,
+            alpha=alpha * 0.95,
             zorder=4.6,
             antialiased=True,
             joinstyle="round",
         )
     )
-    # Soft sole shadow under the foot wedge (reads as ground contact volume).
+    # Heel pad + toe tip (anatomical foot volume).
+    ax.add_patch(
+        Ellipse(
+            heel,
+            width=half * 1.55,
+            height=half * 1.20,
+            facecolor=_blend_hex(color, _SKIN_SHADOW, 0.25),
+            edgecolor=_MANIKIN_EDGE,
+            linewidth=0.40,
+            alpha=alpha * 0.95,
+            zorder=4.62,
+            antialiased=True,
+        )
+    )
+    ax.add_patch(
+        Ellipse(
+            toe,
+            width=half * 1.25,
+            height=half * 0.95,
+            facecolor=_blend_hex(color, "#ffffff", 0.08),
+            edgecolor=_MANIKIN_EDGE,
+            linewidth=0.35,
+            alpha=alpha * 0.90,
+            zorder=4.63,
+            antialiased=True,
+        )
+    )
     shadow_offset = height * 0.006
-    shadow_verts = [
-        (v[0], v[1] - shadow_offset) for v in verts[:-1]
-    ] + [(verts[0][0], verts[0][1] - shadow_offset)]
+    shadow_verts = [(v[0], v[1] - shadow_offset) for v in verts[:-1]] + [
+        (verts[0][0], verts[0][1] - shadow_offset)
+    ]
     ax.add_patch(
         PathPatch(
             Path(
                 shadow_verts,
-                [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO, Path.CLOSEPOLY],
+                [
+                    Path.MOVETO,
+                    Path.LINETO,
+                    Path.LINETO,
+                    Path.LINETO,
+                    Path.LINETO,
+                    Path.LINETO,
+                    Path.CLOSEPOLY,
+                ],
             ),
             facecolor="#000000",
             edgecolor="none",
@@ -2291,24 +2468,35 @@ def _draw_foot_sole(
         [heel[0], toe[0]],
         [heel[1], toe[1]],
         color=rim,
-        linewidth=1.4,
-        alpha=0.45 * alpha,
+        linewidth=1.15,
+        alpha=0.40 * alpha,
         solid_capstyle="round",
         zorder=4.7,
         antialiased=True,
     )
     if ankle is not None:
-        # Soft ankle→foot bridge.
         _draw_tapered_capsule(
             ax,
             ankle,
-            ((heel[0] + toe[0]) * 0.5, (heel[1] + toe[1]) * 0.5),
-            start_half_width=height * 0.022,
-            end_half_width=height * 0.028,
-            mid_half_width=height * 0.026,
-            color=color,
+            mid,
+            start_half_width=height * 0.026,
+            end_half_width=height * 0.032,
+            mid_half_width=height * 0.030,
+            color=_blend_hex(_SKIN, _CLOTH_SHOES, 0.35),
             zorder=4.55,
-            alpha=alpha * 0.80,
+            alpha=alpha * 0.88,
+        )
+        ax.add_patch(
+            Circle(
+                ankle,
+                max(height * 0.018, 0.008),
+                facecolor=_SKIN,
+                edgecolor=rim,
+                linewidth=0.55,
+                alpha=alpha * 0.90,
+                zorder=4.72,
+                antialiased=True,
+            )
         )
 
 
@@ -2368,28 +2556,28 @@ def _draw_hands(
 
 
 def _joint_marker_radius(jid: str, height: float) -> float:
-    """Tiny articulation dots — limbs carry the volume, not spheres."""
-    base = max(height * 0.007, 0.004)
+    """Compact articulation markers — limbs carry volume, not giant spheres."""
+    base = max(height * 0.0065, 0.0038)
     if jid in ("left_knee", "right_knee", "left_elbow", "right_elbow"):
-        return base * 1.35
+        return base * 1.15
     if jid in ("left_hip", "right_hip", "left_shoulder", "right_shoulder"):
-        return base * 1.20
+        return base * 1.08
     if jid in (ROOT_JOINT_ID, "spine", "neck"):
-        return base * 0.85
+        return base * 0.82
     if "heel" in jid or "toe" in jid:
-        return base * 0.90
+        return base * 0.78
     if "wrist" in jid or "ankle" in jid:
-        return base * 1.10
+        return base * 0.95
     return base
 
 
 def _joint_anatomical_fill(jid: str) -> str:
-    """Soft cloth/skin fill so joints blend into the manikin (not stick dots)."""
+    """Metallic joint fill so articulations read as robot bearings."""
     if any(tok in jid for tok in ("hip", "knee", "ankle", "heel", "toe")):
-        return _CLOTH_PANTS
+        return _METAL_LIGHT
     if any(tok in jid for tok in ("shoulder", "elbow", "wrist")):
-        return _SKIN_ARM
-    return _SKIN
+        return _METAL_LIGHT
+    return _METAL
 
 
 def _draw_joint_markers(
@@ -2399,34 +2587,35 @@ def _draw_joint_markers(
     *,
     highlight_joints: set[str] | None,
     display_mode: str = DEFAULT_SKELETON_DISPLAY_MODE,
+    show_dof_pick_targets: bool = False,
 ) -> None:
     from matplotlib.patches import Circle
 
-    highlight = highlight_joints or set()
-    dim_others = bool(highlight)
-    joint_ids = _MARKER_JOINTS
-    if display_mode == "biomechanical":
-        joint_ids = tuple(j for j in _MARKER_JOINTS if j in _BIOMECH_JOINT_DOTS)
-    elif display_mode == "gait":
-        # Visible pick targets so users can click a joint to select its DOF.
-        joint_ids = (
+    from stablewalk.ui.dof_selection import PRIMARY_DOF_JOINTS
+
+    # Major articulations already carry anatomical caps from limb / torso draw.
+    _MANNEQUIN_CAPS = frozenset(
+        {
             "left_shoulder",
             "right_shoulder",
             "left_elbow",
             "right_elbow",
-            "left_wrist",
-            "right_wrist",
             "left_hip",
             "right_hip",
             "left_knee",
             "right_knee",
             "left_ankle",
             "right_ankle",
-            "left_heel",
-            "right_heel",
-            "left_toe",
-            "right_toe",
-        )
+        }
+    )
+
+    highlight = highlight_joints or set()
+    dim_others = bool(highlight)
+    joint_ids = _MARKER_JOINTS
+    if display_mode == "biomechanical":
+        joint_ids = tuple(j for j in _MARKER_JOINTS if j in _BIOMECH_JOINT_DOTS)
+    elif display_mode == "gait" or show_dof_pick_targets:
+        joint_ids = PRIMARY_DOF_JOINTS
 
     for jid in joint_ids:
         if jid == "head":
@@ -2442,25 +2631,76 @@ def _draw_joint_markers(
             edge = _COLOR_RIGHT
         else:
             edge = _COLOR_CENTER
+        base_r = _joint_marker_radius(jid, height)
+
+        # Manikin modes: skip filled balls on capped joints — thin L/R pick ring only.
+        if (
+            display_mode in ("gait", "3d_normalized", "side", "biomechanical")
+            and jid in _MANNEQUIN_CAPS
+        ):
+            if not show_dof_pick_targets:
+                continue
+            ring = max(base_r * 1.55, height * 0.011)
+            ax.add_patch(
+                Circle(
+                    pt,
+                    ring,
+                    facecolor="none",
+                    edgecolor=edge,
+                    linewidth=0.90,
+                    zorder=7.2,
+                    alpha=0.72 if not dim_others else 0.45,
+                    antialiased=True,
+                )
+            )
+            continue
+
         fill = (
             _joint_anatomical_fill(jid)
             if display_mode in ("gait", "3d_normalized", "side", "biomechanical")
             else edge
         )
-        r = _joint_marker_radius(jid, height)
-        # Tiny pick dots — anatomical fill, thin L/R rim (not glowing spheres).
-        ax.add_patch(
-            Circle(
-                pt,
-                r,
-                facecolor=fill,
-                edgecolor=edge,
-                linewidth=0.70,
-                zorder=7,
-                alpha=_DIMMED_JOINT_ALPHA if dim_others else 0.85,
-                antialiased=True,
+        if show_dof_pick_targets:
+            r = max(base_r * 1.25, height * 0.0075)
+            ring = max(r * 1.40, height * 0.011)
+            ax.add_patch(
+                Circle(
+                    pt,
+                    ring,
+                    facecolor="none",
+                    edgecolor=edge,
+                    linewidth=0.80,
+                    zorder=6.8,
+                    alpha=0.75 if not dim_others else 0.45,
+                    antialiased=True,
+                )
             )
-        )
+            ax.add_patch(
+                Circle(
+                    pt,
+                    r,
+                    facecolor=_joint_anatomical_fill(jid),
+                    edgecolor=_MANIKIN_EDGE,
+                    linewidth=0.50,
+                    zorder=7,
+                    alpha=0.90 if not dim_others else max(_DIMMED_JOINT_ALPHA, 0.48),
+                    antialiased=True,
+                )
+            )
+        else:
+            r = base_r
+            ax.add_patch(
+                Circle(
+                    pt,
+                    r,
+                    facecolor=fill,
+                    edgecolor=edge,
+                    linewidth=0.50,
+                    zorder=7,
+                    alpha=_DIMMED_JOINT_ALPHA if dim_others else 0.78,
+                    antialiased=True,
+                )
+            )
 
 
 def _draw_joint_glow(
@@ -2580,27 +2820,28 @@ def _draw_selection_highlights(
             continue
         is_primary = primary_joint is None or jid == primary_joint
         base_r = _joint_marker_radius(jid, height)
-        scale = _SELECTED_JOINT_SCALE if is_primary else max(1.35, _SELECTED_JOINT_SCALE * 0.88)
-        r = max(base_r * scale, height * 0.014)
+        scale = _SELECTED_JOINT_SCALE if is_primary else max(1.20, _SELECTED_JOINT_SCALE * 0.88)
+        r = max(base_r * scale, height * 0.012)
         ring_color = _COLOR_SELECT_RING if is_primary else DOF_TRAJ_PATH_COLOR
         fill_color = _COLOR_SELECT_JOINT if is_primary else DOF_TRAJ_DOT_COLOR
         _draw_joint_glow(
             ax,
             pt,
-            r * (1.35 if is_primary else 1.20),
+            r * (1.35 if is_primary else 1.18),
             ring_color if is_primary else DOF_TRAJ_PATH_COLOR,
             zorder=13,
-            max_alpha=0.11 if is_primary else 0.07,
-            layers=1,
+            max_alpha=0.14 if is_primary else 0.07,
+            layers=2 if is_primary else 1,
         )
         ax.add_patch(
             Circle(
                 pt,
-                r * 1.12,
+                r * 1.22,
                 facecolor="none",
                 edgecolor=ring_color,
-                linewidth=1.3 if is_primary else 1.0,
+                linewidth=1.55 if is_primary else 1.1,
                 zorder=14,
+                alpha=0.95,
             )
         )
         ax.add_patch(
@@ -2608,12 +2849,23 @@ def _draw_selection_highlights(
                 pt,
                 r,
                 facecolor=fill_color,
-                edgecolor=_COLOR_JOINT_EDGE,
-                linewidth=1.0 if is_primary else 0.8,
+                edgecolor="#1a222c",
+                linewidth=1.05 if is_primary else 0.85,
                 zorder=15,
                 alpha=1.0,
             )
         )
+        if is_primary:
+            ax.add_patch(
+                Circle(
+                    (pt[0] - r * 0.22, pt[1] + r * 0.22),
+                    r * 0.28,
+                    facecolor="#ffffff",
+                    edgecolor="none",
+                    alpha=0.35,
+                    zorder=15.2,
+                )
+            )
 
 
 def _body_center_x(snapshot: SkeletonSnapshot) -> float:
@@ -3432,24 +3684,25 @@ def _draw_opensim_marker_debug(
     legend_handles = [
         Line2D(
             [0], [0], marker="D", color="w", markerfacecolor=_COLOR_OSIM_DIRECT,
-            markersize=6, label="OpenSim DIRECT",
+            markersize=6, label="OpenSim direct",
         ),
         Line2D(
             [0], [0], marker="^", color="w", markerfacecolor=_COLOR_OSIM_DERIVED,
-            markersize=6, label="OpenSim DERIVED",
+            markersize=6, label="OpenSim derived",
         ),
         Line2D(
             [0], [0], marker="o", color=_COLOR_OSIM_LOW_CONF, markerfacecolor="none",
-            markersize=6, markeredgewidth=1.2, label="OpenSim LOW_CONF",
+            markersize=6, markeredgewidth=1.2, label="OpenSim low confidence",
         ),
     ]
-    ax.legend(
-        handles=legend_handles,
+    from stablewalk.ui.viewers.chart_style import style_chart_legend
+
+    style_chart_legend(
+        ax,
         loc="upper right",
-        fontsize=6.5,
-        framealpha=0.85,
-        facecolor=PANEL,
-        edgecolor=BORDER,
+        handles=legend_handles,
+        labels=[h.get_label() for h in legend_handles],
+        fontsize=9.0,
     )
     return anchors
 
@@ -4040,12 +4293,18 @@ def nearest_joint_from_event(
         display = snapshot._sw_display_xy  # type: ignore[attr-defined]
 
     height = _body_height(snapshot)
-    # Wider hover catch radius so joints are easy to target without pixel-perfect aim.
-    limit = max_distance if max_distance is not None else height * 0.12
+    # Wider hover catch radius so the 14 DOF points are easy to target.
+    limit = max_distance if max_distance is not None else height * 0.155
 
     best_id: str | None = None
     best_dist = limit
-    for jid in PICKABLE_JOINTS:
+    # Prefer the primary 14-point analysis set, then any other pickable joint.
+    from stablewalk.ui.dof_selection import PRIMARY_DOF_JOINTS
+
+    ordered = list(PRIMARY_DOF_JOINTS) + [
+        jid for jid in PICKABLE_JOINTS if jid not in PRIMARY_DOF_JOINTS
+    ]
+    for jid in ordered:
         pt = display.get(jid) if isinstance(display, dict) else None
         if not pt:
             continue
@@ -4125,7 +4384,7 @@ def _draw_joint_motion_trail(
     joint_ids: set[str],
     *,
     display_mode: str,
-    color: str = _COLOR_SELECT_JOINT,
+    color: str = _COLOR_MOTION_ARROW,
 ) -> None:
     """Subtle fading trail through a joint's recent positions (oldest → newest)."""
     if not joint_ids or len(snapshots) < 2:
@@ -4146,14 +4405,15 @@ def _draw_joint_motion_trail(
             continue
         m = len(pts)
         segments = [[pts[i - 1], pts[i]] for i in range(1, m)]
-        colors = [(r, g, b, 0.10 + 0.55 * (i / (m - 1))) for i in range(1, m)]
-        widths = [1.0 + 1.8 * (i / (m - 1)) for i in range(1, m)]
+        # Soft steel trail behind the body — readable without covering limbs.
+        colors = [(r, g, b, 0.06 + 0.38 * (i / (m - 1))) for i in range(1, m)]
+        widths = [0.9 + 1.35 * (i / (m - 1)) for i in range(1, m)]
         lc = LineCollection(
             segments,
             colors=colors,
             linewidths=widths,
             capstyle="round",
-            zorder=3,
+            zorder=2.4,
             antialiased=True,
         )
         ax.add_collection(lc)
@@ -4168,6 +4428,7 @@ def draw_gait_skeleton(
     show_labels: bool = False,
     show_legend: bool = False,
     paused: bool = False,
+    lite_draw: bool = False,
     highlight_joints: set[str] | None = None,
     hover_joint: str | None = None,
     labeled_joints: dict[str, str] | None = None,
@@ -4193,6 +4454,7 @@ def draw_gait_skeleton(
     show_gait_direction: bool = True,
     ghost_snapshots: list[SkeletonSnapshot] | None = None,
     trail_joints: set[str] | None = None,
+    show_dof_pick_targets: bool = False,
 ) -> None:
     """
     Render an anatomical walking manikin from a ``SkeletonSnapshot``.
@@ -4267,6 +4529,7 @@ def draw_gait_skeleton(
 
     # Draw order: ground/BoS (above) → bones → joints → COM/direction →
     # selection → label. Bones must stay visible over overlays.
+    # Always draw torso volume — it defines the biomechanical manikin read.
     _draw_articulated_body_structure(ax, snapshot, height)
     dim_others = bool(highlight)
     # Soft limb de-emphasis when a DOF is selected — torso stays opaque;
@@ -4326,6 +4589,8 @@ def draw_gait_skeleton(
                 height=height,
                 zorder=4.0 + depth_alpha * 0.4 + (0.15 if seg_hot else 0.0),
                 alpha=bone_alpha,
+                # Keep limb capsules during play — stroke-only looks like a stick figure.
+                lite=False,
             )
         else:
             _draw_bone(
@@ -4364,9 +4629,15 @@ def draw_gait_skeleton(
                 height,
                 alpha=1.0,
             )
-    _draw_hands(ax, snapshot, height, dimmed=body_dimmed)
+    if not lite_draw:
+        _draw_hands(ax, snapshot, height, dimmed=body_dimmed)
     _draw_joint_markers(
-        ax, snapshot, height, highlight_joints=highlight, display_mode=display_mode
+        ax,
+        snapshot,
+        height,
+        highlight_joints=highlight,
+        display_mode=display_mode,
+        show_dof_pick_targets=show_dof_pick_targets,
     )
 
     if show_com and com_overlay is not None:
@@ -4441,4 +4712,4 @@ def draw_gait_skeleton(
         mode_label = MODE_TO_SKELETON_LABEL.get(display_mode, "")
         if mode_label:
             title = f"{title}  ·  {mode_label}"
-        ax.set_title(title, color=TEXT, fontsize=9, fontweight="medium", pad=4)
+        ax.set_title(title, color=TEXT, fontsize=13, fontweight="medium", pad=8)

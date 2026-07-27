@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Iterable
 import numpy as np
 from matplotlib.ticker import MaxNLocator
 
-from stablewalk.ui.colors import BORDER, MUTED, PANEL, TEXT
+from stablewalk.ui.colors import MUTED, TEXT
 from stablewalk.ui.dof_position_table import _ITEM_DOF_ID, angle_value_for_item
 from stablewalk.ui.dof_selection import GUI_DOF_ITEM_IDS, anchor_joint_for_item, label_for_item
 from stablewalk.ui.joint_colors import joint_color
@@ -23,9 +23,14 @@ from stablewalk.ui.viewers.chart_hover import ChartHoverPoint
 from stablewalk.ui.viewers.chart_playhead import PlayheadState, draw_chart_playhead
 from stablewalk.ui.viewers.chart_style import (
     TIMELINE_X_LABEL,
+    _AXIS_LABEL_SIZE,
+    _TICK_LABEL_SIZE,
+    _TITLE_SIZE,
     apply_chart_grid,
     apply_chart_panel_style,
     configure_time_axis,
+    series_plot_kwargs,
+    style_figure_legend,
 )
 
 if TYPE_CHECKING:
@@ -313,12 +318,11 @@ def draw_joint_motion_analysis_chart(
             (line,) = ax.plot(
                 series.times_s[mask],
                 y[mask],
-                color=series.color,
-                linewidth=1.7,
-                solid_capstyle="round",
-                solid_joinstyle="round",
-                label=series.label,
-                zorder=4,
+                **series_plot_kwargs(
+                    color=series.color,
+                    label=series.label,
+                    item_id=series.item_id,
+                ),
             )
             if metric_id == "angle" and series.label not in legend_labels:
                 legend_handles.append(line)
@@ -341,9 +345,9 @@ def draw_joint_motion_analysis_chart(
                     )
                 )
 
-        ax.set_title(title, color=TEXT, fontsize=11.0, fontweight="medium", pad=6)
-        ax.set_ylabel(ylabel, color=MUTED, fontsize=10.0)
-        ax.tick_params(colors=MUTED, labelsize=8.5)
+        ax.set_title(title, color=TEXT, fontsize=_TITLE_SIZE, fontweight="medium", pad=7)
+        ax.set_ylabel(ylabel, color=MUTED, fontsize=_AXIS_LABEL_SIZE)
+        ax.tick_params(colors=MUTED, labelsize=_TICK_LABEL_SIZE)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=3))
         apply_chart_grid(ax, y_minor=True)
         if playhead is not None:
@@ -367,31 +371,12 @@ def draw_joint_motion_analysis_chart(
 
     for ax in axes[3:]:
         configure_time_axis(ax, show_xlabel=True, nbins=5)
-        ax.set_xlabel(TIMELINE_X_LABEL, color=MUTED, fontsize=10.0)
+        ax.set_xlabel(TIMELINE_X_LABEL, color=MUTED, fontsize=_AXIS_LABEL_SIZE)
     for ax in axes[:3]:
         configure_time_axis(ax, show_xlabel=False, nbins=5)
 
     if legend_handles:
-        leg = fig.legend(
-            legend_handles,
-            legend_labels,
-            loc="upper center",
-            ncol=min(6, len(legend_labels)),
-            fontsize=8.5,
-            frameon=True,
-            fancybox=False,
-            facecolor=PANEL,
-            edgecolor=BORDER,
-            labelcolor=TEXT,
-            framealpha=0.94,
-            borderpad=0.4,
-            handlelength=1.8,
-            handletextpad=0.55,
-            labelspacing=0.4,
-            bbox_to_anchor=(0.5, 0.995),
-        )
-        if leg is not None:
-            leg.get_frame().set_linewidth(0.7)
+        style_figure_legend(fig, legend_handles, legend_labels)
 
     t0 = float(np.nanmin(bundle.times_s)) if bundle.times_s.size else 0.0
     t1 = float(np.nanmax(bundle.times_s)) if bundle.times_s.size else 1.0

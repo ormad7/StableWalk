@@ -159,6 +159,7 @@ def capture_workspace_state(gui: Any) -> dict[str, Any]:
         "knee_angle_source": _str_var(gui, "var_knee_angle_source", "Auto"),
         "dof_projection": _str_var(gui, "var_dof_projection", "3D"),
         "dof_coord_mode": _str_var(gui, "var_dof_coord_mode", ""),
+        "dof_traj_display": _str_var(gui, "var_dof_traj_display", ""),
         "smooth_motion": _bool_var(gui, "smooth_motion", True),
         "show_skeleton": _bool_var(gui, "show_skeleton", True),
         "highlight_dof": _bool_var(gui, "highlight_dof", True),
@@ -268,6 +269,7 @@ def restore_workspace_state(gui: Any, workspace: dict[str, Any]) -> None:
         ("knee_angle_source", "var_knee_angle_source"),
         ("dof_projection", "var_dof_projection"),
         ("dof_coord_mode", "var_dof_coord_mode"),
+        ("dof_traj_display", "var_dof_traj_display"),
         ("dof_table_display_mode", "dof_table_display_mode"),
     ):
         if not graphs.get(key):
@@ -275,8 +277,17 @@ def restore_workspace_state(gui: Any, workspace: dict[str, Any]) -> None:
         var = getattr(gui, attr, None)
         if var is None:
             continue
+        value = str(graphs[key])
+        if key == "dof_coord_mode":
+            from stablewalk.ui.viewers.dof_trajectory_3d import normalize_coord_mode
+
+            value = normalize_coord_mode(value)
+        elif key == "dof_traj_display":
+            from stablewalk.ui.viewers.dof_trajectory_3d import normalize_display_mode
+
+            value = normalize_display_mode(value)
         try:
-            var.set(str(graphs[key]))
+            var.set(value)
         except Exception:
             pass
     for key, attr in (

@@ -41,12 +41,92 @@ def test_filter_reduces_jitter_without_changing_source_snapshot() -> None:
         filtered.joints["left_knee"].position.x
         - filt._history[-2].joints["left_knee"].position.x
     )
-    assert filt_dx < raw_dx * 0.55
+    assert filt_dx < raw_dx * 0.40
     # Source joints on the original early frame are untouched.
     after = {
         jid: (s.position.x, s.position.y, s.position.z) for jid, s in raw0.joints.items()
     }
     assert after == before
+
+
+def test_filter_preserves_real_gait_rom_and_follows_tracked_pose() -> None:
+    """Stronger smoothing must not collapse swing amplitude or invent paths."""
+    recording = generate_mock_gait(MockGaitConfig(fps=30.0, duration_s=2.0, cadence_hz=1.0))
+    filt = SkeletonDisplayFilter()
+    raw_y: list[float] = []
+    filt_y: list[float] = []
+    for snap in recording.snapshots:
+        raw_y.append(snap.joints["left_knee"].position.y)
+        out = filt.filter_snapshot(snap)
+        filt_y.append(out.joints["left_knee"].position.y)
+        # Always a tracked-derived clone of this frame (same index/time).
+        assert out.frame_index == snap.frame_index
+        assert out.time_s == snap.time_s
+        assert out.metadata.get("display_filtered") is True
+        # Source recording joints remain untouched.
+        assert snap.metadata.get("display_filtered") is not True
+
+    raw_rom = max(raw_y) - min(raw_y)
+    filt_rom = max(filt_y) - min(filt_y)
+    assert raw_rom > 1e-3
+    # Display lag can trim peaks slightly; keep the large majority of tracked ROM.
+    # Analysis ROM still uses the untouched recording.
+    assert filt_rom >= 0.70 * raw_rom
+
+    # Peak timing stays within ~2 frames so gait phase is not visually retimed.
+    raw_peak = raw_y.index(max(raw_y))
+    filt_peak = filt_y.index(max(filt_y))
+    assert abs(filt_peak - raw_peak) <= 2
+
+    # Filtered series stays near the tracked path (no invented offset).
+    mean_abs_err = sum(abs(a - b) for a, b in zip(raw_y, filt_y)) / len(raw_y)
+    assert mean_abs_err < 0.035
+
+
+def test_filter_reduces_frame_to_frame_jitter_on_noisy_track() -> None:
+    recording = generate_mock_gait(MockGaitConfig(fps=30.0, duration_s=1.0, cadence_hz=1.0))
+    filt = SkeletonDisplayFilter()
+    raw_x: list[float] = []
+    filt_x: list[float] = []
+    for i, snap in enumerate(recording.snapshots):
+        # Inject high-frequency landmark flicker on the ankle (~6 mm).
+        ankle = snap.joints["left_ankle"]
+        flicker = 0.006 * (1.0 if i % 2 == 0 else -1.0)
+        noisy = SkeletonSnapshot(
+            frame_index=snap.frame_index,
+            time_s=snap.time_s,
+            joints={
+                **snap.joints,
+                "left_ankle": JointSample(
+                    joint_id="left_ankle",
+                    position=Vec3(
+                        ankle.position.x + flicker,
+                        ankle.position.y,
+                        ankle.position.z,
+                    ),
+                    parent_id=ankle.parent_id,
+                    angle_deg=ankle.angle_deg,
+                ),
+            },
+            dofs=dict(snap.dofs),
+            metadata=dict(snap.metadata or {}),
+        )
+        out = filt.filter_snapshot(noisy)
+        raw_x.append(noisy.joints["left_ankle"].position.x)
+        filt_x.append(out.joints["left_ankle"].position.x)
+
+    def _hf_energy(series: list[float]) -> float:
+        if len(series) < 3:
+            return 0.0
+        total = 0.0
+        for i in range(2, len(series)):
+            total += abs(series[i] - 2.0 * series[i - 1] + series[i - 2])
+        return total / (len(series) - 2)
+
+    raw_hf = _hf_energy(raw_x)
+    filt_hf = _hf_energy(filt_x)
+    assert raw_hf > 1e-4
+    assert filt_hf < 0.55 * raw_hf
 
 
 def test_filter_keeps_limb_lengths_nearly_constant() -> None:

@@ -14,15 +14,19 @@ import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
-from stablewalk.ui.colors import BORDER, COM, INFO, METRIC_GLOBAL, MUTED, PANEL, SIDE_LEFT, TEXT
+from stablewalk.ui.colors import BORDER, COM, INFO, METRIC_GLOBAL, MUTED, SIDE_LEFT, TEXT
 from stablewalk.ui.dof_position_table import angle_value_for_item
 from stablewalk.ui.dof_selection import anchor_joint_for_item, label_for_item
 from stablewalk.ui.viewers.chart_style import (
+    SERIES_LINE_WIDTH,
+    SERIES_LINE_WIDTH_SECONDARY,
+    _LEGEND_SIZE,
     apply_chart_grid,
     apply_chart_panel_style,
     configure_numeric_y_axis,
     configure_time_axis,
-    style_chart_legend,
+    style_chart_title,
+    style_figure_legend,
 )
 
 if TYPE_CHECKING:
@@ -90,11 +94,12 @@ def collect_dof_live_series(
 DOF_LIVE_CHART_MAX_POINTS = 50
 
 # Distinct colors and line styles for at-a-glance reading (lab palette).
-_SERIES_STYLE: tuple[tuple[str, str, str, str, str], ...] = (
-    ("X", "X (m)", SIDE_LEFT, "-", "1.55"),
-    ("Y", "Y (m)", COM, "--", "1.55"),
-    ("Z", "Z (m)", INFO, "-.", "1.55"),
-    ("Angle", "Angle (°)", METRIC_GLOBAL, "-", "1.7"),
+# Linewidths come from shared chart_style (thicker, anti-aliased series).
+_SERIES_STYLE: tuple[tuple[str, str, str, str, float], ...] = (
+    ("X", "X (m)", SIDE_LEFT, "-", SERIES_LINE_WIDTH),
+    ("Y", "Y (m)", COM, "--", SERIES_LINE_WIDTH),
+    ("Z", "Z (m)", INFO, "-.", SERIES_LINE_WIDTH),
+    ("Angle", "Angle (°)", METRIC_GLOBAL, "-", SERIES_LINE_WIDTH_SECONDARY + 0.35),
 )
 
 # Plot band (top) + x-label band + legend band (bottom).
@@ -139,7 +144,7 @@ def _format_time(value: float, _pos: int) -> str:
 
 def _style_angle_axis(angle_ax: Axes) -> None:
     angle_ax.set_facecolor("none")
-    angle_ax.set_ylabel("Angle (°)", color=MUTED, fontsize=10.0, labelpad=8)
+    angle_ax.set_ylabel("Angle (°)", color=MUTED, fontsize=11.0, labelpad=8)
     angle_ax.yaxis.set_label_coords(1.02, 0.5)
     angle_ax.tick_params(
         axis="y",
@@ -225,21 +230,15 @@ def _legend_handles() -> list[Line2D]:
 
 def _draw_chart_legend(fig: Figure) -> None:
     """Compact legend in the reserved band below the plot."""
-    fig.legend(
-        handles=_legend_handles(),
+    handles = _legend_handles()
+    style_figure_legend(
+        fig,
+        handles,
+        [h.get_label() for h in handles],
         loc="lower center",
-        bbox_to_anchor=_LEGEND_ANCHOR,
         ncol=4,
-        fontsize=8.5,
-        framealpha=0.96,
-        facecolor=PANEL,
-        edgecolor=BORDER,
-        labelcolor=TEXT,
-        handlelength=2.2,
-        handletextpad=0.55,
-        borderpad=0.4,
-        labelspacing=0.35,
-        columnspacing=1.0,
+        fontsize=_LEGEND_SIZE,
+        bbox_to_anchor=_LEGEND_ANCHOR,
     )
 
 
@@ -262,6 +261,8 @@ def _plot_position_series(
             alpha=0.98,
             zorder=3,
             solid_capstyle="round",
+            solid_joinstyle="round",
+            antialiased=True,
         )
 
 
@@ -340,6 +341,8 @@ def draw_dof_live_chart(
         alpha=0.96,
         zorder=2,
         solid_capstyle="round",
+        solid_joinstyle="round",
+        antialiased=True,
     )
     _style_angle_axis(angle_ax)
     _style_primary_ticks(ax)
@@ -377,7 +380,7 @@ def draw_dof_live_chart(
     title = series.dof_label
     if windowed:
         title = f"{title}  ·  last {DOF_LIVE_CHART_MAX_POINTS} frames"
-    ax.set_title(title, color=TEXT, fontsize=11.0, fontweight="medium", pad=6)
+    style_chart_title(ax, title, pad=8)
 
     _draw_chart_legend(fig)
     apply_dof_live_chart_layout(fig)

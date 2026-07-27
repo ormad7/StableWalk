@@ -225,8 +225,15 @@ def update_biomechanics_summary_card(gui, ba, gait_cycle, *, frame_index=None) -
         cadence = gm.cadence.value
     if cadence is None and metrics is not None:
         cadence = metrics.cadence_steps_per_min
-    if cadence:
+    if cadence is not None:
         _set("cadence", f"{cadence:.0f}", unit="steps/min", available=True, numeric=float(cadence))
+    elif gm is not None and gm.cadence is not None:
+        conf = float(getattr(gm.cadence, "confidence", 0.0) or 0.0)
+        _set(
+            "cadence",
+            f"N/A ({conf:.0%})" if conf > 0 else "N/A",
+            available=False,
+        )
     else:
         _set("cadence", "—", available=False)
 
@@ -414,21 +421,14 @@ def build_biomechanics_tab(gui, parent: ttk.Frame) -> None:
     )
     gui.lbl_biomech_video_checks.pack(anchor=tk.W, fill=tk.X, pady=(0, 4))
 
-    gui.fig_biomech = Figure(figsize=(11.0, 9.5), dpi=100, facecolor=PANEL)
+    # Defer the large Matplotlib figure until the Biomechanics tab is first shown.
+    gui.fig_biomech = None
+    gui.canvas_biomech = None
     gui.biomech_chart_host = tk.Frame(chart_panel, bg=PANEL, highlightthickness=0)
     gui.biomech_chart_host.columnconfigure(0, weight=1)
     gui.biomech_chart_host.rowconfigure(0, weight=1)
-    gui.canvas_biomech = FigureCanvasTkAgg(gui.fig_biomech, master=gui.biomech_chart_host)
-    w = gui.canvas_biomech.get_tk_widget()
-    w.configure(bg=PANEL, highlightthickness=0)
-    w.grid(row=0, column=0, sticky="nsew")
-    _bind_figure_resize(gui.canvas_biomech, gui.fig_biomech, min_px=80)
-    from stablewalk.ui.viewers.chart_interactions import (
-        attach_chart_interactions,
-        build_chart_tools_bar,
-    )
+    from stablewalk.ui.viewers.chart_interactions import build_chart_tools_bar
 
-    attach_chart_interactions(gui.fig_biomech, gui.canvas_biomech)
     # Summary strip (row 0) · tools bar (row 1) · chart host (row 2, expands).
     chart_panel.rowconfigure(0, weight=0)
     chart_panel.rowconfigure(1, weight=0)
@@ -442,15 +442,39 @@ def build_biomechanics_tab(gui, parent: ttk.Frame) -> None:
     )
     gui.biomech_chart_tools.grid(row=1, column=0, sticky="ew", pady=(0, 2))
     gui.biomech_chart_host.grid(row=2, column=0, sticky="nsew")
-    gui._fit_biomech_canvas = lambda: _fit_figure_to_host(
-        gui.canvas_biomech,
-        gui.fig_biomech,
-        host=gui.biomech_chart_host,
-        min_px=80,
-    )
+    gui._biomech_chart_ready = False
+
+    def _ensure_biomech_chart() -> bool:
+        if getattr(gui, "_biomech_chart_ready", False) and gui.fig_biomech is not None:
+            return True
+        from stablewalk.ui.tk.dashboard_layout import _bind_figure_resize, _fit_figure_to_host
+        from stablewalk.ui.viewers.chart_interactions import attach_chart_interactions
+
+        gui.fig_biomech = Figure(figsize=(11.0, 9.5), dpi=100, facecolor=PANEL)
+        gui.canvas_biomech = FigureCanvasTkAgg(
+            gui.fig_biomech, master=gui.biomech_chart_host
+        )
+        w = gui.canvas_biomech.get_tk_widget()
+        w.configure(bg=PANEL, highlightthickness=0)
+        w.grid(row=0, column=0, sticky="nsew")
+        _bind_figure_resize(gui.canvas_biomech, gui.fig_biomech, min_px=80)
+        attach_chart_interactions(gui.fig_biomech, gui.canvas_biomech)
+        gui._fit_biomech_canvas = lambda: _fit_figure_to_host(
+            gui.canvas_biomech,
+            gui.fig_biomech,
+            host=gui.biomech_chart_host,
+            min_px=80,
+        )
+        gui._biomech_chart_ready = True
+        return True
+
+    gui._ensure_biomech_chart = _ensure_biomech_chart
+    gui._fit_biomech_canvas = lambda: None
     _biomech_cfg_job: dict[str, object] = {"id": None}
 
     def _on_biomech_panel_configure(_event: object | None = None) -> None:
+        if not getattr(gui, "_biomech_chart_ready", False):
+            return
         job = _biomech_cfg_job.get("id")
         if job is not None:
             try:

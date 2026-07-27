@@ -72,6 +72,6 @@ def test_playhead_value_label_rendered() -> None:
         value_y=32.4,
     )
     texts = [t.get_text() for t in ax.texts]
-    assert any("F12" in t for t in texts)
+    assert any("1.00s" in t for t in texts)
     assert any("32.4" in t for t in texts)
     assert len(ax._stablewalk_playhead_artists) == 6

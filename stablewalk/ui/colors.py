@@ -20,15 +20,16 @@ CRITICAL = "#ef4444"  # Red — critical / unstable
 PLAYHEAD = METRIC_GLOBAL
 
 # --- UI / panel chrome (matplotlib faces, axes) ---
+# Match theme.py instrument chrome so charts and Tk cards share one brand.
 # Brand accent must NOT equal SIDE_LEFT — keep L/R limb colors distinct.
-ACCENT = "#2ec99a"
+ACCENT = "#5b9fd4"
 ACCENT_ALT = COM
-BORDER = "#354257"
-ELEVATED = "#222d40"
+BORDER = "#2f3b4d"
+ELEVATED = "#1c2533"
 INFO = "#74c0fc"
-PANEL = "#1a2332"
-TEXT = "#eef3f8"
-MUTED = "#8494ab"
+PANEL = "#171e2a"
+TEXT = "#e8eef5"
+MUTED = "#7f8fa3"
 VIZ_JOINT = "#c9a227"
 
 # Biomechanical stability classification (gait analysis)

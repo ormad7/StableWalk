@@ -53,23 +53,23 @@ def _snap(
 class JointInformationTests(unittest.TestCase):
     def test_field_catalog_covers_required_metrics(self) -> None:
         required = {
-            "Joint name",
-            "Current X",
-            "Current Y",
-            "Current Z",
+            "Joint",
+            "X (cm)",
+            "Y (cm)",
+            "Z (cm)",
             "Angle",
-            "Angular velocity",
-            "Angular acceleration",
-            "Range of Motion",
-            "Frame number",
+            "ω (°/s)",
+            "α (°/s²)",
+            "ROM",
+            "Frame",
             "Time",
-            "Tracking confidence",
-            "Contact state",
-            "Current gait phase",
-            "Foot clearance",
+            "Confidence",
+            "Contact",
+            "Phase",
+            "Clearance",
         }
         self.assertEqual(set(JOINT_INFO_TITLES.values()), required)
-        self.assertEqual(len(JOINT_INFO_FIELD_ORDER), 14)
+        self.assertEqual(len(JOINT_INFO_FIELD_ORDER), 12)
 
     def test_empty_snapshot_uses_dashes(self) -> None:
         info = empty_joint_information()
@@ -97,11 +97,11 @@ class JointInformationTests(unittest.TestCase):
         self.assertEqual(info.joint_name.lower(), "right knee")
         self.assertEqual(info.frame, "2")
         self.assertEqual(info.time, "0.10 s")
-        self.assertEqual(info.x, "0.100 m")
+        self.assertEqual(info.x, "10.0 cm")
         self.assertEqual(info.angle, "12.0°")
-        self.assertEqual(info.angular_velocity, "40.00 °/s")
+        self.assertEqual(info.angular_velocity, "40.0 °/s")
         # Δω/Δt = (40 - 20) / 0.1 = 200 °/s²
-        self.assertEqual(info.angular_acceleration, "200.00 °/s²")
+        self.assertEqual(info.angular_acceleration, "200.0 °/s²")
         self.assertEqual(info.gait_phase, "Mid-stance")
         self.assertEqual(info.foot_clearance, "—")
         self.assertIn("–", info.rom)

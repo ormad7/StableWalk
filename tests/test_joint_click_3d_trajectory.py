@@ -160,6 +160,7 @@ def test_focus_while_playing_skips_heavy_panel_remount(monkeypatch) -> None:
     app.update_joint_3d_graph = MagicMock()
     app._schedule_dof_traj_reflow = MagicMock()
     app._ensure_playback_continues_after_pick = MagicMock()
+    app._expand_overview_joint_dof_analysis = MagicMock()
     app._update_overview_playback_hud = MagicMock()
     app._overview_traj_dock_visible = True
     app._apply_overview_joint_motion_expanded = MagicMock()
@@ -198,6 +199,7 @@ def test_focus_joint_calls_show_and_update_graph(monkeypatch) -> None:
     app.update_joint_3d_graph = MagicMock()
     app._schedule_dof_traj_reflow = MagicMock()
     app._ensure_playback_continues_after_pick = MagicMock()
+    app._expand_overview_joint_dof_analysis = MagicMock()
     app._overview_traj_dock_visible = False
     app._overview_joint_motion_expanded = True
     app._apply_overview_joint_motion_expanded = MagicMock()
@@ -234,8 +236,9 @@ def test_focus_joint_calls_show_and_update_graph(monkeypatch) -> None:
     app.show_joint_3d_panel.assert_called_once()
     app.update_joint_3d_graph.assert_called_with("right_hip")
     status_text = app.status.configure.call_args.kwargs.get("text", "")
-    assert "Selected: Right Hip" in status_text
+    assert "DOF analysis: Right Hip" in status_text
     assert "3D path" in status_text
+    app._expand_overview_joint_dof_analysis.assert_called_with("right_hip")
 
 
 @pytest.mark.parametrize(
@@ -257,6 +260,7 @@ def test_focus_requested_joints_one_click(monkeypatch, label: str, item_id: str)
     app.update_joint_3d_graph = MagicMock()
     app._schedule_dof_traj_reflow = MagicMock()
     app._ensure_playback_continues_after_pick = MagicMock()
+    app._expand_overview_joint_dof_analysis = MagicMock()
     app._overview_traj_dock_visible = False
     app._apply_overview_joint_motion_expanded = MagicMock()
     app._analysis_motion_recording = MagicMock(
@@ -300,6 +304,7 @@ def test_focus_switches_joint_updates_graph(monkeypatch) -> None:
     app.update_joint_3d_graph = MagicMock()
     app._schedule_dof_traj_reflow = MagicMock()
     app._ensure_playback_continues_after_pick = MagicMock()
+    app._expand_overview_joint_dof_analysis = MagicMock()
     app._apply_overview_joint_motion_expanded = MagicMock()
     app._analysis_motion_recording = MagicMock(
         return_value=SimpleNamespace(frame_count=80)

@@ -29,36 +29,33 @@ _DASH = "—"
 
 JOINT_INFO_FIELD_ORDER: tuple[str, ...] = (
     "joint_name",
+    "angle",
+    "rom",
     "x",
     "y",
     "z",
-    "angle",
     "angular_velocity",
-    "angular_acceleration",
-    "rom",
-    "frame",
-    "time",
     "confidence",
     "contact",
-    "gait_phase",
     "foot_clearance",
+    "gait_phase",
 )
 
 JOINT_INFO_TITLES: dict[str, str] = {
-    "joint_name": "Joint name",
-    "x": "Current X",
-    "y": "Current Y",
-    "z": "Current Z",
+    "joint_name": "Joint",
+    "x": "X (cm)",
+    "y": "Y (cm)",
+    "z": "Z (cm)",
     "angle": "Angle",
-    "angular_velocity": "Angular velocity",
-    "angular_acceleration": "Angular acceleration",
-    "rom": "Range of Motion",
-    "frame": "Frame number",
+    "angular_velocity": "ω (°/s)",
+    "angular_acceleration": "α (°/s²)",
+    "rom": "ROM",
+    "frame": "Frame",
     "time": "Time",
-    "confidence": "Tracking confidence",
-    "contact": "Contact state",
-    "gait_phase": "Current gait phase",
-    "foot_clearance": "Foot clearance",
+    "confidence": "Confidence",
+    "contact": "Contact",
+    "gait_phase": "Phase",
+    "foot_clearance": "Clearance",
 }
 
 
@@ -105,6 +102,12 @@ def empty_joint_information() -> JointInformationSnapshot:
     return JointInformationSnapshot()
 
 
+def _fmt_cm(value: float | None, *, scale: float = 1.0) -> str:
+    if value is None:
+        return _DASH
+    return f"{value * scale * 100.0:.1f} cm"
+
+
 def _fmt_m(value: float | None) -> str:
     if value is None:
         return _DASH
@@ -117,16 +120,21 @@ def _fmt_angle(value: float | None) -> str:
     return f"{value:.1f}°"
 
 
-def _fmt_deg_s(value: float | None) -> str:
-    if value is None:
-        return _DASH
-    return f"{value:.2f} °/s"
-
-
 def _fmt_deg_s2(value: float | None) -> str:
     if value is None:
         return _DASH
-    return f"{value:.2f} °/s²"
+    # Frame-to-frame Δω/Δt is noisy on monocular tracking; hide extreme spikes.
+    if abs(float(value)) > 500.0:
+        return _DASH
+    return f"{value:.1f} °/s²"
+
+
+def _fmt_deg_s(value: float | None) -> str:
+    if value is None:
+        return _DASH
+    if abs(float(value)) > 400.0:
+        return _DASH
+    return f"{value:.1f} °/s"
 
 
 def _fmt_confidence(value: float | None) -> str:
@@ -231,6 +239,10 @@ def build_joint_information(
     y = joint.position.y if joint is not None else None
     z = joint.position.z if joint is not None else None
 
+    from stablewalk.ui.viewers.dof_trajectory_3d import stature_display_scale
+
+    pos_scale = stature_display_scale(recording)
+
     angle = angle_value_for_item(item_id, snapshot)
     omega = _angular_velocity_deg_s(item_id, snapshot)
     alpha = _angular_acceleration_deg_s2(
@@ -257,16 +269,20 @@ def build_joint_information(
     if anchor:
         name = JOINT_DISPLAY_NAMES.get(anchor, name)
 
+    # Prefer the discrete snapshot frame — never round(frame_float), which
+    # drifts one frame ahead of the video HUD during playback.
+    display_frame = int(frame_index) + 1
+
     return JointInformationSnapshot(
         joint_name=name,
-        x=_fmt_m(x),
-        y=_fmt_m(y),
-        z=_fmt_m(z),
+        x=_fmt_cm(x, scale=pos_scale),
+        y=_fmt_cm(y, scale=pos_scale),
+        z=_fmt_cm(z, scale=pos_scale),
         angle=_fmt_angle(angle),
         angular_velocity=_fmt_deg_s(omega),
         angular_acceleration=_fmt_deg_s2(alpha),
         rom=_rom_display(item_id, recording, frame_f),
-        frame=str(frame_index + 1),
+        frame=str(display_frame),
         time=f"{float(snapshot.time_s):.2f} s",
         confidence=_fmt_confidence(confidence),
         contact=contact,

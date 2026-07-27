@@ -33,7 +33,7 @@ OVERLAY_GROUPS: tuple[tuple[str, str, str], ...] = (
 
 # icon, short label, BooleanVar attr, default_on, tooltip, group
 OVERLAY_TOOL_SPECS: tuple[tuple[str, str, str, bool, str, str], ...] = (
-    ("\u21e2", "Direction", "var_overlay_direction", True,
+    ("\u21e2", "Direction", "var_overlay_direction", False,
      "Gait travel direction", "motion"),
     ("\u25bc", "Contact", "var_overlay_contact", True,
      "Foot contact markers", "motion"),
@@ -44,7 +44,7 @@ OVERLAY_TOOL_SPECS: tuple[tuple[str, str, str, bool, str, str], ...] = (
     ("\u25c7", OVERLAY_BOS, "var_overlay_bos", False,
      "bos", "biomechanics"),
     ("\u2197", OVERLAY_COM_VEL, "var_overlay_com_velocity", False,
-     "com", "biomechanics"),
+     "COM velocity from tracked COM motion (display overlay)", "biomechanics"),
     ("\u25ac", "Ground", "var_overlay_ground", True,
      "Ground / floor reference", "environment"),
 )
@@ -69,47 +69,38 @@ def _build_group_inline(
     title: str,
     icon: str,
 ) -> tk.Frame:
-    """One overlay group as a single compact inline row: icon · title · toggles."""
+    """One overlay group with a short title + latched tool toggles."""
+    del icon
     group = tk.Frame(parent, bg=ELEVATED, highlightthickness=0)
 
-    tk.Label(
-        group,
-        text=icon,
-        bg=ELEVATED,
-        fg=ACCENT,
-        font=FONT_UI_XS,
-    ).pack(side=tk.LEFT, padx=(0, 2))
     tk.Label(
         group,
         text=title,
         bg=ELEVATED,
         fg=MUTED,
         font=FONT_UI_XS,
+        anchor="w",
     ).pack(side=tk.LEFT, padx=(0, PAD_XS))
 
-    for icon_i, label, attr, _default, tip, spec_group in OVERLAY_TOOL_SPECS:
+    for _icon_i, label, attr, _default, tip, spec_group in OVERLAY_TOOL_SPECS:
         if spec_group != group_key:
             continue
         var = getattr(gui, attr, None)
         if var is None:
             continue
-        # Icon-first labels keep the ribbon short while remaining scannable.
         btn = ttk.Checkbutton(
             group,
-            text=f"{icon_i} {label}",
+            text=label,
             variable=var,
             command=gui._on_biomech_overlay_toggle,
             takefocus=False,
+            style="Tool.TCheckbutton",
         )
-        btn.pack(side=tk.LEFT, padx=(0, 2))
+        btn.pack(side=tk.LEFT, padx=(0, PAD_XS))
         from stablewalk.ui.metric_tooltips import get_metric_tooltip
 
         science = get_metric_tooltip(tip) if tip in ("com", "bos") else None
-        create_tooltip(
-            btn,
-            science or f"{icon_i} {label}\n{tip}",
-            wraplength=340,
-        )
+        create_tooltip(btn, science or tip or label, wraplength=340)
 
     return group
 
@@ -147,14 +138,46 @@ def build_overlay_control_bar(gui: Any, parent: tk.Misc) -> tuple[tk.Frame, tk.F
         variable=gui.var_skeleton_pick_dof,
         command=getattr(gui, "_on_skeleton_pick_dof_toggle", None),
         takefocus=False,
+        style="Tool.TCheckbutton",
     )
     pick_btn.pack(side=tk.LEFT, padx=(PAD_XS, 2), pady=1)
     create_tooltip(
         pick_btn,
-        "Click a joint on the 3D gait figure to select that degree of freedom "
-        "and show its 3D path. Hold Ctrl/Shift to compare multiple joints.",
+        "Select DOF — click a joint on the 3D figure to show its path. "
+        "Hold Ctrl/Shift to compare multiple joints.",
         wraplength=340,
     )
+
+    # Explicit joint picker — choose a point without relying on click accuracy.
+    from stablewalk.ui.dof_selection import GUI_DOF_ITEM_IDS, GUI_DOF_LABELS
+
+    if not hasattr(gui, "var_overview_joint_pick") or gui.var_overview_joint_pick is None:
+        gui.var_overview_joint_pick = tk.StringVar(value="Select joint…")
+    joint_labels = ["Select joint…"] + [
+        GUI_DOF_LABELS.get(item_id, item_id) for item_id in GUI_DOF_ITEM_IDS
+    ]
+    pick_combo = ttk.Combobox(
+        bar,
+        textvariable=gui.var_overview_joint_pick,
+        values=joint_labels,
+        state="readonly",
+        width=14,
+        takefocus=False,
+    )
+    pick_combo.pack(side=tk.LEFT, padx=(2, 4), pady=1)
+    gui.cmb_overview_joint_pick = pick_combo
+    create_tooltip(
+        pick_combo,
+        "Choose an analysis DOF (shoulders → heels). Same as clicking that joint.",
+        wraplength=340,
+    )
+
+    def _on_joint_pick_combo(_event: object = None) -> None:
+        choose = getattr(gui, "_on_overview_joint_pick_chosen", None)
+        if callable(choose):
+            choose()
+
+    pick_combo.bind("<<ComboboxSelected>>", _on_joint_pick_combo)
 
     first = True
     for group_key, title, icon in OVERLAY_GROUPS:

@@ -85,7 +85,7 @@ class SkeletonOverlayToolbarTests(unittest.TestCase):
             self.assertIsInstance(var, tk.BooleanVar)
             self.assertEqual(bool(var.get()), default_on)
 
-    def test_icons_appear_on_toggles(self) -> None:
+    def test_text_labels_appear_on_toggles(self) -> None:
         bar, _right = build_overlay_control_bar(self.gui, self.host)
         bar.pack(fill=tk.X)
         self.root.update_idletasks()
@@ -107,8 +107,13 @@ class SkeletonOverlayToolbarTests(unittest.TestCase):
         self.assertIn("Environment", joined)
         for icon, label, _attr, _default, _tip, _group in OVERLAY_TOOL_SPECS:
             self.assertTrue(
-                any(icon in t and label in t for t in texts),
-                f"missing toggle for {icon} {label}",
+                any(label in t for t in texts),
+                f"missing toggle for {label!r}",
+            )
+            # Professional chrome: text labels only (no icon prefix on toggles).
+            self.assertFalse(
+                any(t.startswith(f"{icon} ") for t in texts if label in t),
+                f"toggle still uses icon prefix for {label!r}",
             )
 
 

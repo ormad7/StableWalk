@@ -14,7 +14,7 @@ def test_semantic_side_colors() -> None:
 def test_semantic_metric_and_com_colors() -> None:
     assert C.METRIC_GLOBAL == "#f0f4f8"
     assert C.COM == "#4dabf7"
-    assert C.TEXT == C.METRIC_GLOBAL
+    assert C.PLAYHEAD == C.METRIC_GLOBAL
 
 
 def test_semantic_stability_warning_critical() -> None:
@@ -26,7 +26,11 @@ def test_semantic_stability_warning_critical() -> None:
     assert C.STABILITY_UNSTABLE == C.CRITICAL
 
 
-def test_legacy_aliases_match_semantics() -> None:
-    assert C.ACCENT == C.SIDE_LEFT
+def test_chrome_accent_distinct_from_limb_sides() -> None:
+    """Instrument accent must not collide with L/R limb green/red."""
+    assert C.ACCENT == "#5b9fd4"
+    assert C.ACCENT != C.SIDE_LEFT
+    assert C.ACCENT != C.SIDE_RIGHT
     assert C.ACCENT_ALT == C.COM
-    assert C.PLAYHEAD == C.METRIC_GLOBAL
+    assert C.PANEL == "#171e2a"
+    assert C.BORDER == "#2f3b4d"

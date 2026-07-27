@@ -299,19 +299,21 @@ def _plot_knee_trace(
     color: str,
     legend_label: str,
     end_label: str,
+    side: str,
 ) -> None:
     """Single continuous trace per leg; NaN frames create intentional gaps."""
+    from stablewalk.ui.viewers.chart_style import (
+        _ANNOTATION_SIZE,
+        series_plot_kwargs,
+    )
+
     masked = np.ma.masked_invalid(values.astype(float))
     if not np.any(~masked.mask):
         return
     ax.plot(
         times,
         masked,
-        color=color,
-        label=legend_label,
-        linewidth=1.85,
-        solid_capstyle="round",
-        zorder=4,
+        **series_plot_kwargs(color=color, label=legend_label, side=side),
     )
     valid = np.where(np.isfinite(values))[0]
     if valid.size:
@@ -322,7 +324,7 @@ def _plot_knee_trace(
             xytext=(5, 0),
             textcoords="offset points",
             color=color,
-            fontsize=8,
+            fontsize=_ANNOTATION_SIZE,
             fontweight="bold",
             va="center",
             ha="left",
@@ -531,6 +533,7 @@ def draw_knee_time_chart(
         color=SIDE_LEFT,
         legend_label=f"{LABEL_LEFT_KNEE} flexion",
         end_label=LABEL_LEFT_KNEE,
+        side="left",
     )
     _plot_knee_trace(
         ax,
@@ -539,6 +542,7 @@ def draw_knee_time_chart(
         color=SIDE_RIGHT,
         legend_label=f"{LABEL_RIGHT_KNEE} flexion",
         end_label=LABEL_RIGHT_KNEE,
+        side="right",
     )
 
     _draw_gait_event_markers(ax, gait_events or [], y_lo=y_lo, y_hi=y_hi)
@@ -594,7 +598,7 @@ def draw_knee_time_chart(
 
     src_label = "OpenSim IK" if series.source == "opensim_ik" else "Pose-derived"
     style_chart_title(ax, f"Knee flexion · {src_label}")
-    style_chart_legend(ax, loc="upper right", fontsize=8.0)
+    style_chart_legend(ax, loc="upper right")
 
     if not np.any(np.isfinite(left)) and not np.any(np.isfinite(right)):
         ax.text(

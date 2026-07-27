@@ -25,6 +25,7 @@ from stablewalk.ui.theme import (
     ACCENT,
     BORDER,
     ELEVATED,
+    FONT_UI_SEMIBOLD,
     FONT_UI_SM,
     FONT_UI_XS,
     MUTED,
@@ -299,7 +300,7 @@ def _format_items_evidence(items: list[PipelineStageItem]) -> str:
     if not items:
         return "No monitored sub-steps matched this stage."
     lines = [
-        f"{STATUS_SYMBOL[item.status]} {item.label} — {item.detail}"
+        f"{item.label} — {item.detail}"
         for item in items
     ]
     return "\n".join(lines)
@@ -486,7 +487,7 @@ def build_pipeline_stage_dialog_content(
         output_desc=spec.output_desc,
         algorithms=spec.algorithms,
         status=status,
-        status_line=f"{STATUS_SYMBOL[status]} {STATUS_LABEL[status]} — {summary}",
+        status_line=f"{STATUS_LABEL[status]} — {summary}",
         evidence=_format_items_evidence(matched),
         generated_files=files_text,
         confidence=_confidence_for_stage(stage_key, gui, matched),
@@ -501,7 +502,7 @@ def _add_dialog_section(parent: tk.Misc, row: int, label: str, body: str, *, fg:
         text=label,
         bg=ELEVATED,
         fg=ACCENT,
-        font=(FONT_UI_SM[0], FONT_UI_SM[1], "bold"),
+        font=FONT_UI_SEMIBOLD,
         anchor="w",
     ).grid(row=row, column=0, sticky="w", pady=(0, 2))
     tk.Label(

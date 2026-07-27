@@ -286,13 +286,9 @@ def _hide_trajectory_debug_placeholder(gui) -> None:
 
 
 def _draw_trajectory_startup_test(gui) -> None:
-    """
-    Draw a hardcoded 3D path at GUI init to prove the Motion Analysis graph area
-    is visible before any session or joint data is loaded.
-    """
+    """Empty laboratory axes at GUI init — no invented path data."""
     if not hasattr(gui, "fig_dof_traj") or not hasattr(gui, "canvas_dof_traj"):
         return
-    from stablewalk.coordinates.coordinate_map import axis_labels_canonical
 
     ax = gui.ax_dof_traj
     ax.cla()
@@ -302,21 +298,29 @@ def _draw_trajectory_startup_test(gui) -> None:
         del ax._stablewalk_stable_viewport
     ax._stablewalk_plot_legend = None
 
-    labels = axis_labels_canonical()
     ax.set_facecolor(PANEL)
     gui.fig_dof_traj.patch.set_facecolor(PANEL)
-    ax.set_xlabel(labels["x"], color=TEXT, fontsize=8)
-    ax.set_ylabel(labels["y"], color=TEXT, fontsize=8)
-    ax.set_zlabel(labels["z"], color=TEXT, fontsize=8)
-
-    x = [0.0, 0.02, 0.04, 0.03]
-    y = [0.0, 0.03, 0.06, 0.09]
-    z = [0.0, 0.01, 0.03, 0.05]
-    ax.plot(x, y, z, color=ACCENT, linewidth=2.0, label="Path")
-    ax.scatter(x[0], y[0], z[0], color=DOF_TRAJ_START_COLOR, s=48, label="Start", depthshade=False)
-    ax.scatter(x[-1], y[-1], z[-1], color=DOF_TRAJ_DOT_COLOR, s=48, label="Now", depthshade=False)
-    ax.legend(loc="upper left", fontsize=7, framealpha=0.9)
+    ax.set_xlabel("X · Lat (m)", color=TEXT, fontsize=8)
+    ax.set_ylabel("Y · Up (m)", color=TEXT, fontsize=8)
+    ax.set_zlabel("Z · Fwd (m)", color=TEXT, fontsize=8)
+    ax.set_xlim(-0.1, 0.1)
+    ax.set_ylim(-0.1, 0.1)
+    ax.set_zlim(-0.1, 0.1)
+    try:
+        ax.set_box_aspect((1, 1, 1))
+    except Exception:
+        pass
     ax.view_init(elev=20.0, azim=-60.0)
+    ax.text2D(
+        0.5,
+        0.5,
+        "Select a joint to view its 3D path",
+        transform=ax.transAxes,
+        ha="center",
+        va="center",
+        color=MUTED,
+        fontsize=9,
+    )
 
     from stablewalk.ui.viewers.dof_trajectory_3d import relayout_single_dof_viewport
 
@@ -730,18 +734,18 @@ def _metric_grid_cell(
     accent: bool = False,
 ) -> tuple[tk.Label, tk.Label]:
     """One titled value cell inside a metrics grid (roomy, readable cards)."""
-    pad = 2 if compact else 2
-    cell_pad = (0, 0) if compact else (1, 1)
-    title_pad = (1, 0) if compact else (2, 0)
-    value_pad = (0, 1) if compact else (0, 3)
-    inner_x = 4 if compact else 8
+    pad = 3 if compact else 2
+    cell_pad = (1, 2) if compact else (1, 1)
+    title_pad = (2, 1) if compact else (2, 0)
+    value_pad = (0, 3) if compact else (0, 3)
+    inner_x = 6 if compact else 8
     grid_kwargs = dict(row=row, column=column, sticky="nsew", padx=pad, pady=cell_pad)
 
     if accent and not compact:
-        shell = tk.Frame(parent, bg=ORANGE, highlightthickness=0)
+        shell = tk.Frame(parent, bg=ACCENT, highlightthickness=0)
         shell.grid(**grid_kwargs)
         cell = tk.Frame(shell, bg=ELEVATED, highlightthickness=0)
-        cell.pack(fill=tk.BOTH, expand=True, padx=(3, 0))
+        cell.pack(fill=tk.BOTH, expand=True, padx=(2, 0))
     else:
         cell = tk.Frame(
             parent,
@@ -1174,15 +1178,10 @@ def _build_compact_graph_legend(parent: tk.Misc) -> list[tk.Label]:
 
 
 def _build_overview_joint_information_panel(gui, parent: tk.Misc) -> None:
-    """Collapsible live Joint Information grid under the 3D path."""
+    """Collapsible live Joint Information — Details button only until expanded."""
     from stablewalk.ui.joint_information import JOINT_INFO_FIELD_ORDER, JOINT_INFO_TITLES
 
-    panel = ttk.LabelFrame(
-        parent,
-        text=_card_title("Joint Information"),
-        style="Card.TLabelframe",
-        padding=(PAD_XS, PAD_XS),
-    )
+    panel = tk.Frame(parent, bg=PANEL, highlightthickness=0)
     panel.grid(row=3, column=0, sticky="ew", pady=(PAD_XS, 0))
     panel.columnconfigure(0, weight=1)
     gui.overview_joint_info_panel = panel
@@ -1190,12 +1189,17 @@ def _build_overview_joint_information_panel(gui, parent: tk.Misc) -> None:
     gui._overview_joint_info_expanded = False
     toggle = ttk.Button(
         panel,
-        text="▶ Details",
+        text="Details",
         style="Compact.TButton",
-        width=10,
+        width=8,
         takefocus=False,
     )
     toggle.pack(anchor="e")
+    create_tooltip(
+        toggle,
+        "Joint details: angle, ROM, XYZ, ω, α, confidence, contact, phase",
+        wraplength=320,
+    )
 
     body = tk.Frame(panel, bg=PANEL, highlightthickness=0)
     gui._overview_joint_info_body = body
@@ -1204,7 +1208,7 @@ def _build_overview_joint_information_panel(gui, parent: tk.Misc) -> None:
     grid.pack(fill=tk.X, expand=False)
     gui.overview_joint_info_grid = grid
 
-    columns = 4
+    columns = 3
     for col in range(columns):
         grid.columnconfigure(col, weight=1, uniform="joint_info")
 
@@ -1218,29 +1222,33 @@ def _build_overview_joint_information_panel(gui, parent: tk.Misc) -> None:
             title=JOINT_INFO_TITLES[field_id],
             compact=True,
         )
+        try:
+            value_lbl.configure(wraplength=130)
+        except tk.TclError:
+            pass
         value_labels[field_id] = value_lbl
     gui.overview_joint_info_values = value_labels
 
     gui.lbl_overview_joint_info_hint = tk.Label(
         body,
-        text="Select a joint on the skeleton — values update with video playback.",
+        text="",
         bg=PANEL,
         fg=MUTED,
         font=FONT_UI_XS,
         anchor="w",
         justify=tk.LEFT,
     )
-    gui.lbl_overview_joint_info_hint.pack(fill=tk.X, pady=(4, 0))
+    gui.lbl_overview_joint_info_hint.pack_forget()
 
     def _toggle_details() -> None:
         expanded = not bool(getattr(gui, "_overview_joint_info_expanded", False))
         gui._overview_joint_info_expanded = expanded
         if expanded:
             body.pack(fill=tk.X, expand=False, pady=(PAD_XS, 0))
-            toggle.configure(text="▼ Details")
+            toggle.configure(text="Hide")
         else:
             body.pack_forget()
-            toggle.configure(text="▶ Details")
+            toggle.configure(text="Details")
         # The canvas owns all remaining row height; refit after the row changes.
         try:
             parent.update_idletasks()
@@ -1249,9 +1257,20 @@ def _build_overview_joint_information_panel(gui, parent: tk.Misc) -> None:
                 fit(force=True)
         except (tk.TclError, TypeError):
             pass
+        refresh = getattr(gui, "_refresh_overview_joint_information", None)
+        if callable(refresh):
+            try:
+                item_id = None
+                active = getattr(gui, "_active_dof_item_id", None)
+                if callable(active):
+                    item_id = active()
+                refresh(item_id)
+            except Exception:
+                pass
 
     toggle.configure(command=_toggle_details)
     gui.btn_overview_joint_info_toggle = toggle
+    body.pack_forget()
 
 
 def _build_overview_joint_motion_analysis_panel(gui, parent: tk.Misc) -> None:
@@ -1354,15 +1373,25 @@ def _build_overview_joint_motion_analysis_panel(gui, parent: tk.Misc) -> None:
     def _apply_expanded(expanded: bool) -> None:
         gui._overview_joint_motion_expanded = expanded
         if expanded:
+            host.grid(row=2, column=0, sticky="nsew", pady=(PAD_XS, 0))
+            header.grid(row=0, column=0, sticky="ew")
             body.grid(row=1, column=0, sticky="nsew", pady=(2, 0))
         else:
             body.grid_remove()
+            header.grid_remove()
+            host.grid_remove()
         apply_overview_joint_motion_row_weight(parent, expanded=expanded, row=2)
         btn = getattr(gui, "_btn_overview_joint_motion_toggle", None)
         if btn is not None:
             btn.configure(
                 text="▼ Joint Graphs" if expanded else "▶ Joint Graphs"
             )
+        graphs_btn = getattr(gui, "_overview_graphs_btn", None)
+        if graphs_btn is not None:
+            try:
+                graphs_btn.configure(text="Hide graphs" if expanded else "Graphs")
+            except tk.TclError:
+                pass
         try:
             parent.update_idletasks()
         except tk.TclError:
@@ -1398,8 +1427,10 @@ def _build_overview_joint_motion_analysis_panel(gui, parent: tk.Misc) -> None:
     gui._toggle_overview_joint_motion = _toggle
     gui._apply_overview_joint_motion_expanded = _apply_expanded
 
-    # Start collapsed — do not steal height from Video | Skeleton | 3D Path.
+    # Start fully collapsed — Graphs opens from the View toolbar.
     body.grid_remove()
+    header.grid_remove()
+    host.grid_remove()
     apply_overview_joint_motion_row_weight(parent, expanded=False, row=2)
 
 
@@ -2020,7 +2051,7 @@ def build_dashboard_layout(gui) -> None:
 
     gui.lbl_overview_traj_info = tk.Label(
         footer,
-        text="Select DOF: click a joint on the 3D gait figure to inspect its path.",
+        text="Select a joint (dropdown or click) to inspect its 3D path.",
         bg=PANEL,
         fg=MUTED,
         font=FONT_MONO_SM,
@@ -2031,8 +2062,10 @@ def build_dashboard_layout(gui) -> None:
     gui.lbl_overview_traj_info.pack(fill=tk.X, anchor="w")
 
     legend_row = tk.Frame(footer, bg=PANEL, highlightthickness=0)
-    legend_row.pack(fill=tk.X, anchor="w", pady=(3, 0))
+    # Compact Start/Path/Now chips — pack only when useful; default hidden to
+    # keep the Overview path column uncluttered (markers already convey meaning).
     gui.overview_traj_legend_labels = _build_compact_graph_legend(legend_row)
+    gui._overview_traj_legend_row = legend_row
     # Legacy binding target (hidden) — chip legend above is the visible key.
     gui.lbl_overview_traj_legend = tk.Label(footer, text="", bg=PANEL)
     gui.lbl_overview_traj_metrics = tk.Label(footer, text="", bg=PANEL)
@@ -2693,9 +2726,9 @@ def build_dashboard_layout(gui) -> None:
 
     _status_label(0, "Selected Joint:", "lbl_selected_joint_value")
     _status_label(1, "Coordinate Mode:", "lbl_dof_coord_mode_value")
-    gui.lbl_dof_coord_mode_value.configure(text="ROOT-RELATIVE")
+    gui.lbl_dof_coord_mode_value.configure(text="Root-relative")
     _status_label(2, "Trajectory Mode:", "lbl_dof_traj_mode_value")
-    gui.lbl_dof_traj_mode_value.configure(text="CURRENT PROGRESS")
+    gui.lbl_dof_traj_mode_value.configure(text="Current progress")
     _status_label(3, "View:", "lbl_dof_view_mode_value")
     gui.lbl_dof_view_mode_value.configure(text="3D")
     status_row.grid_remove()
@@ -2725,32 +2758,32 @@ def build_dashboard_layout(gui) -> None:
     controls_left = tk.Frame(joint_controls, bg=PANEL, highlightthickness=0)
     controls_left.grid(row=0, column=0, sticky="w")
 
-    gui.var_dof_traj_display = tk.StringVar(value="CURRENT PROGRESS")
+    gui.var_dof_traj_display = tk.StringVar(value="Current progress")
     tk.Label(controls_left, text="Trajectory Display", bg=PANEL, fg=MUTED, font=FONT_UI_SM).pack(
         side=tk.LEFT, padx=(0, 4)
     )
     gui.cmb_dof_traj_display = ttk.Combobox(
         controls_left,
         textvariable=gui.var_dof_traj_display,
-        values=("CURRENT PROGRESS", "FULL TRAJECTORY"),
+        values=("Current progress", "Full trajectory"),
         state="readonly",
-        width=13,
+        width=14,
     )
     gui.cmb_dof_traj_display.pack(side=tk.LEFT, padx=(0, 10))
     gui.cmb_dof_traj_display.bind(
         "<<ComboboxSelected>>", lambda _e: gui._on_dof_traj_display_changed()
     )
 
-    gui.var_dof_coord_mode = tk.StringVar(value="ROOT-RELATIVE")
+    gui.var_dof_coord_mode = tk.StringVar(value="Root-relative")
     tk.Label(controls_left, text="Coord", bg=PANEL, fg=MUTED, font=FONT_UI_SM).pack(
         side=tk.LEFT, padx=(0, 4)
     )
     gui.cmb_dof_coord_mode = ttk.Combobox(
         controls_left,
         textvariable=gui.var_dof_coord_mode,
-        values=("ROOT-RELATIVE", "GLOBAL"),
+        values=("Root-relative", "Global"),
         state="readonly",
-        width=10,
+        width=12,
     )
     gui.cmb_dof_coord_mode.pack(side=tk.LEFT, padx=(0, 10))
     gui.cmb_dof_coord_mode.bind(

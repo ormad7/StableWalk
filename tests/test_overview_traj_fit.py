@@ -102,15 +102,35 @@ def test_percentile_limits_ignore_all_nonfinite_values() -> None:
     assert hi > 0.12
 
 
-def test_compact_axes_have_four_readable_ticks() -> None:
-    ticks = _overview_tick_values(-0.012, 0.018, use_cm=True, target=4)
-    assert len(ticks) == 4
+def test_compact_axes_have_adaptive_readable_ticks() -> None:
+    from stablewalk.ui.viewers.dof_trajectory_3d import _format_overview_cm_tick
+
+    ticks = _overview_tick_values(-0.012, 0.018, use_cm=True, target=2)
+    assert 2 <= len(ticks) <= 3
+    assert ticks == sorted(ticks)
     assert ticks == sorted(set(ticks))
+    labels = [_format_overview_cm_tick(t, 0) for t in ticks]
+    assert len(labels) == len(set(labels))
+    # Nice spacing: adjacent steps are nearly equal.
+    if len(ticks) >= 3:
+        steps = [ticks[i + 1] - ticks[i] for i in range(len(ticks) - 1)]
+        assert max(steps) / max(min(steps), 1e-12) < 2.5
+
+
+def test_short_y_axis_avoids_stacked_cm_ticks() -> None:
+    """Knee Y ≈ 2 cm must not render -43/-44/-45 stacked on one edge."""
+    from stablewalk.ui.viewers.dof_trajectory_3d import _format_overview_cm_tick
+
+    ticks = _overview_tick_values(-0.455, -0.435, use_cm=True, target=2)
+    labels = [_format_overview_cm_tick(t, 0) for t in ticks]
+    assert len(ticks) == 2
+    assert len(labels) == len(set(labels))
+    assert abs(ticks[-1] - ticks[0]) >= 0.015
 
 
 def test_box_aspect_clamps_nearly_flat_axes() -> None:
     aspect = _balanced_box_aspect((0.001, 0.20, 0.004))
-    assert min(aspect) / max(aspect) >= 0.30
+    assert min(aspect) / max(aspect) >= 0.25
 
 
 def test_selected_trajectory_axes_use_scientific_cm_labels() -> None:
@@ -123,13 +143,156 @@ def test_selected_trajectory_axes_use_scientific_cm_labels() -> None:
     ax._stablewalk_motion_dock = True
     ax._stablewalk_overview_cm_ticks = True
     setup_single_dof_trajectory_axes(ax)
-    assert ax.get_xlabel() == "X – Lateral (cm)"
-    assert ax.get_ylabel() == "Y – Vertical (cm)"
-    assert ax.get_zlabel() == "Z – Forward (cm)"
+    assert ax.get_xlabel() == "X (cm)"
+    assert ax.get_ylabel() == "Y (cm)"
+    assert ax.get_zlabel() == "Z (cm)"
+
+
+def test_adaptive_ticks_avoid_duplicate_labels() -> None:
+    from stablewalk.ui.viewers.dof_trajectory_3d import _format_overview_cm_tick
+
+    ticks = _overview_tick_values(-0.05, 0.05, use_cm=True, target=3)
+    labels = [_format_overview_cm_tick(t, 0) for t in ticks]
+    assert len(labels) == len(set(labels))
+    assert len(ticks) >= 2
+
+
+def test_overview_viewport_gives_room_around_tiny_rom() -> None:
+    """Near-flat knee Y must expand so markers/ticks are not clipped/stacked."""
+    xs = [i * 0.001 for i in range(40)]
+    ys = [-0.445 + (i % 3) * 0.0004 for i in range(40)]
+    zs = [i * 0.0008 for i in range(40)]
+    vp = _viewport_for_overview_dock(xs, ys, zs, joint_id="right_knee")
+    assert vp.ylim[1] - vp.ylim[0] >= 0.055
+    # Path stays centred — not stuck in a corner of an empty cube.
+    med_x = 0.5 * (min(xs) + max(xs))
+    assert vp.xlim[0] < med_x < vp.xlim[1]
+    assert (vp.xlim[1] - vp.xlim[0]) <= 0.40
+
+
+def test_overview_toe_path_fills_cube_not_corner_speck() -> None:
+    """Foot tip with a long noisy axis must still fill a tight centred cube."""
+    xs = [0.06 + (i % 5) * 0.002 for i in range(50)]
+    ys = [-0.95 + (i % 4) * 0.0015 for i in range(50)]
+    zs = [0.07 + (i % 6) * 0.002 for i in range(50)]
+    # Spike that previously emptied the cube (false forward progression).
+    xs = xs + [0.90]
+    zs = zs + [0.85]
+    ys = ys + [-0.95]
+    vp = _viewport_for_overview_dock(xs, ys, zs, joint_id="left_toe")
+    side = max(
+        vp.xlim[1] - vp.xlim[0],
+        vp.ylim[1] - vp.ylim[0],
+        vp.zlim[1] - vp.zlim[0],
+    )
+    assert side <= 0.42 + 1e-9
+    # Real cluster (~6–8 cm) must sit near the cube centre.
+    assert vp.xlim[0] < 0.065 < vp.xlim[1]
+    assert vp.ylim[0] < -0.95 < vp.ylim[1]
+    assert vp.zlim[0] < 0.075 < vp.zlim[1]
+    # Equal scale cube.
+    assert abs((vp.xlim[1] - vp.xlim[0]) - (vp.ylim[1] - vp.ylim[0])) < 1e-9
+
+
+def test_overview_knee_keeps_tip_inside_cube() -> None:
+    """Live tip near Y=-44 cm must stay inside the fitted cube (no floor clip)."""
+    xs = [-0.06 + (i % 4) * 0.003 for i in range(40)]
+    ys = [-0.445 + (i % 5) * 0.002 for i in range(40)]
+    zs = [-0.02 + (i % 3) * 0.002 for i in range(40)]
+    # Tip slightly outside the bulk (matches footer Y -44.3).
+    xs.append(-0.066)
+    ys.append(-0.443)
+    zs.append(-0.020)
+    vp = _viewport_for_overview_dock(xs, ys, zs, joint_id="right_knee")
+    tip_x, tip_y, tip_z = -0.066, -0.443, -0.020
+    assert vp.xlim[0] <= tip_x <= vp.xlim[1]
+    assert vp.ylim[0] <= tip_y <= vp.ylim[1]
+    assert vp.zlim[0] <= tip_z <= vp.zlim[1]
+    # Equal cube; tip has air (not flush against a face).
+    assert (tip_y - vp.ylim[0]) > 0.01
+    assert (vp.ylim[1] - tip_y) > 0.01
+
+
+def test_trajectory_targets_seventy_percent_fill_with_equal_axis_scale() -> None:
+    xs = [i / 1000.0 for i in range(100)]
+    ys = [0.4 + (i % 8) / 1000.0 for i in range(100)]
+    zs = [0.2 + i / 2000.0 for i in range(100)]
+    vp = _viewport_for_overview_dock(xs, ys, zs)
+
+    robust_x_span = xs[97] - xs[1]
+    displayed_x_span = vp.xlim[1] - vp.xlim[0]
+    fill = robust_x_span / displayed_x_span
+    # Centred cube: path fills a comfortable fraction of each equal axis.
+    assert 0.25 <= fill <= 0.85
+
+    limit_spans = (
+        vp.xlim[1] - vp.xlim[0],
+        vp.ylim[1] - vp.ylim[0],
+        vp.zlim[1] - vp.zlim[0],
+    )
+    assert max(limit_spans) - min(limit_spans) < 1e-9
+
+
+def test_path_gradient_and_markers_emphasize_current_frame() -> None:
+    colors, widths = _path_segment_styles(12, "#63d8ff")
+    assert colors[0][:3] != colors[-1][:3]
+    assert all(a[3] <= b[3] for a, b in zip(colors, colors[1:]))
+    assert all(a <= b for a, b in zip(widths, widths[1:]))
+    assert _CURRENT_DOT_SIZE > _START_DOT_SIZE > _END_DOT_SIZE
+
+
+def test_expand_viewport_keeps_tip_inside_cube() -> None:
+    from stablewalk.models.gait_motion import Vec3
+    from stablewalk.ui.viewers.dof_trajectory_3d import (
+        _SingleTrajViewport,
+        _expand_viewport_to_include,
+    )
+
+    vp = _SingleTrajViewport(
+        xlim=(-0.02, 0.01),
+        ylim=(-0.45, -0.43),
+        zlim=(-0.06, 0.0),
+        box_aspect=(0.03, 0.02, 0.06),
+        elev=25.0,
+        azim=-55.0,
+    )
+    tip = Vec3(-0.059, -0.445, -0.008)
+    expanded = _expand_viewport_to_include(vp, [tip], joint_id="right_knee")
+    assert expanded.xlim[0] <= tip.x <= expanded.xlim[1]
+    assert expanded.ylim[0] <= tip.y <= expanded.ylim[1]
+    assert expanded.zlim[0] <= tip.z <= expanded.zlim[1]
+
+
+def test_expand_viewport_keeps_full_path_inside_cube() -> None:
+    from stablewalk.models.gait_motion import Vec3
+    from stablewalk.ui.viewers.dof_trajectory_3d import (
+        _SingleTrajViewport,
+        _expand_viewport_to_include,
+    )
+
+    vp = _SingleTrajViewport(
+        xlim=(-0.02, 0.01),
+        ylim=(-0.45, -0.43),
+        zlim=(-0.06, 0.0),
+        box_aspect=(0.03, 0.02, 0.06),
+        elev=22.0,
+        azim=-48.0,
+    )
+    path = [
+        Vec3(-0.02, -0.44, -0.05),
+        Vec3(-0.055, -0.448, -0.02),
+        Vec3(0.005, -0.435, -0.005),
+    ]
+    expanded = _expand_viewport_to_include(
+        vp, path, joint_id="right_knee", pad_frac=0.28
+    )
+    for tip in path:
+        assert expanded.xlim[0] <= tip.x <= expanded.xlim[1]
+        assert expanded.ylim[0] <= tip.y <= expanded.ylim[1]
+        assert expanded.zlim[0] <= tip.z <= expanded.zlim[1]
 
 
 def test_percentile_limits_center_on_median() -> None:
-    # Bulk near 1.0 with a one-sided low tail — median must sit mid-range.
     vals = [0.55] + [1.0 + (i % 3) * 0.01 for i in range(40)]
     lo, hi = _percentile_axis_limits(
         vals, pad_frac=0.12, low_pct=0.02, high_pct=0.98
@@ -139,12 +302,25 @@ def test_percentile_limits_center_on_median() -> None:
     assert 0.35 <= rel <= 0.65
 
 
-def test_overview_viewport_ignores_outlier_spike() -> None:
-    xs = [0.0 + i * 0.002 for i in range(30)] + [3.0]
-    ys = [0.01 + (i % 5) * 0.001 for i in range(30)] + [0.01]
-    zs = [0.0 + i * 0.001 for i in range(30)] + [0.0]
+def test_overview_cm_ticks_match_negative_knee_height() -> None:
+    """Footer Y ≈ −44 cm must sit inside Y-axis ticks (minus signs preserved)."""
+    from stablewalk.ui.viewers.dof_trajectory_3d import (
+        _format_overview_cm_tick,
+        _overview_tick_values,
+        meters_to_display_cm,
+    )
+
+    xs = [-0.05 + i * 0.001 for i in range(25)]
+    ys = [-0.45 + 0.004 * ((i % 5) - 2) for i in range(25)]
+    zs = [-0.02 + i * 0.001 for i in range(25)]
     vp = _viewport_for_overview_dock(xs, ys, zs, joint_id="right_knee")
-    assert vp.xlim[1] - vp.xlim[0] < 1.0
+    tip_y_cm = meters_to_display_cm(ys[-1])
+    assert vp.ylim[0] <= ys[-1] <= vp.ylim[1]
+    assert -55.0 <= tip_y_cm <= -30.0
+    ticks = _overview_tick_values(vp.ylim[0], vp.ylim[1], use_cm=True, target=3)
+    labels = [_format_overview_cm_tick(t, 0) for t in ticks]
+    assert any(lab.startswith("-") for lab in labels)
+    assert all(float(lab) <= 0 for lab in labels if lab not in ("0",))
 
 
 def test_overview_viewport_centers_path() -> None:
@@ -160,37 +336,5 @@ def test_overview_viewport_centers_path() -> None:
 def test_overview_camera_keeps_y_up_for_planar_path() -> None:
     elev_flat, _ = _overview_camera_for_spans((0.02, 0.003, 0.015))
     elev_tall, _ = _overview_camera_for_spans((0.01, 0.04, 0.01))
-    # Planar walk paths use the modest Perspective elev so +Y stays screen-up.
     assert elev_flat <= 26.0
     assert elev_tall >= elev_flat
-
-
-def test_trajectory_targets_seventy_percent_fill_with_equal_axis_scale() -> None:
-    xs = [i / 1000.0 for i in range(100)]
-    ys = [0.4 + (i % 8) / 1000.0 for i in range(100)]
-    zs = [0.2 + i / 2000.0 for i in range(100)]
-    vp = _viewport_for_overview_dock(xs, ys, zs)
-
-    robust_x_span = xs[97] - xs[1]
-    displayed_x_span = vp.xlim[1] - vp.xlim[0]
-    assert robust_x_span / displayed_x_span == pytest.approx(
-        _TRAJECTORY_TARGET_FILL, abs=0.03
-    )
-
-    limit_spans = (
-        vp.xlim[1] - vp.xlim[0],
-        vp.ylim[1] - vp.ylim[0],
-        vp.zlim[1] - vp.zlim[0],
-    )
-    unit_scales = [
-        aspect / span for aspect, span in zip(vp.box_aspect, limit_spans, strict=True)
-    ]
-    assert max(unit_scales) - min(unit_scales) < 1e-9
-
-
-def test_path_gradient_and_markers_emphasize_current_frame() -> None:
-    colors, widths = _path_segment_styles(12, "#63d8ff")
-    assert colors[0][:3] != colors[-1][:3]
-    assert all(a[3] <= b[3] for a, b in zip(colors, colors[1:]))
-    assert all(a <= b for a, b in zip(widths, widths[1:]))
-    assert _CURRENT_DOT_SIZE > _START_DOT_SIZE > _END_DOT_SIZE

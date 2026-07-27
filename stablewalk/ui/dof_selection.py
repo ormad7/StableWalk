@@ -91,6 +91,25 @@ _JOINT_TO_ITEM.update(
 
 PICKABLE_JOINTS: tuple[str, ...] = tuple(_JOINT_TO_ITEM.keys())
 
+# Primary analysis DOF points shown as click targets on the Walking Skeleton
+# (14 joints — within the 12–15 research set; toes remain in the dropdown).
+PRIMARY_DOF_JOINTS: tuple[str, ...] = (
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+    "left_heel",
+    "right_heel",
+)
+
 
 def joints_for_item(item_id: str) -> set[str]:
     return set(_ITEM_JOINTS.get(item_id, frozenset()))

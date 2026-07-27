@@ -50,9 +50,9 @@ else:
     PipelineStageState = str
 
 ENGINEERING_STATUS_SYMBOL = {
-    STATUS_COMPLETED: "\u2713",  # ✓
-    STATUS_PARTIAL: "\u26a0",  # ⚠
-    STATUS_UNAVAILABLE: "\u2717",  # ✗
+    STATUS_COMPLETED: "",
+    STATUS_PARTIAL: "",
+    STATUS_UNAVAILABLE: "",
 }
 
 ENGINEERING_STATUS_LABEL = {
@@ -75,10 +75,7 @@ class EngineeringStageView:
 
 
 def _status_display(status: PipelineStageState) -> str:
-    return (
-        f"{ENGINEERING_STATUS_SYMBOL[status]} "
-        f"{ENGINEERING_STATUS_LABEL[status]}"
-    )
+    return ENGINEERING_STATUS_LABEL[status]
 
 
 def _rts_stage_status(raw: str | None) -> PipelineStageState:

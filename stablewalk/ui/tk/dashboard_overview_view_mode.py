@@ -485,7 +485,7 @@ def _animate_mode_transition(gui: Any, host: tk.Misc) -> None:
 
 
 def build_overview_view_mode_selector(gui: Any, parent: tk.Misc) -> tk.Frame:
-    """Create the professional Overview View Mode toolbar."""
+    """Compact View Mode toolbar — dropdown + Full Screen (lab-software chrome)."""
     from tkinter import ttk
 
     from stablewalk.ui.theme import create_tooltip
@@ -501,40 +501,75 @@ def build_overview_view_mode_selector(gui: Any, parent: tk.Misc) -> tk.Frame:
 
     tk.Label(
         bar,
-        text="View Mode",
+        text="View",
         bg=PANEL,
         fg=MUTED,
         font=FONT_UI_XS,
         anchor="w",
     ).grid(row=0, column=0, sticky="w", padx=(0, PAD_SM))
 
-    modes = tk.Frame(bar, bg=PANEL, highlightthickness=0)
-    modes.grid(row=0, column=1, sticky="w")
+    label_by_id = {mode_id: label for mode_id, label in VIEW_MODE_OPTIONS}
+    id_by_label = {label: mode_id for mode_id, label in VIEW_MODE_OPTIONS}
+    mode_labels = [label for _mid, label in VIEW_MODE_OPTIONS]
+    gui._overview_view_mode_combo_var = tk.StringVar(
+        value=label_by_id.get(initial, mode_labels[0])
+    )
 
-    def _on_mode_selected() -> None:
-        apply_overview_view_mode(
-            gui,
-            gui._overview_view_mode_var.get(),
-            animate=True,
-            persist=True,
-        )
+    def _on_mode_selected(_event: object = None) -> None:
+        label = str(gui._overview_view_mode_combo_var.get() or "")
+        mode_id = id_by_label.get(label, initial)
+        gui._overview_view_mode_var.set(mode_id)
+        apply_overview_view_mode(gui, mode_id, animate=True, persist=True)
 
-    for mode_id, label in VIEW_MODE_OPTIONS:
-        ttk.Radiobutton(
-            modes,
-            text=label,
-            variable=gui._overview_view_mode_var,
-            value=mode_id,
-            command=_on_mode_selected,
-        ).pack(side=tk.LEFT, padx=(0, 8))
+    mode_combo = ttk.Combobox(
+        bar,
+        textvariable=gui._overview_view_mode_combo_var,
+        values=mode_labels,
+        state="readonly",
+        width=18,
+        takefocus=False,
+    )
+    mode_combo.grid(row=0, column=1, sticky="w")
+    mode_combo.bind("<<ComboboxSelected>>", _on_mode_selected)
+    create_tooltip(
+        mode_combo,
+        "Workspace layout: Video · Skeleton · Side-by-Side · Overlay · Full 3D",
+        wraplength=340,
+    )
+    gui._overview_view_mode_combo = mode_combo
+
+    # Keep the StringVar in sync when apply_overview_view_mode sets it elsewhere.
+    def _sync_combo_from_var(*_args: object) -> None:
+        mode_id = str(gui._overview_view_mode_var.get() or "")
+        label = label_by_id.get(mode_id)
+        if label and gui._overview_view_mode_combo_var.get() != label:
+            gui._overview_view_mode_combo_var.set(label)
+
+    try:
+        gui._overview_view_mode_var.trace_add("write", _sync_combo_from_var)
+    except Exception:
+        pass
 
     actions = tk.Frame(bar, bg=PANEL, highlightthickness=0)
     actions.grid(row=0, column=2, sticky="e")
 
+    graphs_btn = ttk.Button(
+        actions,
+        text="Graphs",
+        style="Compact.TButton",
+        width=7,
+        command=lambda: getattr(gui, "_toggle_overview_joint_motion", lambda: None)(),
+        takefocus=False,
+    )
+    graphs_btn.pack(side=tk.LEFT, padx=(0, PAD_SM))
+    create_tooltip(graphs_btn, "Show / hide joint motion graphs")
+    gui._overview_graphs_btn = graphs_btn
+
     fullscreen_btn = ttk.Button(
         actions,
-        text="⛶ Full Screen",
+        text="⛶",
         style="Compact.TButton",
+        width=3,
         command=lambda: toggle_overview_full_screen(gui),
     )
     fullscreen_btn.pack(side=tk.LEFT, padx=(0, PAD_SM))
@@ -551,14 +586,12 @@ def build_overview_view_mode_selector(gui: Any, parent: tk.Misc) -> tk.Frame:
         actions,
         text="Reset",
         style="Compact.TButton",
+        width=6,
         command=_on_reset_layout,
     )
     reset_btn.pack(side=tk.LEFT)
     create_tooltip(reset_btn, "Return to the Side-by-Side workspace")
 
-    tk.Frame(bar, bg=BORDER, height=1, highlightthickness=0).grid(
-        row=1, column=0, columnspan=3, sticky="ew", pady=(PAD_XS, 0)
-    )
     return bar
 
 

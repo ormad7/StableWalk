@@ -155,7 +155,7 @@ def test_diagram_stage_has_tooltip() -> None:
     report = assess_pipeline_status(PipelineStatusContext())
     stage = build_pipeline_diagram(report)[0]
     assert stage.tooltip
-    assert stage.display_line().startswith("\u2713") or stage.display_line().startswith("\u26a0") or stage.display_line().startswith("\u2717")
+    assert stage.display_line() in ("Completed", "Partial", "Missing")
 
 
 def test_opensim_pipeline_details_checklist() -> None:
@@ -189,10 +189,10 @@ def test_opensim_pipeline_details_checklist() -> None:
     diagram = {stage.key: stage for stage in build_pipeline_diagram(report)}
     osim = diagram["opensim"]
     assert osim.status == STATUS_COMPLETED
-    assert "Model loaded" in osim.detail
-    assert "TRC exported" in osim.detail
-    assert "MOT exported" in osim.detail
-    assert "IK completed" in osim.detail
+    # Diagram card stays short; full checklist remains on sub-items / stage dialog.
+    assert "Model" in osim.detail
+    assert "TRC" in osim.detail
+    assert "MOT" in osim.detail
     assert "Partial" not in osim.detail
 
 
@@ -221,6 +221,13 @@ def test_opensim_ik_block_reason_in_pipeline() -> None:
     assert ik.detail == reason
 
     osim = next(s for s in build_pipeline_diagram(report) if s.key == "opensim")
-    assert reason in osim.detail
-    assert "Marker mapping 55%" in osim.detail
-    assert "Coverage 48%" in osim.detail
+    # Card shows a short roll-up; IK block reason stays on the IK sub-item.
+    assert "Model" in osim.detail or "TRC" in osim.detail
+    assert reason not in osim.detail or len(osim.detail) < len(reason) + 20
+    assert ik.detail == reason
+    assert "Marker mapping 55%" in next(
+        i.detail for i in report.all_items() if i.key == "osim_mapping"
+    )
+    assert "Coverage 48%" in next(
+        i.detail for i in report.all_items() if i.key == "osim_coverage"
+    )

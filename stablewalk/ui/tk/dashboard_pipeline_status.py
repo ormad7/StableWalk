@@ -59,7 +59,7 @@ def build_pipeline_status_panel(
     """Install a Pipeline Status monitoring panel."""
     section = ttk.LabelFrame(
         parent,
-        text="  Pipeline Status  ",
+        text="Pipeline Status",
         style="Card.TLabelframe",
         padding=DASHBOARD_CARD_PAD,
     )
@@ -67,11 +67,7 @@ def build_pipeline_status_panel(
 
     intro = tk.Label(
         section,
-        text=(
-            "Artifact-grounded workflow for the current video session — each stage is a "
-            "job showing execution time, output files, and confidence. "
-            "▶ expands full details · click a stage for the run log."
-        ),
+        text="Stage status for this session. Click a stage for details.",
         bg=PANEL,
         fg=MUTED,
         font=FONT_UI_XS,
@@ -200,7 +196,7 @@ def _status_chip(parent: tk.Misc, status: str) -> tk.Frame:
     )
     tk.Label(
         chip,
-        text=f"{STATUS_SYMBOL[status]} {STATUS_LABEL[status]}",
+        text=f"{STATUS_LABEL[status]}",
         bg=ELEVATED,
         fg=fg,
         font=(FONT_UI_XS[0], FONT_UI_XS[1], "bold"),
@@ -280,13 +276,10 @@ def _build_stage_card(
         fg=MUTED_DIM,
         font=FONT_UI_XS,
     ).pack(pady=(8, 0))
-    tk.Label(
-        rail,
-        text=STATUS_SYMBOL.get(status, "\u2022"),
-        bg=PANEL,
-        fg=dot_color,
-        font=FONT_TITLE,
-    ).pack(pady=(2, 0))
+    # Colored status chip letter removed — full status pill is on the card.
+    tk.Frame(rail, bg=dot_color, width=10, height=10, highlightthickness=0).pack(
+        pady=(6, 0)
+    )
 
     card = tk.Frame(
         outer,
@@ -409,7 +402,7 @@ def _build_stage_card(
                 drow += 1
                 tk.Label(
                     line,
-                    text=STATUS_SYMBOL.get(it.status, "\u2022"),
+                    text="·",
                     bg=ELEVATED,
                     fg=_STATUS_FG.get(it.status, MUTED),
                     font=FONT_UI_XS,

@@ -159,7 +159,7 @@ from stablewalk.ui.selection_state import (
 )
 from stablewalk.models.joint_registry import JOINT_DISPLAY_NAMES
 from stablewalk.ui.skeleton_player import SkeletonPlayer
-from stablewalk.ui.viewers.dof_trajectory_3d import TRAJECTORY_COLORS, draw_single_dof_trajectory_3d
+from stablewalk.ui.viewers.dof_trajectory_3d import TRAJECTORY_COLORS
 from stablewalk.ui.viewers.gait_skeleton_renderer import (
     DEFAULT_SKELETON_DISPLAY_MODE,
     LABEL_TO_SKELETON_MODE,
@@ -337,12 +337,12 @@ class StableWalkGUI:
         self._skeleton_cache: dict[int, Skeleton3D] = {}
         self._rgb_cache = FrameRgbCache(max_entries=96)
         self._panel_tick = 0
-        self._panel_update_stride = 2
-        self._play_anim_hz = 24
+        self._play_anim_hz = 20
         self._last_positions: list[tuple[str, float, float, float]] = []
         self._3d_flush_scheduled = False
         self._pending_3d_args: tuple | None = None
-        self._3d_play_stride = 2
+        # Skeleton redraw every Nth play tick (video still updates every tick).
+        self._3d_play_stride = 3
         self._skel_play_tick = 0
         self._transport_label_cache: tuple[str, str] | None = None
         self._biomech_static_sig: object | None = None
@@ -352,8 +352,14 @@ class StableWalkGUI:
         # Playback performance: keep video + skeleton at full frame rate, but
         # throttle the expensive analytical charts/panels so playback is smooth.
         self._pb_heavy = True
-        self._heavy_chart_interval_s = 0.12
+        self._heavy_chart_interval_s = 0.16
         self._last_heavy_chart_ts = 0.0
+        # Joint-info / light path label throttle (seconds) during play.
+        self._joint_info_play_interval_s = 0.10
+        self._last_joint_info_play_ts = 0.0
+        self._overview_traj_draw_cache_key: object | None = None
+        self._overview_path_cache: dict[tuple, object] = {}
+        self._last_overview_info_text: str | None = None
         # None => no visibility gating (populate all panels); a frozenset during
         # the playback sync path restricts redraws to the active tab's widgets.
         self._pb_visible: frozenset[str] | None = None
@@ -470,7 +476,7 @@ class StableWalkGUI:
             self._update_interactive_skeleton(force_draw=True)
         self._update_ground_clearance_visibility()
         self.status.configure(
-            text="Ready — load a walking video or choose a Demo Gait Example"
+            text="Ready — load a walking video or open Examples"
         )
     def _cancel_presentation_autoplay(self) -> None:
         if self._presentation_after_id:
@@ -561,17 +567,27 @@ class StableWalkGUI:
         header.pack(fill=tk.X)
         header.pack_propagate(False)
         title_row = tk.Frame(header, bg=SURFACE)
-        title_row.pack(side=tk.LEFT, padx=PAD_MD, pady=(PAD_XS + 2, PAD_XS + 2))
+        title_row.pack(side=tk.LEFT, padx=PAD_MD, pady=(PAD_XS, PAD_XS))
         tk.Label(
-            title_row, text="StableWalk", bg=SURFACE, fg=ACCENT, font=FONT_DISPLAY
+            title_row, text="StableWalk", bg=SURFACE, fg=TEXT, font=FONT_DISPLAY
         ).pack(side=tk.LEFT)
         tk.Label(
             title_row,
-            text=f"  ·  {DASHBOARD_SUBTITLE}",
+            text=f"  {DASHBOARD_SUBTITLE}",
             bg=SURFACE,
             fg=MUTED,
             font=FONT_UI_SM,
         ).pack(side=tk.LEFT, padx=(PAD_XS, 0))
+        # Session / trial placeholder (filled when a recording is loaded).
+        self.lbl_session_header = tk.Label(
+            header,
+            text="",
+            bg=SURFACE,
+            fg=MUTED,
+            font=FONT_UI_XS,
+            anchor="e",
+        )
+        self.lbl_session_header.pack(side=tk.RIGHT, padx=PAD_MD)
         tk.Frame(self._dashboard_header, bg=BORDER, height=1).pack(fill=tk.X)
 
     def _build_menu(self) -> None:
@@ -645,7 +661,6 @@ class StableWalkGUI:
             command=self._run_opensim_demo_ik,
         )
         help_menu.add_command(label="About StableWalk", command=self._show_about)
-        help_menu.add_command(label="Edit demo URL list…", command=self._open_url_list)
 
         demo_menu = tk.Menu(menubar, tearoff=0, **mc)
         menubar.add_cascade(label="Demo", menu=demo_menu)
@@ -654,7 +669,14 @@ class StableWalkGUI:
             command=self._reset_presentation_demo,
         )
         demo_menu.add_separator()
-        demo_menu.add_command(label="▶ Full video comparison demo", command=self._run_demo)
+        for ex in DEMO_GAIT_EXAMPLES:
+            demo_menu.add_command(
+                label=ex.display_name,
+                command=lambda k=ex.key: self._load_demo_gait(k),
+            )
+        demo_menu.add_separator()
+        demo_menu.add_command(label="Full video comparison demo", command=self._run_demo)
+        demo_menu.add_command(label="Edit demo URL list…", command=self._open_url_list)
 
     def _build_input_bar(self) -> None:
         """Compact toolbar: video source, analyze, and demo gait shortcuts."""
@@ -711,7 +733,45 @@ class StableWalkGUI:
             width=3,
             command=self._show_input_settings_menu,
         )
-        self.btn_input_settings.pack(side=tk.LEFT)
+        self.btn_input_settings.pack(side=tk.LEFT, padx=(0, PAD_XS))
+        create_tooltip(self.btn_input_settings, "Input options (smooth motion, …)")
+
+        # Examples menubutton — demos live here / Demo menu, not as primary chrome.
+        self._demo_gait_buttons: dict[str, ttk.Button] = {}
+        examples_menu = tk.Menu(row, tearoff=0)
+        for ex in DEMO_GAIT_EXAMPLES:
+            examples_menu.add_command(
+                label=ex.display_name,
+                command=lambda k=ex.key: self._load_demo_gait(k),
+            )
+        examples_menu.add_separator()
+        examples_menu.add_command(
+            label="About active example…",
+            command=self._show_demo_video_details,
+        )
+        self.btn_examples = ttk.Menubutton(
+            row,
+            text="Examples",
+            style="Secondary.TButton",
+            direction="below",
+        )
+        self.btn_examples.configure(menu=examples_menu)
+        self.btn_examples.pack(side=tk.LEFT, padx=(0, PAD_XS))
+        create_tooltip(
+            self.btn_examples,
+            "Load a verified gait example (also under Demo menu)",
+            wraplength=280,
+        )
+        # Hidden legacy buttons kept for highlight / lock_ui API compatibility.
+        for ex in DEMO_GAIT_EXAMPLES:
+            btn = ttk.Button(
+                row,
+                text=ex.button_label,
+                style="Secondary.TButton",
+                command=lambda k=ex.key: self._load_demo_gait(k),
+            )
+            btn.pack_forget()
+            self._demo_gait_buttons[ex.key] = btn
 
         self.btn_next_video = ttk.Button(
             row, text="Next ▶", style="Secondary.TButton", command=self._next_video
@@ -727,22 +787,6 @@ class StableWalkGUI:
         self.btn_export = ttk.Button(row, text="", command=self._export_analysis)
         self.btn_export.pack_forget()
 
-        # Demo gait shortcuts share the source row so Overview keeps more height.
-        ttk.Separator(row, orient=tk.VERTICAL).pack(
-            side=tk.LEFT, fill=tk.Y, padx=(PAD_SM, PAD_XS)
-        )
-        self._demo_gait_buttons: dict[str, ttk.Button] = {}
-        for ex in DEMO_GAIT_EXAMPLES:
-            btn = ttk.Button(
-                row,
-                text=ex.button_label,
-                style="Secondary.TButton",
-                width=max(12, len(ex.button_label)),
-                command=lambda k=ex.key: self._load_demo_gait(k),
-            )
-            btn.pack(side=tk.LEFT, padx=(0, PAD_XS))
-            self._demo_gait_buttons[ex.key] = btn
-
         self.btn_save_demo_comparison = ttk.Button(
             row,
             text="Save",
@@ -751,7 +795,12 @@ class StableWalkGUI:
             command=self._save_demo_comparison,
             state=tk.DISABLED,
         )
-        self.btn_save_demo_comparison.pack(side=tk.LEFT, padx=(PAD_XS, 0))
+        # Save comparison lives on the Compare tab — keep widget for API, hide chrome.
+        create_tooltip(
+            self.btn_save_demo_comparison,
+            "Save this demo row for Compare (use the Compare tab)",
+            wraplength=280,
+        )
 
         self.lbl_demo_category_hint = tk.Label(
             row,
@@ -763,12 +812,9 @@ class StableWalkGUI:
             justify=tk.LEFT,
             wraplength=280,
         )
-        self.lbl_demo_category_hint.pack(side=tk.LEFT, padx=(PAD_SM, 0))
 
-        self._demo_info_btn = ttk.Label(row, text="Info", style="Card.TLabel", cursor="hand2")
-        self._demo_info_btn.pack(side=tk.LEFT, padx=(PAD_XS, 0))
-        self._demo_info_btn.bind("<Button-1>", lambda _e: self._show_demo_video_details())
-        create_tooltip(self._demo_info_btn, "About the active demo video")
+        self._demo_info_btn = ttk.Label(row, text="", style="Card.TLabel")
+        # Info action moved into Examples menu.
 
         row2 = ttk.Frame(bar)
         row2.pack(fill=tk.X, pady=(2, 0))
@@ -848,27 +894,25 @@ class StableWalkGUI:
         self._load_video(source=source, show_dialog=False, unique_session=True)
 
     def _sync_demo_category_hint(self) -> None:
-        """Update category tagline and compare strip as soon as a demo is selected."""
+        """Put category context on demo-button tooltips (no permanent tagline)."""
         demo = getattr(self, "_active_demo_gait", None)
         hint = getattr(self, "lbl_demo_category_hint", None)
         if hint is not None:
-            if demo is None:
-                hint.configure(text="")
-            else:
-                from stablewalk.ui.theme import ACCENT_ALT, ORANGE, TEXT, WARNING
+            hint.configure(text="")
+        # Refresh tooltips on demo gait buttons.
+        from stablewalk.ui.theme import create_tooltip
 
-                tagline = demo_category_tagline(demo.key)
-                fg = TEXT
-                if demo.key == "abnormal":
-                    fg = WARNING
-                elif demo.key == "athletic":
-                    fg = ACCENT_ALT
-                elif demo.key == "normal":
-                    fg = ORANGE
-                hint.configure(
-                    text=f"{demo.button_label}: {tagline}" if tagline else "",
-                    fg=fg,
-                )
+        for key, btn in getattr(self, "_demo_gait_buttons", {}).items():
+            ex = example_by_key(key)
+            if ex is None:
+                continue
+            tagline = demo_category_tagline(key)
+            tip = f"{ex.display_name}"
+            if tagline:
+                tip = f"{tip}\n{tagline}"
+            if demo is not None and demo.key == key:
+                tip = f"{tip}\n(active)"
+            create_tooltip(btn, tip, wraplength=320)
         self._sync_demo_category_compare_strip()
 
     def _highlight_demo_button(self, active_key: str | None) -> None:
@@ -931,49 +975,15 @@ class StableWalkGUI:
         self._sync_demo_save_button()
 
     def _sync_demo_category_compare_strip(self) -> None:
-        """Teacher-facing one-line comparison across Abnormal / Normal / Performance."""
+        """Hide the redundant COMPARE banner — category already shows in the header."""
         lbl = getattr(self, "lbl_overview_demo_compare", None)
-        demo = getattr(self, "_active_demo_gait", None)
         if lbl is None:
             return
-        if demo is None or self.gait_motion is None:
+        try:
             lbl.configure(text="")
-            return
-        from stablewalk.ui.theme import ACCENT_ALT, ORANGE, WARNING
-
-        usable, detected = self._resolved_gait_cycle_count()
-        completeness = (
-            self._biomech.completeness_pct if self._biomech is not None else None
-        )
-        comp = f" · {completeness:.0f}% complete" if completeness is not None else ""
-        item_id = self._active_dof_item_id()
-        joint = ""
-        if item_id:
-            from stablewalk.ui.dof_selection import label_for_item
-
-            joint = label_for_item(item_id) or ""
-        if demo.key == "abnormal":
-            text = (
-                f"COMPARE — Abnormal: walker-assisted gait · tracks {joint or 'hip'} "
-                f"· {detected or 0} detected / {usable or 0} usable cycles{comp}"
-            )
-            fg = WARNING
-        elif demo.key == "normal":
-            text = (
-                f"COMPARE — Normal: healthy steady walking · tracks {joint or 'knee'} "
-                f"· {usable or 0} usable cycles · alternating swing/stance{comp}"
-            )
-            fg = ORANGE
-        elif demo.key == "athletic":
-            text = (
-                f"COMPARE — Performance: fast side-view gait · tracks {joint or 'knee'} "
-                f"· larger knee swing · {usable or 0} usable cycle(s){comp}"
-            )
-            fg = ACCENT_ALT
-        else:
-            text = ""
-            fg = ACCENT_ALT
-        lbl.configure(text=text, fg=fg)
+            lbl.grid_remove()
+        except tk.TclError:
+            pass
 
     def _sync_demo_save_button(self) -> None:
         btn = getattr(self, "btn_save_demo_comparison", None)
@@ -1710,6 +1720,14 @@ class StableWalkGUI:
         self.gait_motion = recording
         self._motion_series_cache_key = None
         self._motion_frame_series_cache = None
+        self._overview_traj_draw_cache_key = None
+        self._overview_path_cache = {}
+        try:
+            from stablewalk.ui.viewers.dof_trajectory_3d import clear_trajectory_path_cache
+
+            clear_trajectory_path_cache()
+        except Exception:
+            pass
         from stablewalk.ui.skeleton_display_filter import ensure_display_filter
 
         ensure_display_filter(self).reset()
@@ -1930,7 +1948,7 @@ class StableWalkGUI:
         return f"{value:.0f}\u00b0"
 
     def _update_overview_playback_hud(self) -> None:
-        """Refresh the floating Overview playback info bar (live during play)."""
+        """Refresh the floating Overview analysis strip (live during play)."""
         labels = getattr(self, "_overview_hud_value_labels", None)
         hud = getattr(self, "_overview_playback_hud", None)
         if not labels or hud is None:
@@ -1958,25 +1976,6 @@ class StableWalkGUI:
             except tk.TclError:
                 pass
 
-        from stablewalk.ui.dof_selection import label_for_item
-
-        from stablewalk.ui.dof_selection import label_for_item
-        from stablewalk.ui.tk.dashboard_status_bar import playhead_frame_0based
-
-        frame_i = playhead_frame_0based(self)
-        if frame_i is None:
-            frame_i = int(player.state.frame_index)
-        total = max(int(player.frame_count), 1)
-        self._configure_label_if_changed(
-            labels["frame"], text=f"{frame_i + 1} / {total}"
-        )
-
-        t = player.time_at_current()
-        dur = player.duration_s
-        self._configure_label_if_changed(
-            labels["time"], text=f"{t:.2f} / {dur:.2f}s"
-        )
-
         snap = player.current_snapshot()
         video_frame_index = getattr(snap, "frame_index", None) if snap else None
 
@@ -1986,27 +1985,25 @@ class StableWalkGUI:
                 item_id = self._active_dof_item_id() or item_id
             except Exception:
                 pass
-        labels["joint"].configure(text=label_for_item(item_id) if item_id else "None")
 
-        labels["phase"].configure(text=self._overview_hud_gait_phase(video_frame_index))
-
-        speed_text = "\u2014"
-        ba = getattr(self, "_biomech_analysis", None)
-        if ba is not None and ba.gait_metrics and ba.gait_metrics.walking_speed:
-            from stablewalk.analysis.biomechanical.walking_speed import (
-                format_walking_speed_display,
+        if "phase" in labels:
+            self._configure_label_if_changed(
+                labels["phase"], text=self._overview_hud_gait_phase(video_frame_index)
             )
-
-            speed_text = format_walking_speed_display(ba.gait_metrics.walking_speed)
-            # Compact HUD: avoid clipping long "Not available (conf …)" strings.
-            if speed_text.startswith("Not available"):
-                metric = ba.gait_metrics.walking_speed
-                conf = float(getattr(metric, "confidence", 0.0) or 0.0)
-                speed_text = f"N/A ({conf:.0%})" if conf > 0 else "N/A"
-        labels["speed"].configure(text=speed_text)
-
-        labels["confidence"].configure(text=self._overview_hud_tracking_confidence())
-        labels["rom"].configure(text=self._overview_hud_selected_rom(item_id))
+        if "confidence" in labels:
+            self._configure_label_if_changed(
+                labels["confidence"], text=self._overview_hud_tracking_confidence()
+            )
+        if "rom" in labels:
+            self._configure_label_if_changed(
+                labels["rom"], text=self._overview_hud_selected_rom(item_id)
+            )
+        # Playback rate (not walking speed — that lives on Motion / Biomechanics).
+        if "speed" in labels:
+            rate = float(getattr(player.state, "speed", 1.0) or 1.0)
+            if rate <= 0:
+                rate = 1.0
+            self._configure_label_if_changed(labels["speed"], text=f"{rate:.2f}×")
 
     def _move_existing_chart_playheads(
         self,
@@ -2159,7 +2156,8 @@ class StableWalkGUI:
             canvas = getattr(self, attr, None)
             if id(canvas) in getattr(self, "_pb_painted_canvas_ids", set()):
                 continue
-            self._paint_canvas_now(canvas)
+            # Coalesce secondary chart paints while playing.
+            self._paint_canvas_now(canvas, idle=True)
 
     def _sync_all_to_frame(self, *, force_draw: bool = True) -> None:
         """Refresh every panel to skeleton_player's current frame — lockstep, sync.
@@ -2224,11 +2222,27 @@ class StableWalkGUI:
             # Trajectory + joint information (heavy 3D redraw — throttled while
             # playing, only when its panel is visible).
             if self._pb_heavy and self._group_visible("trajectory"):
-                self._refresh_motion_trajectory_on_frame(
-                    force_draw=force_draw and not self.playing
-                )
-                # Keep Overview path tip + labels on the same playhead.
-                if getattr(self, "_overview_traj_dock_visible", False):
+                # Motion-tab trajectory (skip nested Overview refresh — done once below).
+                if self._group_visible("motion"):
+                    self._refresh_motion_trajectory_on_frame(
+                        force_draw=force_draw and not self.playing,
+                        refresh_overview=False,
+                    )
+                # Overview path dock: one rebuild per heavy tick (not twice).
+                if (
+                    self._group_visible("overview")
+                    and getattr(self, "_overview_traj_dock_visible", False)
+                ):
+                    try:
+                        self._refresh_overview_trajectory_dock(force_draw=False)
+                    except Exception:
+                        pass
+                elif (
+                    self._group_visible("motion")
+                    and getattr(self, "_overview_traj_dock_visible", False)
+                    and not self._group_visible("overview")
+                ):
+                    # Motion tab only — still keep Overview dock warm if mapped.
                     try:
                         self._refresh_overview_trajectory_dock(force_draw=False)
                     except Exception:
@@ -2237,7 +2251,7 @@ class StableWalkGUI:
                 self._group_visible("overview")
                 and getattr(self, "_overview_traj_dock_visible", False)
             ):
-                # Light path: frame/time labels only (no full 3D rebuild).
+                # Light path: frame/time/XYZ labels only (no full 3D rebuild).
                 try:
                     self._sync_overview_traj_playhead_labels()
                 except Exception:
@@ -2308,12 +2322,6 @@ class StableWalkGUI:
         if not snap:
             return
 
-        from stablewalk.ui.skeleton_display_filter import ensure_display_filter
-
-        # Metrics / clearance stay on the raw snapshot; drawing uses a mocap-style
-        # filtered copy (adaptive temporal smooth + limb length locks).
-        display_snap = ensure_display_filter(self).filter_snapshot(snap)
-
         is_playing = self.skeleton_player.state.playing
         is_stopped = self.skeleton_player.state.stopped
         show_detail = not is_playing  # Pause / Stop: crisp draw
@@ -2373,14 +2381,21 @@ class StableWalkGUI:
         # when the Overview tab (its only home) is not on screen.
         if not self._group_visible("skeleton"):
             return
+
+        from stablewalk.ui.skeleton_display_filter import ensure_display_filter
+
+        # Always advance the display filter so temporal smoothing stays continuous,
+        # even on ticks where we skip the Matplotlib paint.
+        display_snap = ensure_display_filter(self).filter_snapshot(snap)
+
         # Alternate-tick skeleton redraw while playing (video still every tick).
-        # Intentionally ignores force_draw — playback always passes force_draw=True.
         if is_playing:
             stride = max(int(getattr(self, "_3d_play_stride", 1) or 1), 1)
             skip = (int(getattr(self, "_skel_play_tick", 0)) % stride) != 0
             self._skel_play_tick = int(getattr(self, "_skel_play_tick", 0)) + 1
             if skip:
                 return
+
         com_ov, poly_ov, dir_ov, foot_c, support_type, stability_state, com_proj, com_trail, com_vel = (
             self._biomech_overlays_for_frame(snap.frame_index)
         )
@@ -2390,12 +2405,14 @@ class StableWalkGUI:
             display_snap,
             clear=True,
             paused=show_detail,
+            # Stroke-only limbs while playing — same joint positions, far fewer patches.
+            lite_draw=bool(is_playing),
             ghost_snapshots=ghosts,
-            trail_joints=highlight,
+            trail_joints=highlight if show_detail else None,
             show_labels=False,
             show_legend=False,
             highlight_joints=highlight,
-            hover_joint=self._hover_joint,
+            hover_joint=self._hover_joint if show_detail else None,
             labeled_joints=labeled,
             motion_arrows=self._motion_arrows_from_previews() if show_detail else None,
             title="",
@@ -2405,28 +2422,32 @@ class StableWalkGUI:
             foot_contact=foot_c,
             com_overlay=com_ov,
             com_projection_xz=com_proj,
-            com_trail=com_trail,
-            com_velocity=com_vel,
+            com_trail=com_trail if show_detail else None,
+            com_velocity=com_vel if show_detail else None,
             support_polygon=poly_ov,
             support_type=support_type,
             gait_direction=dir_ov,
             stability_state=stability_state,
             show_ground_plane=self._overlay_enabled("var_overlay_ground"),
             show_com=self._overlay_enabled("var_overlay_com"),
-            show_com_velocity=self._overlay_enabled("var_overlay_com_velocity"),
+            show_com_velocity=self._overlay_enabled("var_overlay_com_velocity")
+            and show_detail,
             show_support_polygon=self._overlay_enabled("var_overlay_bos"),
             show_contact_points=self._overlay_enabled("var_overlay_contact"),
-            show_gait_direction=self._overlay_enabled("var_overlay_direction"),
+            show_gait_direction=self._overlay_enabled("var_overlay_direction")
+            and show_detail,
+            show_dof_pick_targets=bool(
+                getattr(self, "var_skeleton_pick_dof", None)
+                and self.var_skeleton_pick_dof.get()
+            ),
         )
         if force_draw or show_detail:
             self._paint_canvas_now(self.canvas_3d, idle=False)
             if not is_playing and not getattr(self, "_playback_sync_immediate", False):
                 self.root.after_idle(self._fit_skeleton_canvas)
-        elif is_playing:
-            # Coalesce paints while playing — sync draw() stalls the defense demo.
-            self._paint_canvas_now(self.canvas_3d, idle=True)
         else:
-            self._paint_canvas_now(self.canvas_3d)
+            # Coalesce paints while playing — sync draw() stalls the UI thread.
+            self._paint_canvas_now(self.canvas_3d, idle=True)
 
     def _resolve_initial_path(self, poses_path: str | Path | None) -> Path | None:
         if poses_path:
@@ -4350,21 +4371,14 @@ class StableWalkGUI:
                 )
 
         if summary is not None:
-            spec_link = "See docs/SPEC_COMPLIANCE.md and REAL_TO_SIM_PIPELINE.md."
             if report:
                 summary.configure(
-                    text=(
-                        f"Pipeline report loaded for “{report.get('run_name', run_name)}”. "
-                        f"{spec_link}"
-                    ),
+                    text=f"Pipeline report ready — {report.get('run_name', run_name)}",
                     fg=SUCCESS,
                 )
             else:
                 summary.configure(
-                    text=(
-                        "Matches research spec: video gait style → retarget → "
-                        f"Isaac Lab AMP → contact-sync foot forces. {spec_link}"
-                    ),
+                    text="Real-to-Sim stages update as analysis and export complete.",
                     fg=INFO,
                 )
 
@@ -5261,6 +5275,12 @@ class StableWalkGUI:
             rom.configure(text="—", fg=THEME_MUTED)
 
     def _update_biomechanics_chart(self, *, playhead_time_s: float | None = None) -> None:
+        ensure = getattr(self, "_ensure_biomech_chart", None)
+        if callable(ensure):
+            try:
+                ensure()
+            except Exception:
+                return
         canvas = getattr(self, "canvas_biomech", None)
         fig = getattr(self, "fig_biomech", None)
         if canvas is None or fig is None:
@@ -7803,10 +7823,17 @@ class StableWalkGUI:
     def _show_shortcuts(self) -> None:
         messagebox.showinfo(
             "Shortcuts",
-            "Space — Play / Pause\n"
-            "← / → — Previous / Next pose frame\n"
-            "Home / End — First / Last pose\n"
-            "Ctrl+O — Open pose JSON",
+            "Playback\n"
+            "  Space — Play / Pause\n"
+            "  ← / → — Previous / Next pose frame\n"
+            "  Home / End — First / Last pose\n\n"
+            "Session\n"
+            "  Ctrl+N — New session\n"
+            "  Ctrl+O — Open pose JSON\n"
+            "  Ctrl+S — Save session\n"
+            "  Ctrl+L — Load session\n\n"
+            "3D path\n"
+            "  Ctrl+Click — Add joint for comparison",
         )
 
     def _show_about(self) -> None:
@@ -8080,10 +8107,9 @@ class StableWalkGUI:
         dlg.protocol("WM_DELETE_WINDOW", _close)
 
     def _update_ground_clearance_visibility(self) -> None:
-        """Show a compact foot-clearance strip under the skeleton (never bulky cards)."""
+        """Show a compact foot-clearance strip only when values exist."""
         detail = getattr(self, "_foot_clearance_detail_host", None)
         strip = getattr(self, "ground_clearance_strip", None)
-        recording = self._analysis_motion_recording()
         # Keep bulky FOOT-TO-FLOOR cards off the Overview visualization column —
         # they used to steal half the skeleton height. Details stay in a dialog.
         if detail is not None:
@@ -8091,7 +8117,20 @@ class StableWalkGUI:
                 detail.grid_remove()
             except tk.TclError:
                 pass
-        if recording is not None and recording.frame_count > 0:
+        left = getattr(self, "lbl_ground_clearance_left", None)
+        right = getattr(self, "lbl_ground_clearance_right", None)
+        left_txt = ""
+        right_txt = ""
+        try:
+            left_txt = str(left.cget("text") if left is not None else "")
+            right_txt = str(right.cget("text") if right is not None else "")
+        except tk.TclError:
+            pass
+        has_value = any(
+            t not in ("", "—", "-", "\u2014", "N/A") for t in (left_txt, right_txt)
+        )
+        recording = self._analysis_motion_recording()
+        if recording is not None and recording.frame_count > 0 and has_value:
             if strip is not None:
                 try:
                     strip.grid(row=2, column=0, sticky="ew", pady=(2, 0))
@@ -8103,13 +8142,14 @@ class StableWalkGUI:
                     strip.grid_remove()
                 except tk.TclError:
                     pass
+            if not has_value:
+                return
             self._clear_bilateral_ground_clearance_ui()
 
     def _refresh_bilateral_ground_clearance(self, snapshot=None) -> None:
         """Update left/right foot clearance for the current playback frame."""
         from stablewalk.ui.foot_clearance_display import foot_clearance_dashboard_for_panel
 
-        self._update_ground_clearance_visibility()
         recording = self._analysis_motion_recording()
         player = self.skeleton_player
         if snapshot is None and player is not None:
@@ -8118,6 +8158,7 @@ class StableWalkGUI:
 
         if recording is None or snapshot is None:
             self._clear_bilateral_ground_clearance_ui()
+            self._update_ground_clearance_visibility()
             return
 
         prev_l, prev_r = self._ground_clearance_prev_phase
@@ -8130,12 +8171,14 @@ class StableWalkGUI:
         )
         if panel is None:
             self._clear_bilateral_ground_clearance_ui()
+            self._update_ground_clearance_visibility()
             return
 
         self._ground_clearance_prev_phase = (panel.left_phase, panel.right_phase)
         self._foot_clearance_frame_index = snapshot.frame_index
 
         self._apply_foot_clearance_dashboard(panel)
+        self._update_ground_clearance_visibility()
         if getattr(self, "_pb_heavy", True) or not self.playing:
             self._refresh_foot_clearance_graph_hint()
 
@@ -8712,12 +8755,17 @@ class StableWalkGUI:
     ) -> None:
         """Refresh table, step preview, joint details, and angle panel."""
         self._mark_realtime_refresh()
-        self._dof_step_previews = self._compute_dof_step_previews()
-        self._refresh_dof_step_panel()
-        self._refresh_angle_analysis_if_present()
+        # Step previews feed motion arrows (pause only) and the step table.
+        # Skip the O(selected) kinematics pass while playing.
+        if force_draw or not self.playing:
+            self._dof_step_previews = self._compute_dof_step_previews()
+            self._refresh_dof_step_panel()
+            self._refresh_angle_analysis_if_present()
         if snapshot is None and self.skeleton_player:
             snapshot = self.skeleton_player.current_snapshot()
-        self._refresh_dof_details(snapshot=snapshot)
+        # Detail cards destroy/rebuild Tk children — too expensive every heavy tick.
+        if force_draw or not self.playing:
+            self._refresh_dof_details(snapshot=snapshot)
         self._refresh_dof_position_table()
         self._update_refresh_chrome()
 
@@ -8772,7 +8820,8 @@ class StableWalkGUI:
                 self.step_preview_tree.insert("", tk.END, values=row, tags=(tag,))
         for iid in children[len(rows) :]:
             self.step_preview_tree.delete(iid)
-        self.step_preview_tree.update_idletasks()
+        if not self.playing:
+            self.step_preview_tree.update_idletasks()
 
     def _refresh_dof_step_panel(self) -> None:
         if not hasattr(self, "step_preview_tree"):
@@ -9167,6 +9216,10 @@ class StableWalkGUI:
         self._update_dof_table_controls_state()
         self._configure_dof_table_columns()
         self._sync_demo_save_button()
+        try:
+            self._sync_overview_joint_pick_combo()
+        except Exception:
+            pass
         if lightweight and bool(getattr(self, "playing", False)):
             self._sync_panels_for_skeleton_pick()
         else:
@@ -10455,7 +10508,8 @@ class StableWalkGUI:
         except tk.TclError:
             pass
         self._update_table_summary_label()
-        self.dof_pos_tree.update_idletasks()
+        if not self.playing:
+            self.dof_pos_tree.update_idletasks()
 
     def _clear_dof_position_table_display(self) -> None:
         """Empty the table widget without clearing stored history."""
@@ -10805,8 +10859,8 @@ class StableWalkGUI:
             title_lbl.configure(text="Select a joint to view its 3D movement path")
         for attr, default in (
             ("lbl_selected_joint_value", "—"),
-            ("lbl_dof_coord_mode_value", "ROOT-RELATIVE"),
-            ("lbl_dof_traj_mode_value", "CURRENT PROGRESS"),
+            ("lbl_dof_coord_mode_value", "Root-relative"),
+            ("lbl_dof_traj_mode_value", "Current progress"),
             ("lbl_dof_view_mode_value", "3D"),
         ):
             lbl = getattr(self, attr, None)
@@ -11118,16 +11172,18 @@ class StableWalkGUI:
             joint_val.configure(text=joint_label)
 
         coord_var = getattr(self, "var_dof_coord_mode", None)
-        coord_mode = coord_var.get() if coord_var is not None else "ROOT-RELATIVE"
+        coord_mode = coord_var.get() if coord_var is not None else "Root-relative"
         coord_val = getattr(self, "lbl_dof_coord_mode_value", None)
         if coord_val is not None:
             coord_val.configure(text=coordinate_mode_display(coord_mode))
 
         display_var = getattr(self, "var_dof_traj_display", None)
-        traj_mode = display_var.get() if display_var is not None else "CURRENT PROGRESS"
+        traj_mode = display_var.get() if display_var is not None else "Current progress"
         traj_val = getattr(self, "lbl_dof_traj_mode_value", None)
         if traj_val is not None:
-            traj_val.configure(text=traj_mode)
+            from stablewalk.ui.viewers.dof_trajectory_3d import normalize_display_mode
+
+            traj_val.configure(text=normalize_display_mode(traj_mode))
 
         view_val = getattr(self, "lbl_dof_view_mode_value", None)
         if view_val is not None:
@@ -11168,7 +11224,7 @@ class StableWalkGUI:
             if metrics_lbl is not None:
                 metrics_lbl.configure(text="")
             if conf_lbl is not None:
-                conf_lbl.configure(text="Trajectory Confidence: INSUFFICIENT")
+                conf_lbl.configure(text="Path: Insufficient")
             return
 
         if metrics is not None:
@@ -11196,23 +11252,24 @@ class StableWalkGUI:
                     )
                 )
         zoom_pct = getattr(self.ax_dof_traj, "_stablewalk_zoom_note_pct", None)
-        summary_text = truncate_dashboard_explanation(interpretation.sentence, max_len=160)
+        summary_text = truncate_dashboard_explanation(interpretation.sentence, max_len=90)
         if zoom_pct is not None:
             summary_text = (
-                f"Magnified view — true travel ≈ {zoom_pct:.1f}% of body height. "
-                f"{summary_text}"
+                f"Magnified view (~{zoom_pct:.1f}% BH). {summary_text}"
             )
         if summary_lbl is not None:
             summary_lbl.configure(text=summary_text)
         if conf_lbl is not None:
             conf_lbl.configure(
-                text=(
-                    "Trajectory Confidence: "
-                    f"{format_trajectory_confidence(interpretation.confidence)}"
-                )
+                text=f"Path: {format_trajectory_confidence(interpretation.confidence)}"
             )
 
-    def _refresh_motion_trajectory_on_frame(self, *, force_draw: bool = False) -> None:
+    def _refresh_motion_trajectory_on_frame(
+        self,
+        *,
+        force_draw: bool = False,
+        refresh_overview: bool = True,
+    ) -> None:
         """Keep trajectory graphs in sync with the current playback frame."""
         if not hasattr(self, "fig_dof_traj"):
             return
@@ -11221,7 +11278,10 @@ class StableWalkGUI:
         )
         if not has_session:
             return
-        self._refresh_selected_dof_trajectory_3d(force_draw=force_draw)
+        self._refresh_selected_dof_trajectory_3d(
+            force_draw=force_draw,
+            refresh_overview=refresh_overview,
+        )
         # During the playback sync pass, ``_show_pose_at`` already updated the
         # Joint Motion Analysis chart for this frame — avoid rebuilding it twice.
         if not getattr(self, "_playback_sync_immediate", False):
@@ -11230,7 +11290,12 @@ class StableWalkGUI:
             except Exception:
                 pass
 
-    def _refresh_selected_dof_trajectory_3d(self, *, force_draw: bool = False) -> None:
+    def _refresh_selected_dof_trajectory_3d(
+        self,
+        *,
+        force_draw: bool = False,
+        refresh_overview: bool = True,
+    ) -> None:
         """Update the single 3D trajectory graph for the active selected point."""
         if not hasattr(self, "fig_dof_traj"):
             return
@@ -11244,7 +11309,7 @@ class StableWalkGUI:
                 None,
                 None,
                 end_frame_float=0.0,
-                coord_mode="ROOT-RELATIVE",
+                coord_mode="Root-relative",
                 motion_series=None,
             )
             if has_session:
@@ -11298,17 +11363,23 @@ class StableWalkGUI:
         if var_proj is not None:
             projection_mode = var_proj.get() or "3D"
 
-        display_mode = "CURRENT PROGRESS"
+        display_mode = "Current progress"
         var_display = getattr(self, "var_dof_traj_display", None)
         if var_display is not None:
-            display_mode = var_display.get() or "CURRENT PROGRESS"
+            display_mode = var_display.get() or "Current progress"
 
-        coord_mode = "ROOT-RELATIVE"
+        coord_mode = "Root-relative"
         var_coord = getattr(self, "var_dof_coord_mode", None)
         if var_coord is not None:
-            coord_mode = var_coord.get() or "ROOT-RELATIVE"
+            coord_mode = var_coord.get() or "Root-relative"
 
-        motion_series = self._motion_frame_series() if coord_mode == "GLOBAL" else None
+        from stablewalk.ui.viewers.dof_trajectory_3d import normalize_coord_mode
+
+        motion_series = (
+            self._motion_frame_series()
+            if normalize_coord_mode(coord_mode) == "Global"
+            else None
+        )
         body_ref_var = getattr(self, "var_dof_show_body_reference", None)
         show_body_reference = bool(
             body_ref_var.get() if body_ref_var is not None else False
@@ -11371,7 +11442,8 @@ class StableWalkGUI:
         )
 
         self._render_dof_traj_canvas(force=force_draw)
-        self._refresh_overview_trajectory_dock(force_draw=force_draw)
+        if refresh_overview:
+            self._refresh_overview_trajectory_dock(force_draw=force_draw)
         self._schedule_dof_traj_reflow()
         from stablewalk.ui.tk.dashboard_layout import _hide_trajectory_debug_placeholder
 
@@ -11489,7 +11561,8 @@ class StableWalkGUI:
 
         snap = self.skeleton_player.current_snapshot()
         if not snap:
-            self._refresh_selected_dof_trajectory_3d()
+            if not getattr(self, "_playback_sync_immediate", False):
+                self._refresh_selected_dof_trajectory_3d(refresh_overview=False)
             self._update_dashboard_empty_states()
             return
 
@@ -11541,7 +11614,11 @@ class StableWalkGUI:
                 emphasize_dof=emphasize_dof,
             )
 
-        self._refresh_selected_dof_trajectory_3d()
+        # Trajectory docks are owned by ``_sync_all_to_frame`` during playback
+        # (and by selection/tab handlers when idle). Refreshing them here doubled
+        # the expensive 3D path rebuild on every heavy tick.
+        if not getattr(self, "_playback_sync_immediate", False):
+            self._refresh_selected_dof_trajectory_3d(refresh_overview=False)
         self._configure_dof_table_columns()
         self._update_dof_table_controls_state()
         self._update_dashboard_empty_states()
@@ -11745,21 +11822,26 @@ class StableWalkGUI:
         host = getattr(self, "overview_traj_canvas_host", None)
         if host is None:
             return
-        try:
-            host.update_idletasks()
-            self.root.update_idletasks()
-        except tk.TclError:
-            pass
+        # Avoid layout storms during playback; resize handlers already reflow.
+        if force or not self.playing:
+            try:
+                host.update_idletasks()
+            except tk.TclError:
+                pass
         _ensure_trajectory_canvas_gridded(
             self.canvas_dof_traj_overview, overview_dock=True
         )
-        if _fit_trajectory_figure(
+        fitted = _fit_trajectory_figure(
             self.canvas_dof_traj_overview,
             self.fig_dof_traj_overview,
             self.ax_dof_traj_overview,
             graph_host=host,
-        ):
-            self._paint_canvas_now(self.canvas_dof_traj_overview)
+        )
+        if fitted or force or self.playing:
+            self._paint_canvas_now(
+                self.canvas_dof_traj_overview,
+                idle=bool(self.playing and not force),
+            )
 
     def _overview_joint_inspect_title(self) -> str:
         """Auto title: ``Normal — Right Hip 3D Path`` (or comparison form)."""
@@ -11830,7 +11912,7 @@ class StableWalkGUI:
             recording,
             joint_id,
             float(frame_count - 1),
-            coord_mode="ROOT-RELATIVE",
+            coord_mode="Root-relative",
             motion_series=None,
         )
         if not path_pts:
@@ -11914,8 +11996,16 @@ class StableWalkGUI:
         end_frame_float: float | None = None
         if self.skeleton_player is not None:
             try:
-                end_frame_float = float(self.skeleton_player.state.frame_float)
-                snapshot = self.skeleton_player.current_snapshot()
+                from stablewalk.ui.tk.dashboard_status_bar import playhead_frame_0based
+
+                frame_i = playhead_frame_0based(self)
+                if frame_i is None:
+                    frame_i = int(self.skeleton_player.state.frame_index)
+                end_frame_float = float(frame_i)
+                if recording is not None:
+                    snapshot = recording.snapshot_at(frame_i)
+                if snapshot is None:
+                    snapshot = self.skeleton_player.current_snapshot()
             except Exception:
                 snapshot = None
         if snapshot is None and recording is not None and recording.frame_count > 0:
@@ -11947,59 +12037,109 @@ class StableWalkGUI:
             hint_text = "Live with video playback · synchronized to current frame"
 
         fields = info.as_field_map()
-        for key, lbl in value_labels.items():
-            text = fields.get(key, "—")
-            try:
-                lbl.configure(text=text, fg=TEXT if text != "—" else MUTED)
-            except tk.TclError:
-                pass
+        last_fields = getattr(self, "_last_joint_info_fields", None)
+        if last_fields != fields:
+            self._last_joint_info_fields = dict(fields)
+            for key, lbl in value_labels.items():
+                text = fields.get(key, "—")
+                try:
+                    if last_fields is None or last_fields.get(key) != text:
+                        lbl.configure(text=text, fg=TEXT if text != "—" else MUTED)
+                except tk.TclError:
+                    pass
 
         hint = getattr(self, "lbl_overview_joint_info_hint", None)
         if hint is not None:
             try:
-                hint.configure(text=hint_text)
+                if getattr(self, "_last_joint_info_hint", None) != hint_text:
+                    hint.configure(text=hint_text)
+                    self._last_joint_info_hint = hint_text
             except tk.TclError:
                 pass
 
     def _sync_overview_traj_playhead_labels(self) -> None:
-        """Keep Overview path Frame/Time locked to the shared playhead."""
+        """Keep Overview path Frame/Time/XYZ locked to the shared playhead."""
         info_lbl = getattr(self, "lbl_overview_traj_info", None)
         if info_lbl is None or self.skeleton_player is None:
             return
         item_id = self._active_dof_item_id()
         if not item_id or not self.selection.selected:
             return
-        from stablewalk.ui.dof_selection import label_for_item
+        from stablewalk.ui.dof_selection import anchor_joint_for_item, label_for_item
         from stablewalk.ui.tk.dashboard_status_bar import playhead_frame_0based
+        from stablewalk.ui.viewers.dof_trajectory_3d import (
+            meters_to_display_cm,
+            stature_display_scale,
+        )
 
         frame_i = playhead_frame_0based(self)
         if frame_i is None:
             return
-        total = max(int(self.skeleton_player.frame_count), 1)
+        tip_cm = None
+        ax = getattr(self, "ax_dof_traj_overview", None)
+        if ax is not None:
+            tip_cm = getattr(ax, "_stablewalk_tip_xyz_cm", None)
+        if (
+            isinstance(tip_cm, (tuple, list))
+            and len(tip_cm) == 3
+            and all(isinstance(v, (int, float)) for v in tip_cm)
+        ):
+            pos_txt = (
+                f"X: {float(tip_cm[0]):.1f}  "
+                f"Y: {float(tip_cm[1]):.1f}  "
+                f"Z: {float(tip_cm[2]):.1f} cm"
+            )
+        else:
+            recording = self._analysis_motion_recording()
+            tip = None
+            if recording is not None:
+                tip = recording.snapshot_at(frame_i)
+            if tip is None:
+                tip = self.skeleton_player.current_snapshot()
+            joint_id = anchor_joint_for_item(item_id)
+            scale = stature_display_scale(recording)
+            pos_txt = "X/Y/Z: —"
+            if tip is not None and joint_id and joint_id in tip.joints:
+                p = tip.joints[joint_id].position
+                pos_txt = (
+                    f"X: {meters_to_display_cm(p.x, scale=scale):.1f}  "
+                    f"Y: {meters_to_display_cm(p.y, scale=scale):.1f}  "
+                    f"Z: {meters_to_display_cm(p.z, scale=scale):.1f} cm"
+                )
+        recording = self._analysis_motion_recording()
+        tip = None
+        if recording is not None:
+            tip = recording.snapshot_at(frame_i)
+        if tip is None and self.skeleton_player is not None:
+            tip = self.skeleton_player.current_snapshot()
         try:
-            t_s = float(self.skeleton_player.time_at_current())
+            t_s = float(tip.time_s) if tip is not None else float(frame_i) / max(
+                float(getattr(self.skeleton_player, "fps", 25.0) or 25.0), 1e-6
+            )
         except Exception:
             t_s = None
         joint_label = label_for_item(item_id) or "Joint"
-        # Preserve the existing XYZ line when present.
-        pos_txt = "X/Y/Z: —"
-        try:
-            existing = str(info_lbl.cget("text") or "")
-            for line in existing.splitlines():
-                if "X:" in line or "X/Y/Z" in line:
-                    pos_txt = line.split("·")[0].strip()
-                    break
-        except tk.TclError:
-            pass
         time_bit = f"{t_s:.2f} s" if t_s is not None else "—"
         text = (
-            f"Joint: {joint_label}   Frame: {frame_i + 1}   Time: {time_bit}\n"
-            f"{pos_txt}   ·  X lat / Y vert / Z fwd"
+            f"{joint_label}  ·  Frame {frame_i + 1}  ·  {time_bit}\n"
+            f"{pos_txt}  ·  from pelvis"
         )
         try:
-            if str(info_lbl.cget("text") or "") != text:
+            if getattr(self, "_last_overview_info_text", None) != text:
                 info_lbl.configure(text=text)
+                self._last_overview_info_text = text
         except tk.TclError:
+            pass
+        # Throttle Joint Information during light play ticks (heavy ticks refresh fully).
+        if self.playing:
+            now = time.monotonic()
+            interval = float(getattr(self, "_joint_info_play_interval_s", 0.10) or 0.10)
+            if (now - float(getattr(self, "_last_joint_info_play_ts", 0.0))) < interval:
+                return
+            self._last_joint_info_play_ts = now
+        try:
+            self._refresh_overview_joint_information(item_id)
+        except Exception:
             pass
 
     def _refresh_overview_trajectory_dock(self, *, force_draw: bool = False) -> None:
@@ -12080,8 +12220,16 @@ class StableWalkGUI:
         end_frame_float = 0.0
         tip_snapshot = None
         if self.skeleton_player and recording is not None:
-            end_frame_float = self.skeleton_player.state.frame_float
-            tip_snapshot = self.skeleton_player.current_snapshot()
+            from stablewalk.ui.tk.dashboard_status_bar import playhead_frame_0based
+
+            # Lock path tip + labels to the same discrete frame as the video HUD.
+            frame_i = playhead_frame_0based(self)
+            if frame_i is None:
+                frame_i = int(self.skeleton_player.state.frame_index)
+            end_frame_float = float(frame_i)
+            tip_snapshot = recording.snapshot_at(frame_i)
+            if tip_snapshot is None:
+                tip_snapshot = self.skeleton_player.current_snapshot()
         elif recording is not None:
             end_frame_float = float(max(0, recording.frame_count - 1))
 
@@ -12090,25 +12238,20 @@ class StableWalkGUI:
         if var_proj is not None:
             projection_mode = var_proj.get() or "3D"
 
-        display_mode = "CURRENT PROGRESS"
+        display_mode = "Current progress"
 
         # Pelvis-relative: shows the joint's own movement (not whole-body walking
-        # translation, which inflates GLOBAL travel to hundreds of cm).
-        coord_mode = "ROOT-RELATIVE"
+        # translation, which inflates Global travel to hundreds of cm).
+        coord_mode = "Root-relative"
         motion_series = None
-
-        if hasattr(self.ax_dof_traj_overview, "_stablewalk_stable_viewport"):
-            del self.ax_dof_traj_overview._stablewalk_stable_viewport
-        self._traj_draw_cache_key = None
 
         from stablewalk.ui.dof_selection import anchor_joint_for_item, label_for_item
         from stablewalk.ui.viewers.dof_trajectory_3d import (
-            _joint_path_with_times,
             draw_dof_trajectories,
             draw_dof_trajectory_panel,
             relayout_single_dof_viewport,
             setup_single_dof_trajectory_axes,
-            summarize_overview_trajectory,
+            stature_display_scale,
         )
 
         view_type = getattr(self._biomech, "view_type", None) if self._biomech else None
@@ -12117,8 +12260,31 @@ class StableWalkGUI:
         show_body_reference = bool(
             body_ref_var.get() if body_ref_var is not None else False
         )
-
         compare = len(self.selection.selected) > 1
+
+        # Reuse axes / stable viewport during playback when the same joint is
+        # shown — full clear only on joint/mode change or forced redraw.
+        draw_key = (
+            item_id,
+            frozenset(self.selection.selected),
+            projection_mode,
+            display_mode,
+            coord_mode,
+            show_body_reference,
+            bool(compare),
+        )
+        clear_axes = (
+            force_draw
+            or (not self.playing)
+            or getattr(self, "_overview_traj_draw_cache_key", None) != draw_key
+        )
+        self._overview_traj_draw_cache_key = draw_key
+        if clear_axes and hasattr(self.ax_dof_traj_overview, "_stablewalk_stable_viewport"):
+            try:
+                del self.ax_dof_traj_overview._stablewalk_stable_viewport
+            except Exception:
+                pass
+
         if compare:
             # Multi-joint comparison: colored paths + legend.
             draw_dof_trajectories(
@@ -12127,11 +12293,11 @@ class StableWalkGUI:
                 set(self.selection.selected),
                 end_frame_float=end_frame_float,
                 tip_snapshot=tip_snapshot,
-                clear=True,
+                clear=clear_axes,
                 show_body_reference=show_body_reference,
             )
         else:
-            if projection_mode == "3D":
+            if clear_axes and projection_mode == "3D":
                 setup_single_dof_trajectory_axes(self.ax_dof_traj_overview)
             draw_dof_trajectory_panel(
                 self.ax_dof_traj_overview,
@@ -12140,13 +12306,13 @@ class StableWalkGUI:
                 projection_mode=projection_mode,
                 end_frame_float=end_frame_float,
                 tip_snapshot=tip_snapshot,
-                clear=True,
+                clear=clear_axes,
                 display_mode=display_mode,
                 coord_mode=coord_mode,
                 motion_series=motion_series,
                 show_body_reference=show_body_reference,
             )
-            if projection_mode == "3D":
+            if projection_mode == "3D" and clear_axes:
                 relayout_single_dof_viewport(self.ax_dof_traj_overview)
 
         metrics_lbl = getattr(self, "lbl_overview_traj_metrics", None)
@@ -12161,170 +12327,47 @@ class StableWalkGUI:
                         "● Current frame · Ctrl+Click to add"
                     )
                 )
-        if metrics_lbl is not None and recording is not None:
-            joint_id = anchor_joint_for_item(item_id)
-            if joint_id:
-                path_pts = _joint_path_with_times(
-                    recording,
-                    joint_id,
-                    end_frame_float,
-                    coord_mode=coord_mode,
-                    motion_series=motion_series,
-                )
-                progress_pct: float | None = None
-                elapsed_s: float | None = None
-                frame_index: int | None = None
-                frame_count: int | None = None
-                if self.skeleton_player is not None:
-                    from stablewalk.ui.tk.dashboard_status_bar import (
-                        playhead_frame_0based,
-                    )
+        # Lightweight footer: tip XYZ only (skip Travel/ROM essay rebuilds).
+        if metrics_lbl is not None:
+            metrics_lbl.configure(text="")
+        if detail_lbl is not None:
+            detail_lbl.configure(text="")
+        if video_lbl is not None:
+            video_lbl.configure(text="")
+        category_note = getattr(self, "lbl_overview_category_note", None)
+        if category_note is not None:
+            category_note.configure(text="")
+        info_lbl = getattr(self, "lbl_overview_traj_info", None)
+        if info_lbl is not None and recording is not None:
+            tip_cm = getattr(self.ax_dof_traj_overview, "_stablewalk_tip_xyz_cm", None)
+            if (
+                isinstance(tip_cm, (tuple, list))
+                and len(tip_cm) == 3
+                and all(isinstance(v, (int, float)) for v in tip_cm)
+            ):
+                x_cm, y_cm, z_cm = (float(tip_cm[0]), float(tip_cm[1]), float(tip_cm[2]))
+                text = f"X {x_cm:.1f}  Y {y_cm:.1f}  Z {z_cm:.1f} cm"
+            else:
+                joint_id = anchor_joint_for_item(item_id)
+                from stablewalk.ui.viewers.dof_trajectory_3d import meters_to_display_cm
 
-                    fc = max(1, int(self.skeleton_player.frame_count))
-                    frame_count = fc
-                    # Same rounded playhead as HUD / status bar.
-                    frame_index = playhead_frame_0based(self)
-                    if frame_index is None:
-                        frame_index = max(
-                            0, min(int(round(float(end_frame_float))), fc - 1)
-                        )
-                    progress_pct = min(
-                        100.0,
-                        100.0 * float(frame_index) / float(max(fc - 1, 1)),
-                    )
-                    elapsed_s = float(self.skeleton_player.time_at_current())
-                gait_mode: str | None = None
-                demo = getattr(self, "_active_demo_gait", None)
-                if demo is not None:
-                    gait_mode = demo.button_label
-                gait_phase: str | None = None
-                phase_lbl = getattr(self, "lbl_gait_card_phase_value", None)
-                if phase_lbl is not None:
-                    phase_text = phase_lbl.cget("text")
-                    if phase_text and phase_text != "—":
-                        gait_phase = phase_text
-                left_contact: str | None = None
-                right_contact: str | None = None
-                overview_left = getattr(self, "lbl_overview_contact_left", None)
-                overview_right = getattr(self, "lbl_overview_contact_right", None)
-                if overview_left is not None:
-                    left_text = overview_left.cget("text")
-                    if left_text and left_text != "—":
-                        left_contact = left_text
-                if overview_right is not None:
-                    right_text = overview_right.cget("text")
-                    if right_text and right_text != "—":
-                        right_contact = right_text
-                summary = summarize_overview_trajectory(
-                    path_pts,
-                    joint_label=label_for_item(item_id) or "Joint",
-                    recording=recording,
-                    joint_id=joint_id,
-                    end_frame_float=end_frame_float,
-                    gait_mode=gait_mode,
-                    gait_phase=gait_phase,
-                    left_contact=left_contact,
-                    right_contact=right_contact,
-                    progress_pct=progress_pct,
-                    elapsed_s=elapsed_s,
-                    frame_index=frame_index,
-                    frame_count=frame_count,
-                    view_type=view_type,
-                )
-                if summary is not None:
-                    metrics_lbl.configure(text=summary.metrics_line)
-                    if detail_lbl is not None:
-                        detail_lbl.configure(text=summary.detail_line)
-                    if video_lbl is not None:
-                        video_lbl.configure(text=summary.video_line)
-                    # Coordinates under the graph; color chips are the legend.
-                    info_lbl = getattr(self, "lbl_overview_traj_info", None)
-                    if info_lbl is not None:
-                        joint_label = label_for_item(item_id) or "Joint"
-                        pos = summary.position_cm
-                        if pos is not None:
-                            x_cm, y_cm, z_cm = pos
-                            pos_txt = (
-                                f"X: {x_cm:.1f}  Y: {y_cm:.1f}  Z: {z_cm:.1f} cm"
-                            )
-                        else:
-                            pos_txt = "X/Y/Z: —"
-                        fr = (frame_index + 1) if frame_index is not None else "—"
-                        t_s = f"{elapsed_s:.2f} s" if elapsed_s is not None else "—"
-                        info_lbl.configure(
-                            text=(
-                                f"Joint: {joint_label}   Frame: {fr}   Time: {t_s}\n"
-                                f"{pos_txt}   ·  X lat / Y vert / Z fwd"
-                            ),
-                            fg=TEXT,
-                            justify=tk.LEFT,
-                            wraplength=420,
-                        )
-                    # Low usable cycles on abnormal / walker clips
-                    usable, detected = self._resolved_gait_cycle_count()
-                    category_note = getattr(self, "lbl_overview_category_note", None)
-                    if category_note is not None and demo is not None:
-                        from stablewalk.ui.theme import ACCENT_ALT, ORANGE, WARNING
-
-                        completeness = (
-                            self._biomech.completeness_pct
-                            if self._biomech is not None
-                            else None
-                        )
-                        comp_bit = (
-                            f" · {completeness:.0f}% complete"
-                            if completeness is not None
-                            else ""
-                        )
-                        if demo.key == "abnormal":
-                            category_note.configure(
-                                text=(
-                                    "Compare: Abnormal — assisted walker gait, "
-                                    f"compact hip ROM{comp_bit}"
-                                ),
-                                fg=WARNING,
-                            )
-                        elif demo.key == "normal":
-                            category_note.configure(
-                                text=(
-                                    f"Compare: Normal — steady walking, "
-                                    f"{usable or 0} usable cycles{comp_bit}"
-                                ),
-                                fg=ORANGE,
-                            )
-                        elif demo.key == "athletic":
-                            category_note.configure(
-                                text=(
-                                    f"Compare: Performance — fast side-view gait, "
-                                    f"larger knee swing{comp_bit}"
-                                ),
-                                fg=ACCENT_ALT,
-                            )
-                        else:
-                            category_note.configure(text="")
-                    if (
-                        demo is not None
-                        and "abnormal" in (demo.button_label or "").lower()
-                        and (usable or 0) == 0
-                        and detail_lbl is not None
-                    ):
-                        detail_lbl.configure(
-                            text=(
-                                f"{summary.detail_line}  ·  "
-                                "Walker-assisted gait — expect a compact hip path "
-                                "and few complete cycles."
-                            )
-                        )
+                path_scale = stature_display_scale(recording)
+                if tip_snapshot is not None and joint_id and joint_id in tip_snapshot.joints:
+                    # Same Root-relative + stature scale as the 3D path tip marker.
+                    tip_p = tip_snapshot.joints[joint_id].position
+                    x_cm = meters_to_display_cm(tip_p.x, scale=path_scale)
+                    y_cm = meters_to_display_cm(tip_p.y, scale=path_scale)
+                    z_cm = meters_to_display_cm(tip_p.z, scale=path_scale)
+                    text = f"X {x_cm:.1f}  Y {y_cm:.1f}  Z {z_cm:.1f} cm"
                 else:
-                    metrics_lbl.configure(text="")
-                    if detail_lbl is not None:
-                        detail_lbl.configure(text="")
-                    if video_lbl is not None:
-                        video_lbl.configure(text="")
-            elif detail_lbl is not None:
-                detail_lbl.configure(text="")
-                if video_lbl is not None:
-                    video_lbl.configure(text="")
+                    text = "X/Y/Z: —"
+            # Frame / Time / Joint live on the transport bar — path shows tip XYZ.
+            try:
+                if getattr(self, "_last_overview_info_text", None) != text:
+                    info_lbl.configure(text=text, fg=TEXT, justify=tk.LEFT, wraplength=420)
+                    self._last_overview_info_text = text
+            except tk.TclError:
+                pass
 
         self._render_overview_traj_canvas(force=force_draw)
 
@@ -12506,6 +12549,40 @@ class StableWalkGUI:
         """True when Ctrl (or Cmd on macOS) is held during a skeleton pick."""
         return StableWalkGUI._mouse_event_is_compare(getattr(event, "mouseevent", None))
 
+    def _expand_overview_joint_dof_analysis(self, item_id: str) -> None:
+        """Open Joint Information / Details for the clicked DOF and refresh metrics."""
+        self._overview_traj_dock_visible = True
+        body = getattr(self, "_overview_joint_info_body", None)
+        toggle = getattr(self, "btn_overview_joint_info_toggle", None)
+        self._overview_joint_info_expanded = True
+        if body is not None:
+            try:
+                if not body.winfo_ismapped():
+                    body.pack(fill=tk.X, pady=(PAD_XS, 0))
+            except tk.TclError:
+                pass
+        if toggle is not None:
+            try:
+                toggle.configure(text="▼ Details")
+            except tk.TclError:
+                pass
+        try:
+            self._refresh_overview_joint_information(item_id)
+        except Exception:
+            pass
+        try:
+            self._sync_dof_analysis_panel_state()
+        except Exception:
+            pass
+        try:
+            self._refresh_realtime_analysis(force_draw=True)
+        except Exception:
+            pass
+        try:
+            self._refresh_dof_details()
+        except Exception:
+            pass
+
     def _focus_joint_trajectory_from_skeleton(
         self,
         item_id: str,
@@ -12588,12 +12665,20 @@ class StableWalkGUI:
         # the 3D path / skeleton stay on the same selected joint.
         self._notify_dof_selection_changed(lightweight=was_playing)
 
+        # Always open Joint Information so the clicked DOF is analyzed
+        # (angle, ROM, XYZ, confidence) — not only the path preview.
+        self._expand_overview_joint_dof_analysis(item_id)
+
         if was_playing and traj_was_visible:
             # Path + skeleton already refreshed by the light sync. Avoid
             # show_joint_3d_panel / update_joint_3d_graph — they remounted
             # Overview and froze the play loop on every click.
             try:
                 self._update_overview_playback_hud()
+            except Exception:
+                pass
+            try:
+                self._refresh_overview_joint_information(item_id)
             except Exception:
                 pass
         else:
@@ -12604,16 +12689,34 @@ class StableWalkGUI:
         self._ensure_playback_continues_after_pick(was_playing=was_playing)
 
         joint_label = label_for_item(item_id) or "Joint"
+        angle_bit = ""
+        try:
+            snap = (
+                self.skeleton_player.current_snapshot()
+                if self.skeleton_player is not None
+                else None
+            )
+            if snap is not None:
+                from stablewalk.ui.dof_position_table import angle_value_for_item
+
+                deg = angle_value_for_item(item_id, snap)
+                if deg is not None:
+                    angle_bit = f" · angle {deg:.0f}°"
+        except Exception:
+            angle_bit = ""
         if hasattr(self, "status"):
             if compare and len(self.selection.selected) > 1:
                 self.status.configure(
                     text=(
-                        f"Comparing {len(self.selection.selected)} joints · "
-                        f"active: {joint_label}"
+                        f"Comparing {len(self.selection.selected)} DOFs · "
+                        f"active: {joint_label}{angle_bit}"
                     )
                 )
             else:
-                self.status.configure(text=f"Selected: {joint_label} · 3D path")
+                self.status.configure(
+                    text=f"DOF analysis: {joint_label}{angle_bit} · 3D path"
+                )
+        self._sync_overview_joint_pick_combo(item_id)
 
     def _on_skeleton_button_press(self, event) -> None:
         """Primary joint hit-test: nearest pickable joint under the cursor."""
@@ -12658,11 +12761,71 @@ class StableWalkGUI:
         if hasattr(self, "status"):
             if enabled:
                 self.status.configure(
-                    text="Select DOF: click a joint on the 3D gait figure (Ctrl/Shift = compare)."
+                    text=(
+                        "Select DOF: click a joint on the figure, or choose one "
+                        "from the joint list."
+                    )
                 )
             else:
                 self.status.configure(text="Select DOF: off — enable to pick joints.")
         self._update_interactive_skeleton(force_draw=True)
+
+    def _sync_overview_joint_pick_combo(self, item_id: str | None = None) -> None:
+        """Keep the Choose-joint combobox aligned with the active DOF."""
+        var = getattr(self, "var_overview_joint_pick", None)
+        if var is None:
+            return
+        from stablewalk.ui.dof_selection import GUI_DOF_LABELS, label_for_item
+
+        active = item_id or self._active_dof_item_id()
+        if not active:
+            try:
+                if var.get() != "Select joint…":
+                    var.set("Select joint…")
+            except Exception:
+                pass
+            return
+        label = label_for_item(active) or GUI_DOF_LABELS.get(active, active)
+        try:
+            if var.get() != label:
+                var.set(label)
+        except Exception:
+            pass
+
+    def _on_overview_joint_pick_chosen(self) -> None:
+        """Combobox: choose a joint/DOF point to analyze (same as skeleton click)."""
+        var = getattr(self, "var_overview_joint_pick", None)
+        if var is None:
+            return
+        from stablewalk.ui.dof_selection import (
+            GUI_DOF_ITEM_IDS,
+            GUI_DOF_LABELS,
+            normalize_gui_dof_id,
+        )
+
+        try:
+            label = str(var.get() or "").strip()
+        except Exception:
+            return
+        if not label or label == "Select joint…":
+            return
+        item_id = None
+        for candidate in GUI_DOF_ITEM_IDS:
+            if GUI_DOF_LABELS.get(candidate) == label:
+                item_id = candidate
+                break
+        if item_id is None:
+            item_id = normalize_gui_dof_id(label.replace(" ", "_").lower())
+        if not item_id:
+            return
+        # Ensure pick mode is on so the selection is interactive.
+        pick_var = getattr(self, "var_skeleton_pick_dof", None)
+        if pick_var is not None and not bool(pick_var.get()):
+            try:
+                pick_var.set(True)
+            except Exception:
+                pass
+        self._focus_joint_trajectory_from_skeleton(item_id, compare=False)
 
     def _on_skeleton_pick(self, event) -> None:
         from stablewalk.ui.dof_selection import normalize_gui_dof_id

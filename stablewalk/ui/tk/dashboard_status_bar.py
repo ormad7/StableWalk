@@ -23,15 +23,22 @@ from stablewalk.ui.theme import (
 )
 
 _FLASH_TTL_S = 4.0
-_STATUS_FIELDS: tuple[tuple[str, str], ...] = (
+# Visible lab chrome — timebase + selection always on (OpenSim / Nexus style).
+_STATUS_FIELDS_VISIBLE: tuple[tuple[str, str], ...] = (
     ("frame", "Frame"),
     ("time", "Time"),
     ("fps", "FPS"),
     ("joint", "Joint"),
-    ("speed", "Speed"),
-    ("sampling", "Sample"),
     ("analysis", "Analysis"),
     ("opensim", "OpenSim"),
+)
+_STATUS_FIELDS_HIDDEN: tuple[tuple[str, str], ...] = (
+    ("speed", "Speed"),
+    ("sampling", "Sample"),
+)
+_STATUS_FIELDS: tuple[tuple[str, str], ...] = (
+    *_STATUS_FIELDS_VISIBLE,
+    *_STATUS_FIELDS_HIDDEN,
 )
 
 
@@ -80,7 +87,12 @@ def build_dashboard_status_bar(gui: Any) -> tk.Frame:
     gui._status_bar_flash_text: str | None = None
     gui._status_bar_flash_until: float = 0.0
 
-    for index, (key, title) in enumerate(_STATUS_FIELDS):
+    # Hidden host keeps Frame/Time/FPS/… labels updated for tooltips & API,
+    # without packing them into the visible status chrome.
+    hidden = tk.Frame(bar, bg=SURFACE, highlightthickness=0)
+    gui._status_bar_hidden = hidden
+
+    for index, (key, title) in enumerate(_STATUS_FIELDS_VISIBLE):
         if index > 0:
             tk.Frame(inner, bg=BORDER, width=1, highlightthickness=0).pack(
                 side=tk.LEFT, fill=tk.Y, padx=PAD_SM - 2, pady=1
@@ -98,8 +110,6 @@ def build_dashboard_status_bar(gui: Any) -> tk.Frame:
             anchor="w",
         ).pack(side=tk.LEFT, padx=(0, PAD_XS))
 
-        # Fixed widths keep Frame/Joint/Speed from visually colliding
-        # (e.g. "Left Toe" + "ze" from a neighboring field → "Toeze").
         _VALUE_WIDTHS = {
             "frame": 10,
             "time": 16,
@@ -107,8 +117,8 @@ def build_dashboard_status_bar(gui: Any) -> tk.Frame:
             "joint": 14,
             "speed": 6,
             "sampling": 6,
-            "analysis": 18,
-            "opensim": 12,
+            "analysis": 28,
+            "opensim": 22,
         }
         value = tk.Label(
             cell,
@@ -121,6 +131,19 @@ def build_dashboard_status_bar(gui: Any) -> tk.Frame:
         )
         value.pack(side=tk.LEFT)
         gui._status_bar_labels[key] = value
+
+    for key, title in _STATUS_FIELDS_HIDDEN:
+        value = tk.Label(hidden, text="—", bg=SURFACE, fg=TEXT, font=FONT_MONO_SM)
+        gui._status_bar_labels[key] = value
+
+    # Compact tooltips on secondary fields; primary readout is always visible.
+    from stablewalk.ui.theme import create_tooltip
+
+    tip = "Speed and sample stride are on the transport bar."
+    for key in ("analysis", "opensim"):
+        lbl = gui._status_bar_labels.get(key)
+        if lbl is not None:
+            create_tooltip(lbl, tip, wraplength=280)
 
     gui._status_bar = bar
     gui.status = StatusMessageProxy(gui)
@@ -180,21 +203,23 @@ def _session_fps(gui: Any) -> float | None:
 
 
 def playhead_frame_0based(gui: Any) -> int | None:
-    """Single playhead index (0-based) for HUD, status bar, and path labels."""
+    """Single playhead index (0-based) for HUD, status bar, and path labels.
+
+    Uses the same truncate rule as ``SkeletonPlayer.state.frame_index`` so the
+    video overlay, status bar, and 3D path Frame: line never disagree by one.
+    """
     player = getattr(gui, "skeleton_player", None)
     if player is None or getattr(player, "frame_count", 0) <= 0:
         return None
     total = max(int(player.frame_count), 1)
     try:
-        frame_float = float(
-            getattr(player.state, "frame_float", player.state.frame_index)
-        )
+        frame_index = int(player.state.frame_index)
     except Exception:
         try:
-            frame_float = float(player.state.frame_index)
+            frame_index = int(float(getattr(player.state, "frame_float", 0.0)))
         except Exception:
             return None
-    return max(0, min(int(round(frame_float)), total - 1))
+    return max(0, min(frame_index, total - 1))
 
 
 def _current_frame_and_time(gui: Any) -> tuple[str, str]:
@@ -303,7 +328,7 @@ def _opensim_status_text(gui: Any) -> tuple[str, str]:
 
     override = getattr(gui, "_opensim_status_override", None)
     if override:
-        return _truncate(str(override), 28), WARNING
+        return _truncate(str(override), 36), WARNING
 
     sdk = bool(getattr(gui, "_opensim_sdk_available", False))
     model_valid = bool(getattr(gui, "_opensim_model_valid", False))
@@ -320,7 +345,7 @@ def _opensim_status_text(gui: Any) -> tuple[str, str]:
                 color = SUCCESS if text.lower() == "ready" else (
                     WARNING if "partial" in text.lower() else MUTED
                 )
-                return _truncate(text, 28), color
+                return _truncate(text, 36), color
         except tk.TclError:
             pass
 
@@ -350,10 +375,28 @@ def update_dashboard_status_bar(gui: Any) -> None:
     _set_field(gui, "sampling", _truncate(_sampling_text(gui), 6))
 
     analysis_text, analysis_fg = _analysis_state(gui)
-    _set_field(gui, "analysis", _truncate(analysis_text, 18), fg=analysis_fg)
+    _set_field(gui, "analysis", _truncate(analysis_text, 28), fg=analysis_fg)
 
     opensim_text, opensim_fg = _opensim_status_text(gui)
     _set_field(gui, "opensim", opensim_text, fg=opensim_fg)
+
+    # Keep Analysis tooltip populated with the hidden session fields.
+    tip_lines = [
+        f"Frame: {frame_text}",
+        f"Time: {time_text}",
+        f"FPS: {fps:.1f}" if fps else "FPS: —",
+        f"Joint: {_selected_joint_label(gui)}",
+        f"Speed: {_playback_speed_text(gui)}",
+        f"Sample: {_sampling_text(gui)}",
+    ]
+    tip = "\n".join(tip_lines)
+    for key in ("analysis", "opensim"):
+        lbl = gui._status_bar_labels.get(key)
+        if lbl is not None:
+            try:
+                lbl._tooltip_text = tip  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
 
 __all__ = [

@@ -211,7 +211,7 @@ def collect_flow_stage_views(
 
 
 def _status_badge(status: PipelineStageState) -> str:
-    return f"{STATUS_SYMBOL[status]} {STATUS_LABEL[status]}"
+    return STATUS_LABEL[status]
 
 
 def _progress_fraction(status: PipelineStageState) -> float:

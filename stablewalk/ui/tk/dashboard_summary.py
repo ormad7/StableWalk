@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from stablewalk.ui.theme import (
+    ACCENT,
     BG,
     BORDER,
     DASHBOARD_CARD_PAD,
@@ -25,9 +26,11 @@ from stablewalk.ui.theme import (
     MUTED,
     PAD_MD,
     PAD_SM,
+    PAD_XS,
     PANEL,
     SUCCESS,
     TEXT,
+    TEXT_SECONDARY,
     WARNING,
     create_tooltip,
     bind_responsive_wrap,
@@ -138,26 +141,23 @@ def _install_summary_scroll(parent: ttk.Frame) -> tk.Frame:
 def _section_header(parent: tk.Misc, *, row: int, title: str) -> None:
     block = tk.Frame(parent, bg=PANEL, highlightthickness=0)
     block.grid(row=row, column=0, sticky="ew", pady=(PAD_MD, PAD_SM))
-    block.columnconfigure(0, weight=1)
+    block.columnconfigure(1, weight=1)
+
+    accent = tk.Frame(block, bg=ACCENT, width=3, highlightthickness=0)
+    accent.grid(row=0, column=0, sticky="ns", padx=(0, PAD_SM))
 
     tk.Label(
         block,
-        text="─" * 32,
+        text=title.upper(),
         bg=PANEL,
-        fg=BORDER,
+        fg=TEXT_SECONDARY,
         font=FONT_SUMMARY_SECTION_RULE,
         anchor="w",
-    ).grid(row=0, column=0, sticky="ew")
+    ).grid(row=0, column=1, sticky="w")
 
-    tk.Label(
-        block,
-        text=title,
-        bg=PANEL,
-        fg=TEXT,
-        font=FONT_SUMMARY_CATEGORY,
-        anchor="w",
-    ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-
+    tk.Frame(block, bg=BORDER, height=1, highlightthickness=0).grid(
+        row=1, column=0, columnspan=2, sticky="ew", pady=(PAD_XS, 0)
+    )
 
 def _build_metric_card(
     parent: tk.Misc,
@@ -315,7 +315,7 @@ def build_results_summary_tab(gui, parent: ttk.Frame) -> None:
 
     session_card = ttk.LabelFrame(
         report_body,
-        text="  Session  ",
+        text="Session",
         style="Card.TLabelframe",
         padding=DASHBOARD_CARD_PAD,
     )
@@ -428,7 +428,7 @@ def build_results_summary_tab(gui, parent: ttk.Frame) -> None:
 
     interp_card = ttk.LabelFrame(
         report_body,
-        text="  Interpretation  ",
+        text="Interpretation",
         style="Card.TLabelframe",
         padding=DASHBOARD_SIDE_PAD,
     )
@@ -673,7 +673,7 @@ def update_results_summary_panel(gui, summary) -> None:
                 else:
                     update_kpi_card(
                         kpi,
-                        value="✗ Not detected",
+                        value="Not detected",
                         unit="",
                         available=True,
                         quality="borderline",
@@ -688,7 +688,7 @@ def update_results_summary_panel(gui, summary) -> None:
                 create_tooltip(status_lbl, tip, wraplength=340)
                 create_tooltip(detail_lbl, tip, wraplength=340)
             else:
-                status_lbl.configure(text="✗ Not detected", fg=WARNING)
+                status_lbl.configure(text="Not detected", fg=WARNING)
                 detail_lbl.configure(text=ev.detail)
                 create_tooltip(status_lbl, tip, wraplength=340)
                 create_tooltip(detail_lbl, tip, wraplength=340)

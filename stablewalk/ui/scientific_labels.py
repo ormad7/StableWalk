@@ -86,10 +86,10 @@ LABEL_BIOMECH_TIMELINE = "Biomechanics Timeline"
 LABEL_CONTACT_VGRF_SECTION = "Foot Contact & Estimated Virtual GRF"
 
 # ── Chart titles ──────────────────────────────────────────────────────────────
-CHART_COM_HEIGHT = "Center of Mass — height (body-normalized, estimated)"
-CHART_STABILITY_MARGIN = "Stability Margin (derived)"
-CHART_CONTACT_EVENTS = "Contact Timing & Gait Events (derived)"
-CHART_GAIT_METRICS = "Gait Metrics Summary (derived)"
+CHART_COM_HEIGHT = "COM Height"
+CHART_STABILITY_MARGIN = "Stability Margin"
+CHART_CONTACT_EVENTS = "Contact Timing"
+CHART_GAIT_METRICS = "Gait Phase"
 CHART_GAIT_PHASE = "Gait Phase Timeline (derived)"
 CHART_VGRF = LABEL_VIRTUAL_GRF_FULL
 

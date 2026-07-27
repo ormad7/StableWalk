@@ -70,3 +70,43 @@ def test_configure_time_axis_respects_show_xlabel_flag() -> None:
     ax = fig.add_subplot(111)
     configure_time_axis(ax, show_xlabel=False)
     assert ax.get_xlabel() == ""
+
+
+def test_series_plot_kwargs_left_solid_right_dashed() -> None:
+    from stablewalk.ui.viewers.chart_style import (
+        LINESTYLE_LEFT,
+        LINESTYLE_RIGHT,
+        SERIES_LINE_WIDTH,
+        series_plot_kwargs,
+        side_linestyle,
+    )
+
+    left = series_plot_kwargs(color="#22c55e", side="left", label="L")
+    right = series_plot_kwargs(color="#ef4444", side="right", label="R")
+    assert left["linestyle"] == LINESTYLE_LEFT
+    assert right["linestyle"] == LINESTYLE_RIGHT
+    assert left["linewidth"] == SERIES_LINE_WIDTH
+    assert left["antialiased"] is True
+    assert side_linestyle("right_knee") == LINESTYLE_RIGHT
+
+
+def test_legend_ncol_scales_with_entries() -> None:
+    from stablewalk.ui.viewers.chart_style import legend_ncol_for
+
+    assert legend_ncol_for(1) == 1
+    assert legend_ncol_for(3) == 3
+    assert legend_ncol_for(5) == 3
+    assert legend_ncol_for(8) >= 2
+
+
+def test_style_chart_legend_is_dynamic() -> None:
+    from stablewalk.ui.viewers.chart_style import style_chart_legend
+
+    fig = Figure(figsize=(6, 4))
+    ax = fig.add_subplot(111)
+    ax.plot([0, 1], [0, 1], label="Left knee")
+    ax.plot([0, 1], [1, 0], label="Right knee")
+    leg = style_chart_legend(ax)
+    assert leg is not None
+    assert len(leg.get_texts()) == 2
+    assert leg.get_texts()[0].get_fontsize() >= 9.5

@@ -42,8 +42,8 @@ def playhead_pulse(anim_phase: float) -> tuple[float, float, float]:
 
 
 def format_playhead_label(state: PlayheadState) -> str:
-    """Human-readable frame + timestamp beside the playhead."""
-    return f"F{state.frame_index} · {state.time_s:.2f}s"
+    """Compact timestamp beside the playhead (avoids overlapping series)."""
+    return f"{state.time_s:.2f}s"
 
 
 def draw_chart_playhead(

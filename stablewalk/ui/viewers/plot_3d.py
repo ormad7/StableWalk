@@ -1477,10 +1477,16 @@ def draw_joint_positions_chart(
 ) -> None:
     """Per-joint X, Y, Z (hip-centered) and linear speed for the current frame."""
     from stablewalk.pose.skeleton_3d import SKELETON_3D_JOINTS
+    from stablewalk.ui.viewers.chart_style import (
+        apply_chart_grid,
+        apply_chart_panel_style,
+        style_chart_legend,
+        style_chart_title,
+    )
 
     if clear:
         ax.cla()
-        ax.set_facecolor(PANEL)
+        apply_chart_panel_style(ax)
 
     joints = skeleton.joints
     if not joints:
@@ -1511,15 +1517,13 @@ def draw_joint_positions_chart(
     ax.barh(y + 0.5 * h, zs, height=h, color=COLOR_TORSO, alpha=0.9, label="Z")
     ax.barh(y + 1.5 * h, speeds, height=h, color=COLOR_VEL, alpha=0.9, label="|v|")
     ax.set_yticks(y)
-    ax.set_yticklabels(names, fontsize=6, color=TEXT)
-    ax.set_xlabel("Hip-centered coords · speed", color=MUTED, fontsize=8)
+    ax.set_yticklabels(names, fontsize=9, color=TEXT)
+    ax.set_xlabel("Hip-centered coords · speed", color=MUTED, fontsize=11)
     ax.axvline(0, color=BORDER, linewidth=0.8)
-    ax.grid(True, axis="x", color=BORDER, alpha=0.35, linestyle="--")
-    ax.tick_params(colors=MUTED, labelsize=7)
-    ax.legend(facecolor=PANEL, edgecolor=BORDER, labelcolor=TEXT, fontsize=6, loc="lower right", ncol=2)
-    ax.set_title("Joint positions & linear velocity", color=TEXT, fontsize=9, pad=4)
-    for spine in ax.spines.values():
-        spine.set_color(BORDER)
+    apply_chart_grid(ax, y_minor=False)
+    ax.tick_params(colors=MUTED, labelsize=9)
+    style_chart_legend(ax, loc="lower right", ncol=2)
+    style_chart_title(ax, "Joint positions & linear velocity", pad=6)
 
 
 def draw_dof_motion_chart(
@@ -1531,10 +1535,16 @@ def draw_dof_motion_chart(
 ) -> None:
     """Bar chart of all DoF angles (°) and angular velocities (°/s) for this frame."""
     from stablewalk.pose.dof import DOF_LABELS, GAIT_ANGLE_FIELDS
+    from stablewalk.ui.viewers.chart_style import (
+        apply_chart_grid,
+        apply_chart_panel_style,
+        style_chart_legend,
+        style_chart_title,
+    )
 
     if clear:
         ax.cla()
-        ax.set_facecolor(PANEL)
+        apply_chart_panel_style(ax)
 
     angles = frame.joint_angles
     if not angles:
@@ -1562,15 +1572,13 @@ def draw_dof_motion_chart(
     ax.barh(y - h / 4, angle_vals, height=h / 2, color=METRIC_GLOBAL, alpha=0.85, label="Angle °")
     ax.barh(y + h / 4, omega_vals, height=h / 2, color=COLOR_VEL, alpha=0.85, label="ω °/s")
     ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=7, color=TEXT)
-    ax.set_xlabel("Degrees / ° per second", color=MUTED, fontsize=8)
-    ax.tick_params(colors=MUTED, labelsize=7)
+    ax.set_yticklabels(labels, fontsize=9, color=TEXT)
+    ax.set_xlabel("Degrees / ° per second", color=MUTED, fontsize=11)
+    ax.tick_params(colors=MUTED, labelsize=9)
     ax.axvline(0, color=BORDER, linewidth=0.8)
-    ax.grid(True, axis="x", color=BORDER, alpha=0.35, linestyle="--")
-    ax.legend(facecolor=PANEL, edgecolor=BORDER, labelcolor=TEXT, fontsize=7, loc="lower right")
-    ax.set_title("All DoF · angles & angular velocity", color=TEXT, fontsize=9, pad=4)
-    for spine in ax.spines.values():
-        spine.set_color(BORDER)
+    apply_chart_grid(ax, y_minor=False)
+    style_chart_legend(ax, loc="lower right")
+    style_chart_title(ax, "All DoF · angles & angular velocity", pad=6)
 
 
 def compute_view_limit(skeletons: list[Skeleton3D], padding: float = 1.12) -> float:

@@ -3,7 +3,7 @@ Biomechanics Laboratory — dual-session gait Comparison Mode.
 
 Layout
 ------
-Chrome:    presets (Normal vs Abnormal / Performance / User vs Reference)
+Chrome:    Session A/B pickers · Load examples… · Pin A/B
 Top:       Session A metrics | Difference Panel | Session B metrics
 Middle:    Session A video | Session B video  (+ skeletons)
 Bottom:    COM paths | Joint angle overlay | Difference heatmap
@@ -113,8 +113,14 @@ def build_comparison_tab(gui: Any, parent: tk.Misc) -> ttk.Frame:
     host.pack(fill=tk.BOTH, expand=True)
     placeholder = ttk.Label(
         host,
-        text="Comparison workspace loads when this tab is opened.",
+        text=(
+            "Session comparison\n\n"
+            "Open this tab to load the dual-session workspace.\n"
+            "Assign Session A and Session B, or use Examples under Demo."
+        ),
+        style="EmptyState.TLabel",
         anchor="center",
+        justify=tk.CENTER,
     )
     placeholder.pack(fill=tk.BOTH, expand=True, padx=PAD_SM, pady=PAD_SM)
     gui._comparison_mode = None
@@ -207,7 +213,7 @@ class ComparisonModeController:
 
         tk.Label(
             bar,
-            text="Biomechanics Lab — Comparison",
+            text="Comparison",
             bg=PANEL,
             fg=TEXT,
             font=FONT_SECTION,
@@ -236,53 +242,48 @@ class ComparisonModeController:
 
         presets = ttk.Frame(bar)
         presets.grid(row=0, column=5, padx=(PAD_SM, PAD_SM))
-        btn_normal_abn = ttk.Button(
-            presets,
-            text="Normal vs Abnormal",
-            style="Compact.TButton",
+        examples_menu = tk.Menu(presets, tearoff=0)
+        examples_menu.add_command(
+            label="Normal vs Abnormal",
             command=lambda: self.apply_preset("normal", "abnormal"),
         )
-        btn_normal_abn.pack(side=tk.LEFT, padx=(0, 4))
-        btn_normal_perf = ttk.Button(
-            presets,
-            text="Normal vs Performance",
-            style="Compact.TButton",
+        examples_menu.add_command(
+            label="Normal vs Performance",
             command=lambda: self.apply_preset("normal", "athletic"),
         )
-        btn_normal_perf.pack(side=tk.LEFT, padx=(0, 4))
-        btn_abn_perf = ttk.Button(
-            presets,
-            text="Abnormal vs Performance",
-            style="Compact.TButton",
+        examples_menu.add_command(
+            label="Abnormal vs Performance",
             command=lambda: self.apply_preset("abnormal", "athletic"),
         )
-        btn_abn_perf.pack(side=tk.LEFT, padx=(0, 4))
-        btn_user_ref = ttk.Button(
-            presets,
-            text="User vs Reference",
-            style="Compact.TButton",
+        examples_menu.add_separator()
+        examples_menu.add_command(
+            label="User vs Reference",
             command=self.apply_user_vs_reference,
         )
-        btn_user_ref.pack(side=tk.LEFT, padx=(0, 4))
+        btn_examples = ttk.Menubutton(
+            presets,
+            text="Load examples…",
+            style="Compact.TButton",
+            direction="below",
+        )
+        btn_examples.configure(menu=examples_menu)
+        btn_examples.pack(side=tk.LEFT, padx=(0, 4))
         btn_pin_a = ttk.Button(
             presets,
-            text="Pin → A",
+            text="Use as A",
             style="Compact.TButton",
             command=lambda: self.pin_current(slot="left"),
         )
         btn_pin_a.pack(side=tk.LEFT, padx=(0, 4))
         btn_pin_b = ttk.Button(
             presets,
-            text="Pin → B",
+            text="Use as B",
             style="Compact.TButton",
             command=lambda: self.pin_current(slot="right"),
         )
         btn_pin_b.pack(side=tk.LEFT)
 
-        create_tooltip(btn_normal_abn, "Load Normal into Session A and Abnormal into Session B")
-        create_tooltip(btn_normal_perf, "Load Normal into Session A and Performance into Session B")
-        create_tooltip(btn_abn_perf, "Load Abnormal into Session A and Performance into Session B")
-        create_tooltip(btn_user_ref, "Compare the active recording against a reference session")
+        create_tooltip(btn_examples, "Load paired example sessions into A / B")
         create_tooltip(btn_pin_a, "Pin the current session into Session A")
         create_tooltip(btn_pin_b, "Pin the current session into Session B")
         create_tooltip(self.cmb_left, "Choose Session A source recording")
@@ -509,7 +510,7 @@ class ComparisonModeController:
         ).pack(fill=tk.X, padx=PAD_SM, pady=(PAD_SM, PAD_XS))
         tk.Label(
             frame,
-            text="ROM · Cadence · Step length · Joint · COM · Stability",
+            text="Key metric deltas",
             bg=SURFACE,
             fg=MUTED,
             font=FONT_UI_SM,
@@ -818,16 +819,18 @@ class ComparisonModeController:
         transport = ttk.Frame(parent)
         transport.grid(row=0, column=0, sticky="ew", pady=(0, PAD_XS))
 
-        self.btn_play = ttk.Button(transport, text="▶ Play", width=10, command=self.toggle_play)
-        self.btn_play.pack(side=tk.LEFT, padx=(0, PAD_XS))
-        ttk.Button(transport, text="⏮", width=3, command=lambda: self.seek(0.0)).pack(
-            side=tk.LEFT, padx=(0, PAD_XS)
+        self.btn_play = ttk.Button(
+            transport, text="Play", style="Transport.TButton", width=8, command=self.toggle_play
         )
+        self.btn_play.pack(side=tk.LEFT, padx=(0, PAD_XS))
         ttk.Button(
-            transport, text="◀", width=3, command=lambda: self.step_frames(-1)
+            transport, text="Reset", style="Transport.TButton", width=6, command=lambda: self.seek(0.0)
+        ).pack(side=tk.LEFT, padx=(0, PAD_XS))
+        ttk.Button(
+            transport, text="Prev", style="Transport.TButton", width=5, command=lambda: self.step_frames(-1)
         ).pack(side=tk.LEFT, padx=(0, 2))
         ttk.Button(
-            transport, text="▶", width=3, command=lambda: self.step_frames(1)
+            transport, text="Next", style="Transport.TButton", width=5, command=lambda: self.step_frames(1)
         ).pack(side=tk.LEFT, padx=(0, PAD_XS))
 
         self.timeline = ttk.Scale(
@@ -1175,9 +1178,8 @@ class ComparisonModeController:
         if identical:
             self._fill_diffs(None, identical=True)
             self._set_interp(
-                "BIOMECHANICS LABORATORY — GAIT COMPARISON\n\n"
-                "Both comparison sessions are identical.\n"
-                "Select two different sessions (e.g. Normal vs Abnormal) "
+                "Both comparison sessions are identical.\n\n"
+                "Select two different sessions (for example Normal vs Abnormal) "
                 "to compute differences."
             )
         elif left and right and _metrics_ready(left) and _metrics_ready(right):
@@ -1189,22 +1191,17 @@ class ComparisonModeController:
             self._fill_diffs(None)
             if missing and any(k in self._loading_keys for k in missing):
                 self._set_interp(
-                    "BIOMECHANICS LABORATORY — GAIT COMPARISON\n\n"
-                    "Loading the second session from demo cache…\n"
+                    "Loading the second session from demo cache…\n\n"
                     "Difference metrics appear when Session A and Session B "
                     "both have finished analysis."
                 )
             else:
                 self._set_interp(
-                    "BIOMECHANICS LABORATORY — GAIT COMPARISON\n\n"
-                    "Analyze two independent sessions (demos or your videos), pin them "
-                    "as Session A / Session B, or use presets:\n"
-                    "  • Normal vs Abnormal\n"
-                    "  • Normal vs Performance\n"
-                    "  • Abnormal vs Performance\n"
-                    "  • User vs Reference\n\n"
-                    "Already-analyzed sessions are reused — no pipeline restart.\n"
-                    "Session B stays empty until its snapshot finishes loading."
+                    "Analyze two independent sessions (demos or your videos), "
+                    "then pin them as Session A and Session B.\n\n"
+                    "Presets: Normal vs Abnormal · Normal vs Performance · "
+                    "Abnormal vs Performance · User vs Reference.\n\n"
+                    "Already-analyzed sessions are reused — no pipeline restart."
                 )
 
         self._redraw_paths()
@@ -1287,12 +1284,12 @@ class ComparisonModeController:
     def play(self) -> None:
         self._playing = True
         self._skel_paint_tick = 0
-        self.btn_play.configure(text="⏸ Pause")
+        self.btn_play.configure(text="Pause")
         self._tick()
 
     def pause(self) -> None:
         self._playing = False
-        self.btn_play.configure(text="▶ Play")
+        self.btn_play.configure(text="Play")
         if self._play_job is not None:
             try:
                 self.gui.root.after_cancel(self._play_job)

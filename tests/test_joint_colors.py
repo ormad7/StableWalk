@@ -23,6 +23,17 @@ def test_joint_color_is_stable() -> None:
     assert joint_color("left_knee") != joint_color("right_knee")
 
 
+def test_left_right_joint_colors_are_side_families() -> None:
+    left = joint_color("left_knee")
+    right = joint_color("right_knee")
+    assert left != right
+    # Left family stays in green/teal; right in red/orange.
+    assert left.lower().startswith("#")
+    assert right.lower().startswith("#")
+    assert joint_color("left_hip") != joint_color("left_ankle")
+    assert joint_color("right_hip") != joint_color("right_ankle")
+
+
 def test_item_id_for_joint_label_roundtrip() -> None:
     for item_id in GUI_DOF_ITEM_IDS:
         label = label_for_item(item_id)

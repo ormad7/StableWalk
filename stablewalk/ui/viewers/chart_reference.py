@@ -83,7 +83,7 @@ def draw_reference_y_bands(
                 edgecolor="none",
                 alpha=0.16,
                 zorder=0.3,
-                label="Normal range" if label_normal else "_nolegend_",
+                label="Normal" if label_normal else "_nolegend_",
             )
             ax.axhline(n0, color=REF_NORMAL, linewidth=0.7, alpha=0.35, linestyle=":", zorder=0.4)
             ax.axhline(n1, color=REF_NORMAL, linewidth=0.7, alpha=0.35, linestyle=":", zorder=0.4)

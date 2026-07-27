@@ -8,30 +8,54 @@ from tkinter import ttk
 from stablewalk.ui.dof_selection import GUI_DOF_ITEM_IDS, GUI_DOF_LABELS, label_for_item
 from stablewalk.ui.theme import ELEVATED, PANEL, SELECTION_BG, TEXT
 
-# Sixteen distinct, desaturated laboratory hues (Visual3D / Qualisys density).
-JOINT_COLOR_PALETTE: tuple[str, ...] = (
-    "#3d9a5f",  # green — right hip
-    "#3b82b0",  # steel — left hip
-    "#c9a227",  # muted gold — right knee
-    "#c45c6a",  # muted rose — left knee
-    "#7c6bb0",  # slate violet — right ankle
-    "#2a9a8f",  # teal — left ankle
-    "#c47a3a",  # ochre — right heel
-    "#4a7eb8",  # blue — left heel
-    "#b06a9a",  # mauve — right toe
-    "#3d9a78",  # sea green — left toe
-    "#8b6db5",  # purple — right shoulder
-    "#2f8fa8",  # cyan slate — left shoulder
-    "#b86b88",  # dusty pink — right elbow
-    "#7a9a3d",  # olive — left elbow
-    "#6b78b8",  # indigo — right wrist
-    "#c4844a",  # amber — left wrist
+# Per-joint hues within a strict left=green / right=red family so L/R is
+# instantly readable while multi-joint overlays remain distinguishable.
+# Canonical SIDE_LEFT / SIDE_RIGHT remain "#22c55e" / "#ef4444".
+_LEFT_JOINT_PALETTE: tuple[str, ...] = (
+    "#16a34a",  # hip
+    "#22c55e",  # knee (SIDE_LEFT)
+    "#4ade80",  # ankle
+    "#14b8a6",  # heel
+    "#2dd4bf",  # toe
+    "#059669",  # shoulder
+    "#34d399",  # elbow
+    "#6ee7b7",  # wrist
+)
+_RIGHT_JOINT_PALETTE: tuple[str, ...] = (
+    "#dc2626",  # hip
+    "#ef4444",  # knee (SIDE_RIGHT)
+    "#f87171",  # ankle
+    "#ea580c",  # heel
+    "#f97316",  # toe
+    "#e11d48",  # shoulder
+    "#fb7185",  # elbow
+    "#fdba74",  # wrist
 )
 
+_LEFT_JOINT_ORDER: tuple[str, ...] = tuple(
+    i for i in GUI_DOF_ITEM_IDS if i.startswith("left_")
+)
+_RIGHT_JOINT_ORDER: tuple[str, ...] = tuple(
+    i for i in GUI_DOF_ITEM_IDS if i.startswith("right_")
+)
+
+
+def _palette_for_item(item_id: str) -> str:
+    if item_id.startswith("left_"):
+        idx = _LEFT_JOINT_ORDER.index(item_id) if item_id in _LEFT_JOINT_ORDER else 0
+        return _LEFT_JOINT_PALETTE[idx % len(_LEFT_JOINT_PALETTE)]
+    if item_id.startswith("right_"):
+        idx = _RIGHT_JOINT_ORDER.index(item_id) if item_id in _RIGHT_JOINT_ORDER else 0
+        return _RIGHT_JOINT_PALETTE[idx % len(_RIGHT_JOINT_PALETTE)]
+    return _LEFT_JOINT_PALETTE[0]
+
+
 JOINT_COLORS: dict[str, str] = {
-    item_id: JOINT_COLOR_PALETTE[index % len(JOINT_COLOR_PALETTE)]
-    for index, item_id in enumerate(GUI_DOF_ITEM_IDS)
+    item_id: _palette_for_item(item_id) for item_id in GUI_DOF_ITEM_IDS
 }
+
+# Flat palette kept for trajectory comparison plots (stable order = GUI order).
+JOINT_COLOR_PALETTE: tuple[str, ...] = tuple(JOINT_COLORS[i] for i in GUI_DOF_ITEM_IDS)
 
 _LABEL_TO_ITEM: dict[str, str] = {
     label_for_item(item_id): item_id for item_id in GUI_DOF_ITEM_IDS

@@ -3,15 +3,20 @@ Display-only kinematic filter for the Overview walking skeleton.
 
 Produces a motion-capture–like figure for rendering without mutating the
 analysis ``GaitMotionRecording``. Raw snapshots keep driving metrics, contact,
-clearance, and charts.
+clearance, heel-strike timing, ROM, and charts.
 
 Features (visualization only):
-  - Adaptive low-lag temporal smoothing (One-Euro style)
+  - Stronger adaptive low-lag temporal smoothing (One-Euro style)
+  - Micro-jitter gate for sub-threshold landmark noise
   - Confidence-weighted hold when landmark visibility drops
   - Soft limb-length preservation from a running median
   - Pelvis stability and shoulder leveling
   - Knee / ankle orientation cleanup (reduce impossible lateral flips)
   - Soft joint limits: knee/elbow hyperextension, shoulder flip, hip twist
+  - Residual damp after structural cleanup (display wobble only)
+
+All outputs are clones of tracked poses — never invents motion or retargets
+analysis timing.
 """
 
 from __future__ import annotations
@@ -53,9 +58,37 @@ _LENGTH_EDGES: tuple[tuple[str, str], ...] = (
 # (Length edges already encode parent→child order.)
 
 _MIN_VIS = 0.18
-_LENGTH_HISTORY = 48
+_LENGTH_HISTORY = 64
 _HISTORY_MAX = 24
 _LENGTH_LOCK_AFTER = 18
+
+# Extremities / head tend to carry the most landmark noise — apply a slightly
+# stronger One-Euro floor there. Does not invent motion; still tracks raw pose.
+_JITTER_SENSITIVE_JOINTS: frozenset[str] = frozenset(
+    {
+        "left_ankle",
+        "right_ankle",
+        "left_heel",
+        "right_heel",
+        "left_toe",
+        "right_toe",
+        "left_wrist",
+        "right_wrist",
+        "left_elbow",
+        "right_elbow",
+        "head",
+        "neck",
+    }
+)
+
+# Sub-threshold displacements (meters) treated as landmark noise when slow.
+_MICRO_JITTER_M = 0.0030
+_MICRO_JITTER_SPEED_M_S = 0.15
+_SOFT_JITTER_M = 0.0060
+_SOFT_JITTER_SPEED_M_S = 0.32
+# After structural cleanup, damp only tiny oscillatory residuals on noisy joints.
+_RESIDUAL_DAMP_M = 0.0024
+_RESIDUAL_DAMP_BLEND = 0.28
 
 
 def _v_sub(a: Vec3, b: Vec3) -> tuple[float, float, float]:
@@ -111,17 +144,18 @@ class SkeletonDisplayFilter:
     """Stateful display filter — one instance per GUI session / recording."""
 
     # One-Euro parameters (tuned for ~25–30 fps gait video).
-    # Lower min_cutoff + beta = less jitter while still tracking swing.
-    min_cutoff: float = 0.78
-    beta: float = 0.38
-    d_cutoff: float = 1.05
+    # Slightly lower min_cutoff than the prior 0.78 defaults; extremity
+    # joints get an extra floor + micro-jitter gate (see _one_euro).
+    min_cutoff: float = 0.62
+    beta: float = 0.37
+    d_cutoff: float = 0.92
     # Soft length lock blend (1 = hard FK length, 0 = free).
-    length_blend: float = 0.94
+    length_blend: float = 0.95
     # Structural cleanup strengths.
-    pelvis_smooth: float = 0.55
-    shoulder_level: float = 0.68
+    pelvis_smooth: float = 0.58
+    shoulder_level: float = 0.70
     knee_plane: float = 0.58
-    ankle_plane: float = 0.52
+    ankle_plane: float = 0.54
     # Soft joint-limit blends (display only; never invents motion).
     hyperext_blend: float = 0.72
     shoulder_flip_blend: float = 0.65
@@ -130,6 +164,7 @@ class SkeletonDisplayFilter:
     _length_lock_frames: int = 0
 
     _pos: dict[str, Vec3] = field(default_factory=dict)
+    _pos_prev: dict[str, Vec3] = field(default_factory=dict)
     _dx: dict[str, Vec3] = field(default_factory=dict)
     _lengths: dict[tuple[str, str], float] = field(default_factory=dict)
     _length_hist: dict[tuple[str, str], deque[float]] = field(default_factory=dict)
@@ -141,6 +176,7 @@ class SkeletonDisplayFilter:
 
     def reset(self) -> None:
         self._pos.clear()
+        self._pos_prev.clear()
         self._dx.clear()
         self._lengths.clear()
         self._length_hist.clear()
@@ -185,9 +221,9 @@ class SkeletonDisplayFilter:
             conf_w = max(0.25, min(1.0, conf))
             filtered = self._one_euro(jid, prev, sample.position, dt, conf_w)
             # Blend toward hold when confidence is mid-low.
-            if conf_w < 0.85:
+            if conf_w < 0.90:
                 hold = 1.0 - conf_w
-                filtered = _v_lerp(filtered, prev, hold * 0.55)
+                filtered = _v_lerp(filtered, prev, hold * 0.72)
             smoothed[jid] = filtered
 
         smoothed = self._stabilize_pelvis(smoothed)
@@ -203,7 +239,11 @@ class SkeletonDisplayFilter:
         # Re-level after length locks so shoulders stay even.
         smoothed = self._level_shoulders(smoothed)
         smoothed = self._constrain_shoulder_flip(smoothed)
+        # Kill residual high-frequency wobble from structural passes only —
+        # never extrapolates past the tracked sample.
+        smoothed = self._dampen_residual_jitter(smoothed)
 
+        self._pos_prev = dict(self._pos)
         self._pos = dict(smoothed)
         self._last_t = snap.time_s
         self._last_frame = snap.frame_index
@@ -222,6 +262,7 @@ class SkeletonDisplayFilter:
 
     def _reseed(self, snap: SkeletonSnapshot) -> None:
         self._pos = {jid: sample.position for jid, sample in snap.joints.items()}
+        self._pos_prev = dict(self._pos)
         self._dx = {jid: Vec3(0.0, 0.0, 0.0) for jid in snap.joints}
         self._update_length_priors(snap)
         # Keep length priors; drop temporal history so ghosts do not flash.
@@ -264,15 +305,55 @@ class SkeletonDisplayFilter:
         self._dx[jid] = dx
         speed = math.sqrt(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z)
         # Low cutoff when slow (kill jitter); rises with speed (no lag).
-        cutoff = self.min_cutoff + self.beta * speed
+        floor = self.min_cutoff
+        if jid in _JITTER_SENSITIVE_JOINTS:
+            floor *= 0.55
+        cutoff = floor + self.beta * speed
         # Confidence scales effective cutoff downward (more smooth when unsure).
-        cutoff *= 0.55 + 0.45 * conf
+        cutoff *= 0.38 + 0.62 * conf
         a = self._alpha(cutoff, dt)
+        # Micro-jitter gate: only on noisy extremities/head. Applying it to
+        # hips/knees would soften real gait peaks (ROM) without needing it.
+        if jid in _JITTER_SENSITIVE_JOINTS:
+            disp = _v_len(_v_sub(raw, prev))
+            if disp < _MICRO_JITTER_M and speed < _MICRO_JITTER_SPEED_M_S:
+                a *= 0.18
+            elif disp < _SOFT_JITTER_M and speed < _SOFT_JITTER_SPEED_M_S:
+                a *= 0.40
         return Vec3(
             prev.x + a * (raw.x - prev.x),
             prev.y + a * (raw.y - prev.y),
             prev.z + a * (raw.z - prev.z),
         )
+
+    def _dampen_residual_jitter(
+        self, positions: dict[str, Vec3]
+    ) -> dict[str, Vec3]:
+        """Damp tiny oscillatory residuals on noisy joints after cleanup.
+
+        Only acts when the latest step reverses the prior step (true flicker),
+        and only below a few millimeters — real gait progress is left alone.
+        Never invents a new direction.
+        """
+        if not self._pos:
+            return positions
+        out = dict(positions)
+        for jid in _JITTER_SENSITIVE_JOINTS:
+            pos = positions.get(jid)
+            prev = self._pos.get(jid)
+            prev2 = self._pos_prev.get(jid)
+            if pos is None or prev is None or prev2 is None:
+                continue
+            step = _v_sub(pos, prev)
+            step_len = _v_len(step)
+            if step_len <= 1e-9 or step_len > _RESIDUAL_DAMP_M:
+                continue
+            prior = _v_sub(prev, prev2)
+            # Dot < 0 ⇒ direction reversed ⇒ high-frequency flicker.
+            if step[0] * prior[0] + step[1] * prior[1] + step[2] * prior[2] >= 0.0:
+                continue
+            out[jid] = _v_lerp(pos, prev, _RESIDUAL_DAMP_BLEND)
+        return out
 
     def _update_length_priors(self, snap: SkeletonSnapshot) -> None:
         # After lock-in, keep median limb lengths fixed so jitter cannot stretch bones.

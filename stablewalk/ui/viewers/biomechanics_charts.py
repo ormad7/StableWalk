@@ -91,37 +91,12 @@ def _deduped_legend(
     ax: Axes,
     *,
     loc: str = "upper right",
-    ncol: int = 1,
+    ncol: int | None = None,
     bbox_to_anchor: tuple[float, float] | None = None,
 ) -> None:
-    handles, labels = ax.get_legend_handles_labels()
-    by_label: dict[str, object] = {}
-    for handle, label in zip(handles, labels):
-        if label and not str(label).startswith("_") and label not in by_label:
-            by_label[label] = handle
-    if not by_label:
-        return
-    kwargs: dict = {
-        "loc": loc,
-        "ncol": ncol,
-        "fontsize": 7.5,
-        "frameon": True,
-        "fancybox": False,
-        "edgecolor": BORDER,
-        "facecolor": PANEL,
-        "labelcolor": TEXT,
-        "framealpha": 0.92,
-        "borderpad": 0.3,
-        "handlelength": 1.5,
-        "handletextpad": 0.4,
-        "labelspacing": 0.28,
-    }
-    if bbox_to_anchor is not None:
-        kwargs["bbox_to_anchor"] = bbox_to_anchor
-        kwargs["borderaxespad"] = 0.0
-    leg = ax.legend(list(by_label.values()), list(by_label.keys()), **kwargs)
-    if leg is not None:
-        leg.get_frame().set_linewidth(0.7)
+    from stablewalk.ui.viewers.chart_style import style_chart_legend
+
+    style_chart_legend(ax, loc=loc, ncol=ncol, bbox_to_anchor=bbox_to_anchor)
 
 
 def _stability_state_legend_handles() -> list[Patch]:
@@ -230,6 +205,8 @@ def _plot_stability_margin_series(
     hover_points: list[_HoverPoint],
 ) -> None:
     """Color-coded stability margin trace with per-point hover metadata."""
+    from stablewalk.ui.viewers.chart_style import SERIES_LINE_WIDTH
+
     if len(ts) < 2:
         return
     for i in range(len(ts) - 1):
@@ -241,9 +218,10 @@ def _plot_stability_margin_series(
             [ts[i], ts[i + 1]],
             [y0, y1],
             color=_stability_color(states[i]),
-            linewidth=1.8,
+            linewidth=SERIES_LINE_WIDTH,
             zorder=3,
             solid_capstyle="round",
+            antialiased=True,
         )
     for ti, mi, state in zip(ts, margins, states):
         if not np.isfinite(mi):
@@ -269,6 +247,8 @@ def _draw_gait_phase_row(
     hover_points: list[_HoverPoint],
 ) -> None:
     """Macro gait phase timeline with session summary annotations."""
+    from stablewalk.ui.viewers.chart_style import SERIES_LINE_WIDTH_STEP
+
     contact = result.contact
     if contact is None or not contact.per_frame:
         ax.text(
@@ -294,9 +274,9 @@ def _draw_gait_phase_row(
         step="post",
         color=BORDER,
         alpha=0.35,
-        label="Macro phase envelope",
+        label="Phase envelope",
     )
-    ax.step(t, values, where="post", color=TEXT, linewidth=1.4, label="Macro phase")
+    ax.step(t, values, where="post", color=TEXT, linewidth=SERIES_LINE_WIDTH_STEP, label="Phase")
 
     phase_labels = {0.0: "Swing", 0.5: "Stance", 1.0: "Double support", 0.25: "Uncertain"}
     for ti, val, frame in zip(t, values, contact.per_frame):
@@ -357,9 +337,9 @@ def _draw_gait_phase_row(
             )
 
     ax.set_yticks([0.0, 0.5, 1.0])
-    ax.set_yticklabels(["Swing", "Stance", "Double support"], fontsize=7, color=MUTED)
+    ax.set_yticklabels(["Swing", "Stance", "Double"], fontsize=7, color=MUTED)
     ax.set_ylim(-0.08, 1.18)
-    ax.set_ylabel("Phase (—)", fontsize=8, color=MUTED)
+    ax.set_ylabel("Phase", fontsize=8, color=MUTED, labelpad=6)
 
 
 def _register_line_hover_points(
@@ -431,15 +411,18 @@ def draw_biomechanics_dashboard(
         draw_confidence_overlay,
         draw_reference_y_bands,
     )
-    from stablewalk.ui.viewers.chart_style import style_chart_title
+    from stablewalk.ui.viewers.chart_style import (
+        SERIES_LINE_WIDTH,
+        _AXIS_LABEL_SIZE,
+        series_plot_kwargs,
+        style_chart_legend,
+        style_chart_title,
+    )
 
     axes[0].plot(
         t,
         com_y,
-        color=COM,
-        linewidth=2.1,
-        label=f"{LABEL_COM_SHORT} height",
-        zorder=3,
+        **series_plot_kwargs(color=COM, label=f"{LABEL_COM_SHORT} height", linewidth=SERIES_LINE_WIDTH, zorder=3),
     )
     # Hip-centered / body-normalized Y — not absolute meters above the floor.
     _register_line_hover_points(
@@ -456,7 +439,7 @@ def draw_biomechanics_dashboard(
     )
     if conf_com.size == len(t):
         draw_confidence_overlay(axes[0], t, conf_com, threshold=0.55)
-    axes[0].set_ylabel("Height (hip-relative BH)", fontsize=10.5, color=MUTED)
+    axes[0].set_ylabel("Height (BH)", fontsize=_AXIS_LABEL_SIZE, color=MUTED, labelpad=6)
     style_chart_title(axes[0], CHART_COM_HEIGHT)
     y0 = float(np.nanmin(com_y)) if np.isfinite(com_y).any() else COM_HEIGHT_NORMAL_BH[0]
     y1 = float(np.nanmax(com_y)) if np.isfinite(com_y).any() else COM_HEIGHT_NORMAL_BH[1]
@@ -481,7 +464,7 @@ def draw_biomechanics_dashboard(
         value_label=com_label,
         value_y=com_now,
     )
-    _deduped_legend(axes[0], loc="upper right", ncol=1)
+    _deduped_legend(axes[0], loc="upper left", ncol=1, bbox_to_anchor=(1.01, 1.0))
     _style(axes[0])
 
     if result.stability_margin and result.stability_margin.per_frame:
@@ -512,12 +495,12 @@ def draw_biomechanics_dashboard(
             linestyle=":",
             alpha=0.75,
             linewidth=1.0,
-            label="Stable threshold (0.04 m)",
+            label="Stable ≥ 0.04 m",
         )
-        axes[1].axhline(0.0, color=MUTED, linestyle="--", alpha=0.55, linewidth=0.9, label="BoS edge (0)")
-        axes[1].set_ylabel("Margin (m)", fontsize=10.5, color=MUTED)
+        axes[1].axhline(0.0, color=MUTED, linestyle="--", alpha=0.45, linewidth=0.9, label="_nolegend_")
+        axes[1].set_ylabel("Margin (m)", fontsize=_AXIS_LABEL_SIZE, color=MUTED, labelpad=6)
         style_chart_title(axes[1], CHART_STABILITY_MARGIN)
-        _draw_gait_event_vlines(axes[1], result, show_legend=False)
+        # Skip HS/TO vlines here — they clutter this row; events stay on Contact/Phase.
         sm_now = None
         sm_label = None
         if playhead_time_s is not None and len(ts) >= 2:
@@ -538,33 +521,18 @@ def draw_biomechanics_dashboard(
         for handle, label in zip(existing_handles, existing_labels):
             if not label or str(label).startswith("_"):
                 continue
-            if label in (
-                "Normal range",
-                "Stable threshold (0.04 m)",
-                "BoS edge (0)",
-            ) or "margin" in str(label).lower():
+            if label in ("Stable ≥ 0.04 m",) or "margin" in str(label).lower():
                 if label not in keep_labels:
                     keep.append(handle)
                     keep_labels.append(label)
-        leg = axes[1].legend(
-            keep + state_handles,
-            keep_labels + [h.get_label() for h in state_handles],
-            facecolor=PANEL,
-            edgecolor=BORDER,
-            labelcolor=TEXT,
-            fontsize=7.0,
-            loc="upper right",
-            ncol=2,
-            framealpha=0.92,
-            fancybox=False,
-            borderpad=0.3,
-            handlelength=1.4,
-            handletextpad=0.35,
-            labelspacing=0.25,
-            columnspacing=0.8,
+        style_chart_legend(
+            axes[1],
+            loc="upper left",
+            ncol=1,
+            bbox_to_anchor=(1.01, 1.0),
+            handles=keep + state_handles,
+            labels=keep_labels + [h.get_label() for h in state_handles],
         )
-        if leg is not None:
-            leg.get_frame().set_linewidth(0.7)
         _style(axes[1])
 
     if result.contact and result.contact.per_frame:
@@ -572,7 +540,11 @@ def draw_biomechanics_dashboard(
         rp = result.contact.right_contact_probability
         tc = result.contact.timestamps
         asym = np.abs(lp - rp)
-        axes[2].plot(tc, asym, color=TEXT, linewidth=1.85, label="|L−R| contact probability", zorder=3)
+        axes[2].plot(
+            tc,
+            asym,
+            **series_plot_kwargs(color=TEXT, label="|L−R| contact probability", zorder=3),
+        )
         _register_line_hover_points(
             axes[2],
             tc,
@@ -593,8 +565,8 @@ def draw_biomechanics_dashboard(
             label_normal=True,
         )
         _draw_contact_event_markers(axes[2], result)
-        _draw_gait_event_vlines(axes[2], result, show_legend=False)
-        axes[2].set_ylabel("Asymmetry (—)", fontsize=10.5, color=MUTED)
+        # Event markers stay; skip duplicate full-height vlines on this row.
+        axes[2].set_ylabel("Asymmetry", fontsize=_AXIS_LABEL_SIZE, color=MUTED, labelpad=6)
         style_chart_title(axes[2], CHART_CONTACT_EVENTS)
         axes[2].set_ylim(-0.12, 1.18)
         asym_now = None
@@ -608,15 +580,15 @@ def draw_biomechanics_dashboard(
             value_label=asym_label,
             value_y=asym_now,
         )
-        _deduped_legend(axes[2], loc="upper right", ncol=2)
+        _deduped_legend(axes[2], loc="upper left", ncol=1, bbox_to_anchor=(1.01, 1.0))
         _style(axes[2])
 
     _draw_gait_phase_row(axes[3], result, hover_points)
-    _draw_gait_event_vlines(axes[3], result, show_legend=True)
-    axes[3].set_xlabel("Time (s)", fontsize=10.5, color=MUTED)
+    _draw_gait_event_vlines(axes[3], result, show_legend=False)
+    axes[3].set_xlabel("Time (s)", fontsize=_AXIS_LABEL_SIZE, color=MUTED)
     style_chart_title(axes[3], CHART_GAIT_METRICS)
     _draw_synced_playhead(axes[3], playhead_time_s)
-    _deduped_legend(axes[3], loc="upper right", ncol=3)
+    _deduped_legend(axes[3], loc="upper left", ncol=1, bbox_to_anchor=(1.01, 1.0))
     _style(axes[3])
 
     if len(t) >= 2:
@@ -658,7 +630,20 @@ def draw_biomechanics_dashboard(
             )
         )
     set_figure_hover_points(fig, shared)
-    fig.subplots_adjust(left=0.12, right=0.985, top=0.96, bottom=0.08, hspace=0.58)
+    # Room for y-labels + bottom time ticks; compact lab stacking (not empty gutters).
+    fig.subplots_adjust(left=0.11, right=0.86, top=0.92, bottom=0.09, hspace=0.52)
+    for ax in axes:
+        ax.tick_params(axis="y", labelsize=9, pad=2)
+        ax.tick_params(axis="x", labelsize=9, pad=2)
+        title = ax.get_title()
+        if title:
+            from stablewalk.ui.viewers.chart_style import style_chart_title
+
+            style_chart_title(ax, title, pad=8)
+        try:
+            ax.yaxis.set_label_coords(-0.08, 0.5)
+        except Exception:
+            pass
 
 
 def attach_biomechanics_hover_tooltips(fig: Figure, canvas: FigureCanvasTkAgg) -> None:

@@ -25,10 +25,14 @@ if TYPE_CHECKING:
 
 
 def _style_axis(ax: Axes, *, y_minor: bool = True) -> None:
-    from stablewalk.ui.viewers.chart_style import apply_chart_grid, apply_chart_panel_style
+    from stablewalk.ui.viewers.chart_style import (
+        _TICK_LABEL_SIZE,
+        apply_chart_grid,
+        apply_chart_panel_style,
+    )
 
     apply_chart_panel_style(ax)
-    ax.tick_params(colors=MUTED, labelsize=9)
+    ax.tick_params(colors=MUTED, labelsize=_TICK_LABEL_SIZE)
     apply_chart_grid(ax, y_minor=y_minor)
 
 
@@ -111,7 +115,14 @@ def draw_contact_timeline(
 ) -> None:
     """Left/right contact probability and binary masks with gait-event markers."""
     from stablewalk.ui.viewers.chart_reference import draw_confidence_overlay
-    from stablewalk.ui.viewers.chart_style import style_chart_title
+    from stablewalk.ui.viewers.chart_style import (
+        LINESTYLE_LEFT,
+        LINESTYLE_RIGHT,
+        SERIES_LINE_WIDTH_STEP,
+        _AXIS_LABEL_SIZE,
+        style_chart_legend,
+        style_chart_title,
+    )
 
     if not contact.per_frame:
         ax.text(
@@ -143,16 +154,20 @@ def draw_contact_timeline(
         contact.left_contact_binary * 0.95,
         where="post",
         color=SIDE_LEFT,
-        linewidth=1.55,
+        linewidth=SERIES_LINE_WIDTH_STEP,
+        linestyle=LINESTYLE_LEFT,
         label="Left contact",
+        antialiased=True,
     )
     ax.step(
         t,
         contact.right_contact_binary * 0.85,
         where="post",
         color=SIDE_RIGHT,
-        linewidth=1.55,
+        linewidth=SERIES_LINE_WIDTH_STEP,
+        linestyle=LINESTYLE_RIGHT,
         label="Right contact",
+        antialiased=True,
     )
 
     conf = 0.5 * (
@@ -181,25 +196,24 @@ def draw_contact_timeline(
 
     ax.set_ylim(-0.18, 1.12)
     ax.set_xlim(t[0], t[-1])
-    ax.set_ylabel("Contact", color=MUTED, fontsize=10.5)
+    ax.set_ylabel("Contact", color=MUTED, fontsize=_AXIS_LABEL_SIZE)
     style_chart_title(ax, LABEL_FOOT_CONTACT_TIMELINE)
-    ax.legend(
-        facecolor=PANEL,
-        edgecolor=BORDER,
-        labelcolor=TEXT,
-        fontsize=8,
+    style_chart_legend(
+        ax,
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
-        borderaxespad=0.0,
-        framealpha=0.94,
-        fancybox=False,
     )
     _style_axis(ax)
 
 
 def draw_gait_phase_timeline(ax: Axes, contact: FootContactAnalysisResult) -> None:
     """Macro gait phases: stance, swing, double support."""
-    from stablewalk.ui.viewers.chart_style import style_chart_title
+    from stablewalk.ui.viewers.chart_style import (
+        SERIES_LINE_WIDTH_STEP,
+        _AXIS_LABEL_SIZE,
+        _TICK_LABEL_SIZE,
+        style_chart_title,
+    )
 
     if not contact.per_frame:
         _style_axis(ax)
@@ -210,13 +224,13 @@ def draw_gait_phase_timeline(ax: Axes, contact: FootContactAnalysisResult) -> No
     values = np.array([phase_map.get(f.macro_phase, 0.25) for f in contact.per_frame])
 
     ax.fill_between(t, 0, values, step="post", color=BORDER, alpha=0.35)
-    ax.step(t, values, where="post", color=TEXT, linewidth=1.4)
+    ax.step(t, values, where="post", color=TEXT, linewidth=SERIES_LINE_WIDTH_STEP, antialiased=True)
 
     ax.set_yticks([0.0, 0.5, 1.0])
-    ax.set_yticklabels(["Swing", "Stance", "Double support"], fontsize=8.5, color=MUTED)
+    ax.set_yticklabels(["Swing", "Stance", "Double support"], fontsize=_TICK_LABEL_SIZE, color=MUTED)
     ax.set_xlim(t[0], t[-1])
     ax.set_ylim(-0.05, 1.15)
-    ax.set_ylabel("Phase", color=MUTED, fontsize=10.5)
+    ax.set_ylabel("Phase", color=MUTED, fontsize=_AXIS_LABEL_SIZE)
     style_chart_title(ax, CHART_GAIT_PHASE)
     _style_axis(ax, y_minor=False)
 
@@ -230,7 +244,13 @@ def draw_estimated_vgrf_chart(
 ) -> None:
     """Plot estimated virtual GRF — clearly labeled, not force-plate or PhysX."""
     from stablewalk.ui.viewers.chart_reference import VGRF_BW_NORMAL, draw_reference_y_bands
-    from stablewalk.ui.viewers.chart_style import style_chart_title
+    from stablewalk.ui.viewers.chart_style import (
+        SERIES_LINE_WIDTH_SECONDARY,
+        _AXIS_LABEL_SIZE,
+        series_plot_kwargs,
+        style_chart_legend,
+        style_chart_title,
+    )
 
     if not vgrf.available or len(vgrf.timestamps) < 2:
         ax.text(
@@ -249,19 +269,37 @@ def draw_estimated_vgrf_chart(
     t = vgrf.timestamps
     m = vgrf.metrics
     if show_bw:
-        ax.plot(t, vgrf.left_vgrf_bw, color=SIDE_LEFT, linewidth=1.85, label=f"Left {LABEL_VIRTUAL_GRF_SHORT}")
-        ax.plot(t, vgrf.right_vgrf_bw, color=SIDE_RIGHT, linewidth=1.85, label=f"Right {LABEL_VIRTUAL_GRF_SHORT}")
+        ax.plot(
+            t,
+            vgrf.left_vgrf_bw,
+            **series_plot_kwargs(
+                color=SIDE_LEFT,
+                label=f"Left {LABEL_VIRTUAL_GRF_SHORT}",
+                side="left",
+            ),
+        )
+        ax.plot(
+            t,
+            vgrf.right_vgrf_bw,
+            **series_plot_kwargs(
+                color=SIDE_RIGHT,
+                label=f"Right {LABEL_VIRTUAL_GRF_SHORT}",
+                side="right",
+            ),
+        )
         ax.plot(
             t,
             vgrf.total_vgrf_vertical / max(vgrf.body_weight_n, 1e-6),
-            color=TEXT,
-            linewidth=1.15,
-            alpha=0.75,
-            linestyle="--",
-            label=f"Total {LABEL_VIRTUAL_GRF_SHORT}",
+            **series_plot_kwargs(
+                color=TEXT,
+                label=f"Total {LABEL_VIRTUAL_GRF_SHORT}",
+                linewidth=SERIES_LINE_WIDTH_SECONDARY,
+                linestyle="--",
+                alpha=0.75,
+            ),
         )
         ax.axhline(1.0, color=MUTED, linestyle=":", linewidth=0.9, label="1 BW")
-        ax.set_ylabel(f"{LABEL_VIRTUAL_GRF_FULL} (BW)", color=MUTED, fontsize=10.5)
+        ax.set_ylabel(f"{LABEL_VIRTUAL_GRF_FULL} (BW)", color=MUTED, fontsize=_AXIS_LABEL_SIZE)
         draw_reference_y_bands(
             ax,
             normal=VGRF_BW_NORMAL,
@@ -278,18 +316,36 @@ def draw_estimated_vgrf_chart(
         value_series = vgrf.total_vgrf_vertical / max(vgrf.body_weight_n, 1e-6)
         value_unit = " BW"
     else:
-        ax.plot(t, vgrf.left_vgrf_vertical, color=SIDE_LEFT, linewidth=1.85, label=f"Left {LABEL_VIRTUAL_GRF_SHORT}")
-        ax.plot(t, vgrf.right_vgrf_vertical, color=SIDE_RIGHT, linewidth=1.85, label=f"Right {LABEL_VIRTUAL_GRF_SHORT}")
+        ax.plot(
+            t,
+            vgrf.left_vgrf_vertical,
+            **series_plot_kwargs(
+                color=SIDE_LEFT,
+                label=f"Left {LABEL_VIRTUAL_GRF_SHORT}",
+                side="left",
+            ),
+        )
+        ax.plot(
+            t,
+            vgrf.right_vgrf_vertical,
+            **series_plot_kwargs(
+                color=SIDE_RIGHT,
+                label=f"Right {LABEL_VIRTUAL_GRF_SHORT}",
+                side="right",
+            ),
+        )
         ax.plot(
             t,
             vgrf.total_vgrf_vertical,
-            color=TEXT,
-            linewidth=1.15,
-            alpha=0.75,
-            linestyle="--",
-            label=f"Total {LABEL_VIRTUAL_GRF_SHORT}",
+            **series_plot_kwargs(
+                color=TEXT,
+                label=f"Total {LABEL_VIRTUAL_GRF_SHORT}",
+                linewidth=SERIES_LINE_WIDTH_SECONDARY,
+                linestyle="--",
+                alpha=0.75,
+            ),
         )
-        ax.set_ylabel(f"{LABEL_VIRTUAL_GRF_FULL} (N)", color=MUTED, fontsize=10.5)
+        ax.set_ylabel(f"{LABEL_VIRTUAL_GRF_FULL} (N)", color=MUTED, fontsize=_AXIS_LABEL_SIZE)
         summary = (
             f"Peak L {m.left_peak_force_n:.0f} N · R {m.right_peak_force_n:.0f} N · "
             f"Total {m.peak_force_n:.0f} N\n"
@@ -336,16 +392,10 @@ def draw_estimated_vgrf_chart(
         fontsize=7.5,
         clip_on=False,
     )
-    ax.legend(
-        facecolor=PANEL,
-        edgecolor=BORDER,
-        labelcolor=TEXT,
-        fontsize=8,
+    style_chart_legend(
+        ax,
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
-        borderaxespad=0.0,
-        framealpha=0.94,
-        fancybox=False,
     )
     _style_axis(ax)
 
@@ -493,7 +543,7 @@ def draw_contact_gait_dashboard(
     # Keep shared time label only on the bottom panel (finalize already does this).
     # Reserve a slim right rail for legends and vGRF evidence so no annotation
     # obscures the synchronized data or playhead.
-    fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0), pad=1.0, h_pad=0.9)
+    fig.tight_layout(rect=(0.0, 0.0, 0.94, 1.0), pad=1.05, h_pad=0.75)
     _register_contact_hover_points(fig, contact, vgrf, axes)
 
 

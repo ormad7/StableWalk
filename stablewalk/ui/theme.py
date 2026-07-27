@@ -9,96 +9,97 @@ from tkinter import ttk
 
 from stablewalk.coordinates.coordinate_map import compact_axis_legend
 
-# Color palette — clinical dark workstation (cool neutrals, restrained accent)
+# Color palette — clinical dark workstation (cool neutrals, instrument accent)
 BG = "#0b1018"
 BG_GRADIENT = "#101822"
-SURFACE = "#141b26"
-PANEL = "#1a2332"
-PANEL_HOVER = "#243044"
-ELEVATED = "#222d40"
-BORDER = "#354257"
-BORDER_FOCUS = "#5ab0f0"
-BORDER_SUBTLE = "#2a3548"
+SURFACE = "#121820"
+PANEL = "#171e2a"
+PANEL_HOVER = "#1f2938"
+ELEVATED = "#1c2533"
+BORDER = "#2f3b4d"
+BORDER_FOCUS = "#6aa8d8"
+BORDER_SUBTLE = "#263142"
 
-ACCENT = "#2ec99a"
-ACCENT_DARK = "#1a9e6f"
+# Cool steel accent (Qualisys / Vicon instrument chrome — not teal SaaS)
+ACCENT = "#5b9fd4"
+ACCENT_DARK = "#3d7fb0"
 ACCENT_FG = "#071018"
-ACCENT_ALT = "#5ab0f0"
-ACCENT_ALT_HOVER = "#3d9be0"
+ACCENT_ALT = "#7eb6dc"
+ACCENT_ALT_HOVER = "#5a9ec4"
 
-TEXT = "#eef3f8"
-TEXT_SECONDARY = "#c2ccd9"
-MUTED = "#8494ab"
-MUTED_DIM = "#6a788f"
+TEXT = "#e8eef5"
+TEXT_SECONDARY = "#b8c4d4"
+MUTED = "#7f8fa3"
+MUTED_DIM = "#647487"
 
-SUCCESS = "#2ec99a"
-WARNING = "#ffc857"
-ORANGE = "#ffc857"
-DANGER = "#ff4757"
+SUCCESS = "#3d9a6a"
+WARNING = "#e0b34a"
+ORANGE = "#e0b34a"
+DANGER = "#e05555"
 INFO = "#74c0fc"
 
 # Floating HUD / overlay chrome (aligned to base palette)
 HUD_BG = "#0b111b"
 HUD_BORDER = BORDER
 
-# Typography — single Segoe ladder + Cascadia for numeric/mono only
+# Typography — denser instrument ladder (Segoe + Cascadia mono for values)
 FONT_UI = ("Segoe UI", 10)
 FONT_UI_SM = ("Segoe UI", 9)
-FONT_UI_XS = ("Segoe UI", 9)  # Floor 9pt for projector-readable captions
+FONT_UI_XS = ("Segoe UI", 8)
 FONT_UI_SEMIBOLD = ("Segoe UI Semibold", 10)
 # Unified panel / section titles across LabelFrames and inline headers.
-FONT_HEADING = ("Segoe UI Semibold", 11)
-FONT_SECTION = ("Segoe UI Semibold", 12)
-FONT_TITLE = ("Segoe UI Semibold", 13)
+FONT_HEADING = ("Segoe UI Semibold", 10)
+FONT_SECTION = ("Segoe UI Semibold", 11)
+FONT_TITLE = ("Segoe UI Semibold", 12)
 FONT_PANEL_HEADER = FONT_HEADING
-FONT_METRIC = ("Segoe UI Semibold", 9)
+FONT_METRIC = ("Segoe UI Semibold", 8)
 FONT_MONO = ("Cascadia Mono", 9)
-FONT_MONO_SM = ("Cascadia Mono", 9)
+FONT_MONO_SM = ("Cascadia Mono", 8)
 # Readable value fonts for the Selected Point Analysis metric cards.
-FONT_METRIC_TITLE = ("Segoe UI", 9)
+FONT_METRIC_TITLE = ("Segoe UI", 8)
 FONT_METRIC_VALUE = ("Cascadia Mono", 10)
-FONT_METRIC_VALUE_ACCENT = ("Segoe UI Semibold", 11)
-FONT_DISPLAY = ("Segoe UI Semibold", 15)
+FONT_METRIC_VALUE_ACCENT = ("Segoe UI Semibold", 10)
+FONT_DISPLAY = ("Segoe UI Semibold", 13)
 # Results Summary metric cards — larger, dashboard-style readout.
-FONT_SUMMARY_CATEGORY = ("Segoe UI Semibold", 11)
-FONT_SUMMARY_METRIC_TITLE = ("Segoe UI", 9)
-FONT_SUMMARY_METRIC_VALUE = ("Segoe UI Semibold", 16)
-FONT_SUMMARY_METRIC_VALUE_SM = ("Segoe UI Semibold", 13)
-FONT_SUMMARY_METRIC_TIER = ("Segoe UI", 9)
+FONT_SUMMARY_CATEGORY = ("Segoe UI Semibold", 10)
+FONT_SUMMARY_METRIC_TITLE = ("Segoe UI", 8)
+FONT_SUMMARY_METRIC_VALUE = ("Segoe UI Semibold", 15)
+FONT_SUMMARY_METRIC_VALUE_SM = ("Segoe UI Semibold", 12)
+FONT_SUMMARY_METRIC_TIER = ("Segoe UI", 8)
 # Shared modern KPI cards (Biomechanics / Motion / Results / Compare).
-FONT_KPI_TITLE = ("Segoe UI", 9)
-FONT_KPI_VALUE = ("Segoe UI Semibold", 18)
-FONT_KPI_VALUE_SM = ("Segoe UI Semibold", 15)
-FONT_KPI_UNIT = ("Segoe UI", 9)
-FONT_KPI_TREND = ("Segoe UI Semibold", 10)
-FONT_SUMMARY_REPORT_TITLE = ("Segoe UI Semibold", 15)
-FONT_SUMMARY_REPORT_SUBTITLE = ("Segoe UI", 9)
-FONT_SUMMARY_INTERPRETATION = ("Segoe UI", 10)
-FONT_SUMMARY_SECTION_RULE = ("Segoe UI", 9)
-FONT_TRANSPORT = ("Segoe UI", 10)
-FONT_TABLE = ("Segoe UI", 10)
-FONT_TABLE_HEADING = ("Segoe UI Semibold", 10)
-FONT_CHART_LEGEND = ("Segoe UI", 9)
-FONT_CHART_AXIS = ("Segoe UI", 9)
-FONT_OVERLAY = ("Segoe UI Semibold", 11)
-FONT_BADGE = ("Segoe UI", 9)
+FONT_KPI_TITLE = ("Segoe UI", 8)
+FONT_KPI_VALUE = ("Segoe UI Semibold", 16)
+FONT_KPI_VALUE_SM = ("Segoe UI Semibold", 13)
+FONT_KPI_UNIT = ("Segoe UI", 8)
+FONT_KPI_TREND = ("Segoe UI Semibold", 9)
+FONT_SUMMARY_REPORT_TITLE = ("Segoe UI Semibold", 13)
+FONT_SUMMARY_REPORT_SUBTITLE = ("Segoe UI", 8)
+FONT_SUMMARY_INTERPRETATION = ("Segoe UI", 9)
+FONT_SUMMARY_SECTION_RULE = ("Segoe UI Semibold", 9)
+FONT_TRANSPORT = ("Segoe UI", 9)
+FONT_TABLE = ("Segoe UI", 9)
+FONT_TABLE_HEADING = ("Segoe UI Semibold", 9)
+FONT_CHART_LEGEND = ("Segoe UI", 8)
+FONT_CHART_AXIS = ("Segoe UI", 8)
+FONT_OVERLAY = ("Segoe UI Semibold", 9)
+FONT_BADGE = ("Segoe UI", 8)
 FONT_CAPTION = ("Segoe UI Semibold", 8)
-FONT_FLOW_ICON = ("Segoe UI Semibold", 13)
-FONT_FLOW_ARROW = ("Segoe UI Semibold", 11)
+FONT_FLOW_ICON = ("Segoe UI Semibold", 12)
+FONT_FLOW_ARROW = ("Segoe UI Semibold", 10)
 FONT_BUTTON = FONT_UI_SEMIBOLD
 FONT_BUTTON_SM = FONT_UI_SM
 POS_PANEL_WIDTH = 560
 
 # Selection / hover (unified across treeview, text, tags)
-SELECTION_BG = "#1a4538"
-ACCENT_HOVER = "#3ad6a8"
+SELECTION_BG = "#1a3348"
+ACCENT_HOVER = "#6aafde"
 
 # Layout breakpoints — shared with dashboard_responsive.py
 WIDTH_STACK_ANALYSIS = 1280
 WIDTH_COMPACT_TRANSPORT = 1050
 WIDTH_METRIC_REFLOW = 560
 SIDEBAR_MIN_WIDTH = 148
-HEADER_HEIGHT = 40
+HEADER_HEIGHT = 36
 
 # Spacing — strict 4px base / 8px rhythm
 PAD_XS = 4
@@ -136,13 +137,13 @@ RADIUS_EMULATE = 2  # relief for card-like frames
 
 # User-facing copy (display only)
 EMPTY_VIDEO_TEXT = (
-    "Load a walking video to begin\n\n"
-    "Demo Gait Examples  ·  File…  ·  Analyze"
+    "No video loaded\n\n"
+    "Browse a walking video, or open Examples from the toolbar."
 )
 EMPTY_NO_JOINT = "No joint selected"
-EMPTY_SELECT_DOF_TRAJECTORY = "Select one or more joints to compare their trajectories."
+EMPTY_SELECT_DOF_TRAJECTORY = "Select one or more joints to compare trajectories."
 EMPTY_OVERVIEW_JOINT_INSPECT = (
-    "Click a joint on the skeleton to inspect its 3D trajectory."
+    "Select a joint on the skeleton or from the DOF list to inspect its 3D path."
 )
 TRAJ_DEFAULT_STATUS = (
     "Center of Mass path (estimated) and current pose · select joints to compare trajectories"
@@ -193,14 +194,14 @@ DOF_ANALYSIS_LEGEND_DOT = DOF_ANALYSIS_PANEL_LINE_RED
 DOF_ANALYSIS_LEGEND_AXES_COMPACT = compact_axis_legend()
 DOF_ANALYSIS_METRICS_LINK = DOF_ANALYSIS_PANEL_LINE_VALUES
 DOF_ANALYSIS_INTERPRETATION = DOF_ANALYSIS_PANEL_LINE_VALUES
-DOF_TRAJ_PATH_COLOR = "#5a9ec4"
+DOF_TRAJ_PATH_COLOR = "#4eb3d9"
+DOF_TRAJ_DOT_COLOR = "#e06b78"
 DOF_TRAJ_START_COLOR = "#3d9a5f"
-DOF_TRAJ_DOT_COLOR = "#c45c6a"
 DOF_TRAJ_END_COLOR = "#4a7eb8"
 EMPTY_SELECT_DOF_STEP = "Select degrees of freedom to preview the next movement step"
 REFRESH_INTERVAL_CHOICES: tuple[str, ...] = ("0.25 s", "0.5 s")
 REFRESH_INTERVAL_DEFAULT = "0.5 s"
-DASHBOARD_SUBTITLE = "Gait Analysis Dashboard"
+DASHBOARD_SUBTITLE = "Gait Laboratory"
 SIDEBAR_WIDTH = SIDEBAR_MIN_WIDTH - 10
 OPENSIM_PANEL_MIN_HEIGHT = 0
 OPENSIM_STATUS_SCROLL_HEIGHT = 100
@@ -343,12 +344,26 @@ def apply_theme(root: tk.Tk | tk.Toplevel, style: ttk.Style) -> None:
         bordercolor=BORDER,
         labelmargins=(PAD_XS, 0, 0, 0),
         borderwidth=1,
+        relief="flat",
     )
     style.configure(
         "Card.TLabelframe.Label",
         background=PANEL,
-        foreground=ACCENT_ALT,
+        foreground=TEXT_SECONDARY,
         font=FONT_PANEL_HEADER,
+    )
+    style.configure(
+        "Tool.TCheckbutton",
+        background=ELEVATED,
+        foreground=TEXT_SECONDARY,
+        font=FONT_UI_XS,
+        padding=(4, 1),
+        focuscolor=BORDER_FOCUS,
+    )
+    style.map(
+        "Tool.TCheckbutton",
+        background=[("selected", SELECTION_BG), ("active", PANEL_HOVER)],
+        foreground=[("selected", TEXT), ("active", TEXT)],
     )
     style.configure(
         "Side.TLabelframe",
@@ -356,6 +371,7 @@ def apply_theme(root: tk.Tk | tk.Toplevel, style: ttk.Style) -> None:
         foreground=TEXT_SECONDARY,
         bordercolor=BORDER,
         borderwidth=1,
+        relief="flat",
     )
     style.configure(
         "Side.TLabelframe.Label",
@@ -588,7 +604,7 @@ def apply_theme(root: tk.Tk | tk.Toplevel, style: ttk.Style) -> None:
         "TNotebook.Tab",
         background=PANEL,
         foreground=MUTED,
-        padding=(PAD_MD + 4, PAD_SM),
+        padding=(PAD_MD, PAD_XS + 1),
         font=FONT_UI_SEMIBOLD,
         borderwidth=0,
     )
@@ -596,6 +612,9 @@ def apply_theme(root: tk.Tk | tk.Toplevel, style: ttk.Style) -> None:
         "TNotebook.Tab",
         background=[("selected", ELEVATED), ("active", PANEL_HOVER)],
         foreground=[("selected", TEXT), ("active", TEXT_SECONDARY)],
+        # Selected tab reads as instrument chrome (stronger than idle tabs).
+        lightcolor=[("selected", ACCENT), ("!selected", PANEL)],
+        bordercolor=[("selected", ACCENT), ("!selected", BORDER)],
     )
 
     # Menu colors (tk.Menu, not ttk)

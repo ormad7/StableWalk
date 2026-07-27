@@ -183,23 +183,22 @@ def default_projection_for_view(view_type: str | None) -> str:
     return PROJECTION_3D
 
 
-def coordinate_mode_label(coord_mode: str = "ROOT-RELATIVE") -> str:
-    if coord_mode == "GLOBAL":
-        return "GLOBAL"
-    return "ROOT-RELATIVE"
+def coordinate_mode_label(coord_mode: str = "Root-relative") -> str:
+    from stablewalk.ui.viewers.dof_trajectory_3d import normalize_coord_mode
+
+    return normalize_coord_mode(coord_mode)
 
 
-def coordinate_mode_display(coord_mode: str = "ROOT-RELATIVE") -> str:
-    if coord_mode == "GLOBAL":
-        return "GLOBAL"
-    return "ROOT-RELATIVE"
+def coordinate_mode_display(coord_mode: str = "Root-relative") -> str:
+    return coordinate_mode_label(coord_mode)
 
 
 def movement_path_title(joint_label: str) -> str:
     return f"{joint_label} 3D Movement Path"
 
 
-def joint_graph_title(joint_label: str, *, coord_mode: str = "ROOT-RELATIVE") -> str:
+def joint_graph_title(joint_label: str, *, coord_mode: str = "Root-relative") -> str:
+    del coord_mode
     return movement_path_title(joint_label)
 
 
@@ -301,8 +300,8 @@ def evaluate_trajectory_readiness(
 
 def format_trajectory_confidence(level: ConfidenceLevel | str | None) -> str:
     if not level or level == "Insufficient":
-        return "INSUFFICIENT"
-    return str(level).upper()
+        return "Insufficient"
+    return str(level)
 
 
 def interpret_joint_trajectory(
@@ -326,19 +325,13 @@ def interpret_joint_trajectory(
     }.get(projection, "3D")
     dev_cm = metrics.max_deviation_m * 100.0
     if metrics.smoothness == "High" and dev_cm < 3.0:
-        sentence = (
-            f"The {joint_label.lower()} follows a relatively consistent {plane_word} path "
-            f"with limited out-of-plane movement."
-        )
+        sentence = f"{joint_label} path looks consistent in {plane_word} view."
     elif metrics.smoothness == "Low":
-        sentence = (
-            f"The {joint_label.lower()} path varies substantially between frames, "
-            f"so this trajectory should be interpreted cautiously."
-        )
+        sentence = f"{joint_label} path varies between frames — interpret cautiously."
     else:
         sentence = (
-            f"The {joint_label.lower()} shows moderate {plane_word} travel "
-            f"with some out-of-plane spread ({metrics.out_of_plane_axis})."
+            f"{joint_label} shows moderate {plane_word} travel "
+            f"({metrics.out_of_plane_axis} spread)."
         )
     conf: ConfidenceLevel = metrics.smoothness
     if view_type and view_type.upper() == "UNKNOWN":
@@ -346,7 +339,7 @@ def interpret_joint_trajectory(
     return CompactInterpretation(
         name=movement_path_title(joint_label),
         value="",
-        sentence=truncate_dashboard_explanation(sentence, max_len=160),
+        sentence=truncate_dashboard_explanation(sentence, max_len=90),
         confidence=conf,
     )
 

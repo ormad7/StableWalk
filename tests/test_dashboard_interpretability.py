@@ -55,8 +55,8 @@ def test_evaluate_trajectory_readiness_insufficient():
 def test_format_trajectory_confidence():
     from stablewalk.ui.dashboard_interpretability import format_trajectory_confidence
 
-    assert format_trajectory_confidence("High") == "HIGH"
-    assert format_trajectory_confidence("Insufficient") == "INSUFFICIENT"
+    assert format_trajectory_confidence("High") == "High"
+    assert format_trajectory_confidence("Insufficient") == "Insufficient"
 
 
 def test_trajectory_path_metrics():

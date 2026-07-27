@@ -130,6 +130,13 @@ def install_dashboard_notebook(
                 ensure_compare = getattr(gui, "_ensure_comparison_mode_loaded", None)
                 if callable(ensure_compare):
                     ensure_compare()
+            if tab is getattr(gui, "_tab_biomechanics", None):
+                ensure_biomech = getattr(gui, "_ensure_biomech_chart", None)
+                if callable(ensure_biomech):
+                    try:
+                        ensure_biomech()
+                    except Exception:
+                        pass
             if tab is getattr(gui, "_tab_motion", None):
                 gui.root.after_idle(lambda: _log_motion_tab_geometry(gui))
         except tk.TclError:

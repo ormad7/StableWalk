@@ -26,7 +26,9 @@ _METRIC_SPECS: tuple[tuple[str, str, str, float, str], ...] = (
     ("stance_pct", "Stance", "percent", 100.0, "calculated"),
     ("swing_pct", "Swing", "percent", 100.0, "calculated"),
     ("double_support_pct", "Double Support", "percent", 100.0, "calculated"),
-    ("single_support_pct", "Single Support (ipsilateral)", "percent", 100.0, "calculated"),
+    ("single_support_pct", "Single Support", "percent", 100.0, "calculated"),
+    ("step_length", "Step Length", "meters", 1.2, "estimated"),
+    ("step_width", "Step Width", "meters", 0.35, "estimated"),
     ("step_time", "Step Time", "seconds", 1.4, "calculated"),
     ("stride_time", "Stride Time", "seconds", 2.8, "calculated"),
     ("contact_duration", "Contact Time", "seconds", 1.2, "calculated"),
@@ -103,6 +105,19 @@ def _metric_value(
     return float(metric.value)
 
 
+def _unavailable_with_confidence(metric: MetricWithConfidence | None) -> str:
+    """Show confidence instead of inventing a number when the metric is gated."""
+    if metric is None:
+        return "—"
+    conf = float(getattr(metric, "confidence", 0.0) or 0.0)
+    if conf > 0.0:
+        return f"N/A ({conf:.0%})"
+    note = str(getattr(metric, "note", "") or "")
+    if note.startswith("N/A"):
+        return "N/A"
+    return "—"
+
+
 def _split_display(key: str, value: float, *, walking_speed_metric=None) -> tuple[str, str]:
     if key.endswith("_pct") or key in ("double_support_pct", "single_support_pct"):
         return f"{value:.0f}", "%"
@@ -116,6 +131,8 @@ def _split_display(key: str, value: float, *, walking_speed_metric=None) -> tupl
                 return parts[0], parts[1]
             return text, ""
         return f"{value:.2f}", "m/s"
+    if key in ("step_length", "step_width", "stride_length"):
+        return f"{value * 100.0:.0f}", "cm"
     if key in ("step_time", "stride_time", "contact_duration"):
         return f"{value:.2f}", "s"
     return f"{value:.2f}", ""
@@ -185,6 +202,8 @@ def _collect_metric_data(
         data["single_support_pct"] = _metric_value(gait_metrics.single_support_pct)
         data["step_time"] = _metric_value(gait_metrics.step_time)
         data["stride_time"] = _metric_value(gait_metrics.stride_time)
+        data["step_length"] = _metric_value(gait_metrics.step_length)
+        data["step_width"] = _metric_value(gait_metrics.step_width)
         data["cadence"] = _metric_value(gait_metrics.cadence)
         if is_reportable_walking_speed(gait_metrics.walking_speed):
             data["walking_speed"] = _metric_value(gait_metrics.walking_speed)
@@ -234,16 +253,50 @@ def update_motion_temporal_metrics_panel(gui) -> None:
     data = _collect_metric_data(gait_metrics, temporal)
     scales = {key: scale for key, _t, _k, scale, _tier in _METRIC_SPECS}
     view_type = _session_view_type(gui)
+    metric_objs = {
+        "stance_pct": getattr(gait_metrics, "stance_pct", None) if gait_metrics else None,
+        "swing_pct": getattr(gait_metrics, "swing_pct", None) if gait_metrics else None,
+        "double_support_pct": getattr(gait_metrics, "double_support_pct", None)
+        if gait_metrics
+        else None,
+        "single_support_pct": getattr(gait_metrics, "single_support_pct", None)
+        if gait_metrics
+        else None,
+        "step_length": getattr(gait_metrics, "step_length", None) if gait_metrics else None,
+        "step_width": getattr(gait_metrics, "step_width", None) if gait_metrics else None,
+        "step_time": getattr(gait_metrics, "step_time", None) if gait_metrics else None,
+        "stride_time": getattr(gait_metrics, "stride_time", None) if gait_metrics else None,
+        "cadence": getattr(gait_metrics, "cadence", None) if gait_metrics else None,
+        "walking_speed": ws_metric,
+    }
 
     for key, _title, _kind, scale, _tier in _METRIC_SPECS:
         card = cards.get(key)
         if card is None:
             continue
         raw = data.get(key)
+        metric_obj = metric_objs.get(key)
         if raw is None or (
             key == "walking_speed" and not is_reportable_walking_speed(ws_metric)
         ):
-            update_kpi_card(card, value="—", available=False, fraction=0.0)
+            if key == "walking_speed":
+                from stablewalk.analysis.biomechanical.walking_speed import (
+                    format_walking_speed_display,
+                )
+
+                update_kpi_card(
+                    card,
+                    value=format_walking_speed_display(ws_metric),
+                    available=False,
+                    fraction=0.0,
+                )
+            else:
+                update_kpi_card(
+                    card,
+                    value=_unavailable_with_confidence(metric_obj),
+                    available=False,
+                    fraction=0.0,
+                )
             continue
 
         value, unit = _split_display(key, raw, walking_speed_metric=ws_metric)

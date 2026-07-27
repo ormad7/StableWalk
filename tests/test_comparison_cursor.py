@@ -28,7 +28,6 @@ def test_comparison_cursor_label() -> None:
         active_gait_events=("left_heel_strike",),
         cycle_percent=25.0,
     )
-    assert "F10" in cursor.label()
     assert "0.42s" in cursor.label()
     assert "Comparison cursor" in cursor.summary_line()
     assert "L HS" in cursor.summary_line()
