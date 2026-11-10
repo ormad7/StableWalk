@@ -166,6 +166,10 @@ def _human_sequence_from_frames_dir(
     import cv2
 
     backend.reset()
+    if hasattr(backend, "_subject_selection") and getattr(backend, "_subject_selection", None) is None:
+        from stablewalk.pose.subject_lock import selection_for_source
+
+        backend._subject_selection = selection_for_source(source_video)
     frame_paths = sorted(frames_dir.glob("frame_*.jpg"))
     if not frame_paths:
         frame_paths = sorted(frames_dir.glob("*.jpg"))
@@ -198,6 +202,7 @@ def extract_pose_from_video(
     max_frames: int | None = None,
     enrich: bool = True,
     allow_fallback: bool | None = None,
+    subject_selection=None,
 ) -> PoseExtractionResult:
     """Run configured backend on a video file."""
     backend, resolution = resolve_pose_backend(backend_name, allow_fallback=allow_fallback)
@@ -208,6 +213,7 @@ def extract_pose_from_video(
                 min_detection_confidence=config.DEFAULT_MIN_DETECTION_CONFIDENCE,
                 min_tracking_confidence=config.DEFAULT_MIN_TRACKING_CONFIDENCE,
                 video_mode=config.DEFAULT_PIPELINE_VIDEO_MODE,
+                subject_selection=subject_selection,
             ) as estimator:
                 sequence = estimator.process_video(
                     video_path,
@@ -253,6 +259,7 @@ def extract_pose_from_frames_dir(
     max_frames: int | None = None,
     enrich: bool = True,
     allow_fallback: bool | None = None,
+    subject_selection=None,
 ) -> PoseExtractionResult:
     """Run configured backend on extracted JPG frames."""
     backend, resolution = resolve_pose_backend(backend_name, allow_fallback=allow_fallback)
@@ -263,6 +270,7 @@ def extract_pose_from_frames_dir(
                 min_detection_confidence=config.DEFAULT_MIN_DETECTION_CONFIDENCE,
                 min_tracking_confidence=config.DEFAULT_MIN_TRACKING_CONFIDENCE,
                 video_mode=not config.DEFAULT_POSE_IMAGE_MODE,
+                subject_selection=subject_selection,
             ) as estimator:
                 sequence = estimator.process_directory(
                     frames_dir,
@@ -310,6 +318,7 @@ def extract_pose_video_with_frame_cache(
     jpeg_quality: int = 95,
     enrich: bool = True,
     allow_fallback: bool | None = None,
+    subject_selection=None,
 ) -> tuple[PoseExtractionResult, FrameExtractionResult]:
     """
     Single-pass decode with optional JPG cache (GUI path).
@@ -329,6 +338,7 @@ def extract_pose_video_with_frame_cache(
             min_detection_confidence=config.DEFAULT_MIN_DETECTION_CONFIDENCE,
             min_tracking_confidence=config.DEFAULT_MIN_TRACKING_CONFIDENCE,
             video_mode=config.DEFAULT_PIPELINE_VIDEO_MODE,
+            subject_selection=subject_selection,
         ) as estimator:
             sequence, extraction = estimator.process_video_with_frame_cache(
                 video_path,

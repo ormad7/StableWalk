@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 
 from stablewalk.analysis.analysis_summary import AnalysisSummary
-from stablewalk.ui.scientific_labels import TIER_DEFINITIONS, format_tier_badge
+from stablewalk.ui.scientific_labels import (
+    DISCLAIMER_RESEARCH,
+    METHODS_OVERVIEW,
+    TIER_DEFINITIONS,
+    format_tier_badge,
+)
 
 SUMMARY_SCHEMA_VERSION = "1.2"
 
@@ -46,14 +51,15 @@ def format_analysis_summary_report(summary: AnalysisSummary) -> str:
         "",
         "Methodology",
         "-" * 40,
-        "StableWalk analyzes walking from monocular video using MediaPipe pose",
-        "estimation. Metrics are labeled by data tier:",
+        METHODS_OVERVIEW,
+        "",
+        "Metrics are labeled by data tier:",
         "  measured   — instrumented or calibrated sensor data (not from video alone)",
         "  estimated  — pose-derived proxies (COM, vGRF, walking speed scale)",
         "  derived    — composite indices from estimated inputs",
         "  calculated — deterministic timing/geometry (cadence, phase %)",
         "",
-        "This report does not constitute a clinical diagnosis.",
+        DISCLAIMER_RESEARCH,
     ]
 
     if summary.source:
@@ -76,12 +82,24 @@ def format_analysis_summary_report(summary: AnalysisSummary) -> str:
     _append_field(lines, summary.joint_rom_summary)
 
     if summary.gait_events:
-        lines.extend(["", "Detected Events", "-" * 40])
+        lines.extend(["", "Detected Events (estimated timing)", "-" * 40])
         for ev in summary.gait_events:
-            mark = "✓ detected" if ev.detected else "✗ not detected"
+            mark = "detected" if ev.detected else "not detected"
             lines.append(f"  {ev.name}: {mark} — {ev.detail}")
 
-    lines.extend(["", "Analysis Confidence", "-" * 40])
+    lines.extend(["", "Result validity", "-" * 40])
+    _append_field(lines, getattr(summary, "pose_coverage", None))
+    _append_field(lines, getattr(summary, "contact_coverage", None))
+    _append_field(lines, getattr(summary, "contact_coverage_left", None))
+    _append_field(lines, getattr(summary, "contact_coverage_right", None))
+    _append_field(lines, getattr(summary, "cycle_evidence", None))
+    _append_field(lines, getattr(summary, "spectral_reliability", None))
+    _append_field(lines, getattr(summary, "biomechanical_validity", None))
+    validity = getattr(summary, "result_validity", None)
+    if validity is not None:
+        for line in validity.headline_lines():
+            lines.append(f"  {line}")
+    lines.extend(["", "Legacy composite (not the Results headline)", "-" * 40])
     _append_field(lines, summary.video_quality)
     _append_field(lines, summary.tracking_confidence)
     _append_field(lines, summary.pipeline_confidence)
@@ -91,7 +109,7 @@ def format_analysis_summary_report(summary: AnalysisSummary) -> str:
     if summary.scientific_interpretation:
         lines.extend([
             "",
-            "Interpretation",
+            "Scientific Interpretation",
             "-" * 40,
             summary.scientific_interpretation,
         ])

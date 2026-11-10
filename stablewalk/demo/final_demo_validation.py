@@ -37,7 +37,7 @@ from stablewalk.ui.media.demo_gait import DEMO_GAIT_EXAMPLES, demo_path, example
 UI_LABELS: dict[str, str] = {
     "abnormal": "Abnormal",
     "normal": "Normal",
-    "athletic": "Performance",
+    "athletic": "Fast Walking",
 }
 
 DATASET_INFO: dict[str, dict[str, str]] = {
@@ -48,10 +48,10 @@ DATASET_INFO: dict[str, dict[str, str]] = {
         "replacement_status": "Pending GAVD candidate — current file REJECTED by validator",
     },
     "normal": {
-        "dataset": "Pexels stock footage (legacy installed)",
-        "target_dataset": "Health&Gait UGS usual gait speed trial",
-        "sequence_id": "Not assigned — legacy distant 4K clip",
-        "replacement_status": "Pending Health&Gait-sourced MP4 — current file REJECTED by validator",
+        "dataset": "GAVD gait_pat=normal (YouTube 3KnFt8bH3tE, seq cljo3b2dy002l3n6l270vpzp8)",
+        "target_dataset": "GAVD clinician-annotated normal walking (Health&Gait UGS RGB unavailable)",
+        "sequence_id": "cljo3b2dy002l3n6l270vpzp8 (frames 15729–16302)",
+        "replacement_status": "Installed 2026-10-29 after validate_demo_candidate ACCEPT",
     },
     "athletic": {
         "dataset": "Pexels stock footage (legacy installed)",

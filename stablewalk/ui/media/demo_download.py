@@ -70,26 +70,26 @@ def download_pexels_demo(example: DemoGaitExample, *, force: bool = False) -> bo
 
 
 def download_demo_video(key: str, *, force: bool = False) -> bool:
-    from stablewalk.ui.media.demo_gait import demo_cached_file_ready, example_by_key
-    from stablewalk.ui.media.utah_abnormal import ensure_utah_abnormal_demo
+    """Return True only when the official v2 file is already on disk.
+
+    Does not download Utah, Pexels, or athletic_walking.mp4 as a substitute.
+    """
+    del force
+    from stablewalk.ui.media.demo_gait import example_by_key, is_legacy_demo_filename
 
     ex = example_by_key(key)
     if ex is None:
         return False
-    if ex.key == "abnormal":
-        return ensure_utah_abnormal_demo(force=force)
     dest = demo_path(ex)
-    if dest.is_file() and not force and demo_cached_file_ready(ex):
-        return True
-    return download_pexels_demo(ex, force=True)
+    if is_legacy_demo_filename(dest.name):
+        return False
+    return dest.is_file()
 
 
 def ensure_demo_video(example: DemoGaitExample) -> bool:
-    from stablewalk.ui.media.demo_gait import demo_cached_file_ready
-    from stablewalk.ui.media.utah_abnormal import ensure_utah_abnormal_demo
+    from stablewalk.ui.media.demo_gait import is_legacy_demo_filename
 
-    if demo_exists(example) and demo_cached_file_ready(example):
-        return True
-    if example.key == "abnormal":
-        return ensure_utah_abnormal_demo(force=True)
-    return download_pexels_demo(example, force=True)
+    dest = demo_path(example)
+    if is_legacy_demo_filename(dest.name):
+        return False
+    return dest.is_file()

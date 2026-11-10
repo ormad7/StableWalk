@@ -27,10 +27,14 @@ from stablewalk.ui.theme import (
     FONT_FLOW_ICON,
     FONT_UI_SM,
     FONT_UI_XS,
+    GLYPH_COLLAPSE,
+    GLYPH_EXPAND,
     MUTED,
+    PAD_SM,
     PAD_XS,
     PANEL,
     TEXT,
+    create_elevated_card,
     create_tooltip,
 )
 from stablewalk.ui.tk.dashboard_pipeline_visual import (
@@ -251,7 +255,7 @@ def _toggle_flow_expanded(gui, stage_key: str) -> None:
         else:
             detail_extra.grid_remove()
     if toggle is not None:
-        toggle.configure(text="\u25bc" if expanded else "\u25b6")
+        toggle.configure(text=GLYPH_COLLAPSE if expanded else GLYPH_EXPAND)
     sync = getattr(gui, "_sync_pipeline_flow_layout", None)
     if sync is not None:
         sync()
@@ -266,18 +270,12 @@ def _build_flow_node(
     title: str,
     icon: str,
 ) -> tk.Frame:
-    card = tk.Frame(
-        parent,
-        bg=ELEVATED,
-        highlightthickness=1,
-        highlightbackground=BORDER,
-        highlightcolor=BORDER,
-    )
-    card.grid(row=0, column=column, sticky="nsew", padx=(0, 2))
+    card = create_elevated_card(parent)
+    card.grid(row=0, column=column, sticky="nsew", padx=(0, PAD_XS // 2))
     card.columnconfigure(0, weight=1)
 
     body = tk.Frame(card, bg=ELEVATED, highlightthickness=0)
-    body.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 4))
+    body.pack(fill=tk.BOTH, expand=True, padx=PAD_SM, pady=(PAD_SM, PAD_XS))
     body.columnconfigure(0, weight=1)
 
     header = tk.Frame(body, bg=ELEVATED)
@@ -286,13 +284,13 @@ def _build_flow_node(
 
     toggle = tk.Label(
         header,
-        text="\u25b6",
+        text=GLYPH_EXPAND,
         bg=ELEVATED,
         fg=MUTED,
         font=FONT_UI_XS,
         cursor="hand2",
     )
-    toggle.grid(row=0, column=0, sticky="w", padx=(0, 2))
+    toggle.grid(row=0, column=0, sticky="w", padx=(0, PAD_XS // 2))
 
     icon_lbl = tk.Label(
         header,
@@ -404,13 +402,13 @@ def build_pipeline_flow_diagram(gui, parent: tk.Misc) -> tk.Frame:
 
     hint = tk.Label(
         host,
-        text="Click a stage for details · ▶ expands inline summary",
+        text=f"Click a stage for details · {GLYPH_EXPAND} expands inline summary",
         bg=PANEL,
         fg=MUTED,
         font=FONT_UI_XS,
         anchor="w",
     )
-    hint.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+    hint.grid(row=0, column=0, sticky="ew", pady=(0, PAD_XS))
 
     canvas = tk.Canvas(host, bg=PANEL, highlightthickness=0, borderwidth=0, height=132)
     canvas.grid(row=1, column=0, sticky="ew")
@@ -447,21 +445,38 @@ def build_pipeline_flow_diagram(gui, parent: tk.Misc) -> tk.Frame:
             )
 
     def _sync_flow_layout(_event: object | None = None) -> None:
+        if getattr(host, "_flow_layout_syncing", False):
+            return
+        from stablewalk.ui.theme import set_wraplength_safe
+
+        setattr(host, "_flow_layout_syncing", True)
         try:
-            canvas.update_idletasks()
-            inner.update_idletasks()
             canvas_width = max(canvas.winfo_width(), 1)
             inner_width = max(inner.winfo_reqwidth(), canvas_width)
-            canvas.itemconfigure(window_id, width=inner_width)
-            canvas.configure(
-                scrollregion=canvas.bbox("all"),
-                height=max(128, inner.winfo_reqheight() + 4),
-            )
+            try:
+                current_win_w = int(canvas.itemcget(window_id, "width") or 0)
+            except (tk.TclError, TypeError, ValueError):
+                current_win_w = 0
+            if current_win_w != inner_width:
+                canvas.itemconfigure(window_id, width=inner_width)
 
-            if inner_width > canvas_width + 4:
+            target_h = max(128, inner.winfo_reqheight() + 4)
+            try:
+                current_h = int(canvas.cget("height") or 0)
+            except (tk.TclError, TypeError, ValueError):
+                current_h = 0
+            if abs(current_h - target_h) > 1:
+                canvas.configure(scrollregion=canvas.bbox("all"), height=target_h)
+            else:
+                canvas.configure(scrollregion=canvas.bbox("all"))
+
+            show_hbar = inner_width > canvas_width + 8
+            hide_hbar = inner_width <= canvas_width + 2
+            hbar_mapped = bool(hbar.winfo_ismapped())
+            if show_hbar and not hbar_mapped:
                 canvas.configure(xscrollcommand=hbar.set)
                 hbar.grid(row=2, column=0, sticky="ew")
-            else:
+            elif hide_hbar and hbar_mapped:
                 canvas.configure(xscrollcommand=lambda *_a: None)
                 hbar.grid_remove()
                 canvas.xview_moveto(0)
@@ -471,18 +486,20 @@ def build_pipeline_flow_diagram(gui, parent: tk.Misc) -> tk.Frame:
                 for attr in ("detail", "purpose", "algorithms"):
                     lbl = widgets.get(attr)
                     if lbl is not None and hasattr(lbl, "configure"):
-                        lbl.configure(wraplength=cell_wrap)
+                        set_wraplength_safe(lbl, cell_wrap)
         except tk.TclError:
             pass
+        finally:
+            setattr(host, "_flow_layout_syncing", False)
 
     hbar = ttk.Scrollbar(host, orient=tk.HORIZONTAL, command=canvas.xview)
     canvas.configure(xscrollcommand=hbar.set)
     hbar.grid(row=2, column=0, sticky="ew")
     hbar.grid_remove()
 
-    inner.bind("<Configure>", _sync_flow_layout, add="+")
-    canvas.bind("<Configure>", _sync_flow_layout, add="+")
+    # Host-only Configure bind — avoid inner/canvas feedback loops.
     host.bind("<Configure>", _sync_flow_layout, add="+")
+    canvas.bind("<Configure>", _sync_flow_layout, add="+")
 
     gui._pipeline_flow_host = host
     gui._pipeline_flow_canvas = canvas
@@ -528,7 +545,7 @@ def _apply_flow_stage(gui, view: FlowStageView) -> None:
 
     tip = (
         f"{view.title}\n\n{view.tooltip}\n\n{view.detail}\n\n"
-        "Click for full stage details · ▶ expands summary"
+        f"Click for full stage details · {GLYPH_EXPAND} expands summary"
     )
     card = widgets.get("card")
     for widget in (card, icon_lbl, status_lbl, detail_lbl):

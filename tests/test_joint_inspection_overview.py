@@ -11,8 +11,8 @@ from stablewalk.ui.tk.app import StableWalkGUI
 
 
 def test_empty_overview_joint_inspect_copy() -> None:
-    assert "Click a joint" in EMPTY_OVERVIEW_JOINT_INSPECT
-    assert "3D trajectory" in EMPTY_OVERVIEW_JOINT_INSPECT
+    assert "Select a joint" in EMPTY_OVERVIEW_JOINT_INSPECT
+    assert "3D path" in EMPTY_OVERVIEW_JOINT_INSPECT
 
 
 def test_pick_event_is_compare_detects_control_key() -> None:

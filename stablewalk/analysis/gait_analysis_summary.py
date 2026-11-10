@@ -224,9 +224,18 @@ def _analysis_confidence_level(
     evidence_index: float,
     validity_status: str | None,
 ) -> AnalysisConfidenceLevel:
+    """Session interpretability — never HIGH when essential gait events are missing."""
     if validity_status == "INSUFFICIENT_DATA":
         return "INSUFFICIENT"
+    cycles = int(getattr(result, "usable_gait_cycles", 0) or 0)
+    # Pose quality alone is not analysis confidence. Cadence/symmetry need ≥2 cycles.
+    if cycles <= 0:
+        return "INSUFFICIENT"
+    if cycles < 2:
+        return "LOW"
     badge = result.confidence_badge
+    if cycles < 3 and badge == "HIGH CONFIDENCE":
+        return "MODERATE"
     if badge == "HIGH CONFIDENCE" and evidence_index >= 0.68:
         return "HIGH"
     if badge == "MODERATE CONFIDENCE" and evidence_index >= 0.45:

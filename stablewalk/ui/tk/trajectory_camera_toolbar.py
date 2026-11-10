@@ -16,6 +16,7 @@ from stablewalk.ui.theme import (
     ELEVATED,
     FONT_UI_XS,
     MUTED,
+    PAD_SM,
     PAD_XS,
     create_tooltip,
 )
@@ -65,6 +66,7 @@ def build_trajectory_camera_toolbar(
     from stablewalk.ui.viewers.dof_trajectory_3d import (
         TRAJECTORY_CAMERA_PRESETS,
         clear_trajectory_camera_state,
+        fit_trajectory_viewport,
         pan_trajectory_camera,
         remember_trajectory_camera,
         reset_trajectory_camera,
@@ -76,44 +78,100 @@ def build_trajectory_camera_toolbar(
     bar = tk.Frame(
         parent,
         bg=ELEVATED,
-        highlightthickness=1,
-        highlightbackground=BORDER,
-        highlightcolor=BORDER,
+        highlightthickness=0,
     )
 
     pady = 1 if compact else 2
-    tk.Label(bar, text="Cam", bg=ELEVATED, fg=MUTED, font=FONT_UI_XS).pack(
-        side=tk.LEFT, padx=(PAD_XS, 2 if compact else 4), pady=pady
+    cam_padx = (PAD_XS, PAD_XS) if compact else (PAD_SM, 4)
+    tk.Label(bar, text="Cam", bg=ELEVATED, fg=MUTED, font=FONT_UI_XS, padx=2).pack(
+        side=tk.LEFT, padx=cam_padx, pady=pady
     )
 
     def _ax():
         return getattr(gui, ax_attr, None)
 
-    def _btn(text: str, tip: str, command: Callable[[], None]) -> None:
+    def _btn(
+        text: str,
+        tip: str,
+        command: Callable[[], None],
+        *,
+        width: int = 3,
+    ) -> None:
         b = ttk.Button(
             bar,
             text=text,
-            width=2 if compact else 3,
+            width=width,
             command=command,
             takefocus=False,
         )
         b.pack(side=tk.LEFT, padx=1, pady=pady)
         create_tooltip(b, tip)
 
-    def _do_reset() -> None:
-        ax = _ax()
-        if ax is None:
+    def _canvas():
+        return getattr(gui, canvas_attr, None)
+
+    def _scheduler():
+        return getattr(gui, "root", None)
+
+    def _redraw_overview(*, delay_ms: int = 0) -> None:
+        if ax_attr != "ax_dof_traj_overview":
+            refresh = getattr(gui, "_refresh_overview_trajectory_dock", None)
+            if callable(refresh):
+                try:
+                    refresh(force_draw=True)
+                except Exception:
+                    pass
             return
-        reset_trajectory_camera(ax, projection_mode=_projection_mode(gui))
-        _redraw(gui)
-        # Overview dock: re-fit so orbit/zoom never leaves clipped axes.
-        if ax_attr == "ax_dof_traj_overview":
-            render = getattr(gui, "_render_overview_traj_canvas", None)
+        render = getattr(gui, "_render_overview_traj_canvas", None)
+        refresh = getattr(gui, "_refresh_overview_trajectory_dock", None)
+        def _run() -> None:
+            if callable(refresh):
+                try:
+                    refresh(force_draw=True)
+                    return
+                except Exception:
+                    pass
             if callable(render):
                 try:
                     render(force=True)
                 except Exception:
                     pass
+        if delay_ms > 0:
+            sched = _scheduler()
+            if sched is not None:
+                try:
+                    sched.after(delay_ms, _run)
+                    return
+                except Exception:
+                    pass
+        _run()
+
+    def _do_reset() -> None:
+        ax = _ax()
+        if ax is None:
+            return
+        reset_trajectory_camera(
+            ax,
+            projection_mode=_projection_mode(gui),
+            canvas=_canvas(),
+            scheduler=_scheduler(),
+            animate=True,
+        )
+        _redraw_overview(delay_ms=360)
+
+    def _do_fit() -> None:
+        ax = _ax()
+        if ax is None:
+            return
+        fit_trajectory_viewport(ax, keep_camera=True)
+        fit_fn = getattr(gui, "_fit_overview_trajectory", None)
+        if ax_attr == "ax_dof_traj_overview" and callable(fit_fn):
+            try:
+                fit_fn(keep_camera=True)
+                return
+            except Exception:
+                pass
+        _redraw_overview()
 
     def _do_zoom(factor: float) -> None:
         _with_ax(gui, _ax(), lambda a: zoom_trajectory_camera(a, factor))
@@ -140,7 +198,8 @@ def build_trajectory_camera_toolbar(
                 except Exception:
                     pass
 
-    _btn("⟲", "Reset camera (Perspective view)", _do_reset)
+    _btn("⟲", "Reset camera (smooth Perspective view)", _do_reset)
+    _btn("Fit", "Fit the full selected-joint trajectory in view", _do_fit, width=4)
     _btn("+", "Zoom in", lambda: _do_zoom(1.15))
     _btn("−", "Zoom out", lambda: _do_zoom(1.0 / 1.15))
 
@@ -149,34 +208,87 @@ def build_trajectory_camera_toolbar(
     )
 
     def _do_preset(name: str) -> None:
+        from stablewalk.ui.overview_path_display import (
+            CAMERA_VIEW_SOURCE,
+            source_camera_view_available,
+        )
+
+        if name == CAMERA_VIEW_SOURCE and not source_camera_view_available(
+            getattr(gui, "gait_motion", None)
+        ):
+            return
         ax = _ax()
         if ax is None:
             return
-        set_trajectory_camera_preset(ax, name)
-        _redraw(gui)
+        set_trajectory_camera_preset(
+            ax,
+            name,
+            canvas=_canvas(),
+            scheduler=_scheduler(),
+            animate=True,
+        )
         if ax_attr == "ax_dof_traj_overview":
             render = getattr(gui, "_render_overview_traj_canvas", None)
-            if callable(render):
+            sched = _scheduler()
+            if callable(render) and sched is not None:
                 try:
-                    render(force=True)
+                    sched.after(360, lambda: render(force=True))
                 except Exception:
                     pass
 
-    for preset_name in ("Perspective", "Side", "Front", "Top"):
-        if preset_name not in TRAJECTORY_CAMERA_PRESETS:
-            continue
-        short = {"Perspective": "Persp", "Side": "Side", "Front": "Front", "Top": "Top"}[
-            preset_name
-        ]
-        b = ttk.Button(
-            bar,
-            text=short,
-            width=4 if compact else 5,
-            command=lambda n=preset_name: _do_preset(n),
-            takefocus=False,
+    from stablewalk.ui.overview_path_display import (
+        CAMERA_VIEW_SHORT_LABELS,
+        named_camera_views,
+        source_camera_view_available,
+    )
+
+    def _preset_names() -> tuple[str, ...]:
+        return named_camera_views(
+            include_source=source_camera_view_available(
+                getattr(gui, "gait_motion", None)
+            )
         )
-        b.pack(side=tk.LEFT, padx=1, pady=pady)
-        create_tooltip(b, f"Camera preset: {preset_name}")
+
+    if compact:
+        view_btn = ttk.Menubutton(bar, text="View", width=8, takefocus=False)
+        view_menu = tk.Menu(view_btn, tearoff=0)
+
+        def _rebuild_view_menu() -> None:
+            view_menu.delete(0, tk.END)
+            for preset_name in _preset_names():
+                if preset_name not in TRAJECTORY_CAMERA_PRESETS:
+                    continue
+                view_menu.add_command(
+                    label=preset_name,
+                    command=lambda n=preset_name: _do_preset(n),
+                )
+            view_menu.add_separator()
+            view_menu.add_command(label="Fit trajectory", command=_do_fit)
+
+        _rebuild_view_menu()
+        view_btn["menu"] = view_menu
+        view_btn.pack(side=tk.LEFT, padx=1, pady=pady)
+        create_tooltip(
+            view_btn,
+            "Named camera views. Source camera appears only when the "
+            "reconstruction is already camera-aligned. Drag the plot to orbit.",
+        )
+        gui._overview_camera_view_menu = view_menu
+        gui._rebuild_overview_camera_view_menu = _rebuild_view_menu
+    else:
+        for preset_name in _preset_names():
+            if preset_name not in TRAJECTORY_CAMERA_PRESETS:
+                continue
+            short = CAMERA_VIEW_SHORT_LABELS.get(preset_name, preset_name)
+            b = ttk.Button(
+                bar,
+                text=short,
+                width=max(5, len(short)),
+                command=lambda n=preset_name: _do_preset(n),
+                takefocus=False,
+            )
+            b.pack(side=tk.LEFT, padx=1, pady=pady)
+            create_tooltip(b, f"Camera view: {preset_name}")
 
     if not compact:
         tk.Frame(bar, bg=BORDER, width=1, highlightthickness=0).pack(

@@ -11,6 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # --- Data layout (research pipeline artifacts) ---
 DATA_DIR = PROJECT_ROOT / "data"
 CATALOG_DIR = DATA_DIR / "catalog"
+# Local research gait-video catalog (user-provided files only — never auto-downloaded).
+RESEARCH_DATASET_DIR = DATA_DIR / "research_dataset"
+RESEARCH_VIDEOS_DIR = RESEARCH_DATASET_DIR / "videos"
+RESEARCH_CATALOG_PATH = RESEARCH_DATASET_DIR / "catalog.json"
 
 # Uploaded / local walking videos
 VIDEOS_DIR = DATA_DIR / "videos"
@@ -96,14 +100,16 @@ GUI_VIDEO_VALIDATE_MODE = "quick"
 DEFAULT_MIN_VALID_FRAME_RATIO = 0.25
 DEFAULT_VIDEO_VALIDATION_SAMPLES = 20
 
-# Presentation demo: analyze full demo walking segment (~4.8 s @ 25 fps)
-DEMO_MAX_FRAMES = 120
+# Presentation / Examples: analyze the real demo clip (15–30 s @ ~30 FPS).
+# Do not loop, slow, or interpolate frames to manufacture extra gait cycles.
+DEMO_MAX_FRAMES = 900
 
 # Pose/frames are always regenerated on load (keyed by content hash in video_source)
 DISABLE_POSE_CACHE_REUSE = True
 
-# GUI: limit frames per load for responsive switching (set None for full video)
-GUI_MAX_FRAMES_PER_LOAD = 80
+# GUI: cap decoded frames so analysis stays off the UI thread but still
+# covers ≥2 typical gait cycles (≈8 s at 30 FPS). None = full video.
+GUI_MAX_FRAMES_PER_LOAD = 240
 
 # --- GUI playback performance (Tk dashboard) ---
 # Lower values = smoother UI but higher CPU; raise strides on slower machines.

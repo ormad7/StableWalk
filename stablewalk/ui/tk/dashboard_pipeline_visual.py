@@ -15,7 +15,19 @@ from stablewalk.monitoring.pipeline_status import (
     STATUS_UNAVAILABLE,
     PipelineStageState,
 )
-from stablewalk.ui.theme import BORDER, ELEVATED, MUTED, ORANGE, PANEL, SUCCESS
+from stablewalk.ui.theme import (
+    BORDER,
+    ELEVATED,
+    MUTED,
+    ORANGE,
+    PANEL,
+    SUCCESS,
+    SUCCESS_BRIGHT,
+    SUCCESS_GLOW,
+    SUCCESS_MID,
+    SUCCESS_MUTED,
+    SUCCESS_SOFT,
+)
 
 # Consistent status palette for flow, engineering cards, status panel, and dialogs.
 PIPELINE_STATUS_FG = {
@@ -32,8 +44,8 @@ PIPELINE_STATUS_STRIP = {
 
 PIPELINE_STATUS_RING = PIPELINE_STATUS_STRIP
 
-_COMPLETION_PULSE = ("#2ecc71", "#42be65", "#5ce1a8", SUCCESS)
-_CONNECTOR_PULSE = ("#3d5a4a", "#4a7a5c", "#5ea874", SUCCESS)
+_COMPLETION_PULSE = (SUCCESS, SUCCESS_BRIGHT, SUCCESS_GLOW, SUCCESS)
+_CONNECTOR_PULSE = (SUCCESS_MUTED, SUCCESS_MID, SUCCESS_SOFT, SUCCESS)
 _ANIM_MS = 48
 _CONNECTOR_ANIM_MS = 56
 
@@ -309,6 +321,20 @@ def animate_connector_activation(
     _tick(0)
 
 
+def cancel_all_pipeline_animations(gui: Any) -> None:
+    """Cancel every stage-completion and connector pulse ``after`` job."""
+    root = getattr(gui, "root", None)
+    for attr in ("_pipeline_anim_after_ids", "_pipeline_connector_after_ids"):
+        after_ids: dict[str, str] = dict(getattr(gui, attr, {}) or {})
+        if root is not None:
+            for aid in after_ids.values():
+                try:
+                    root.after_cancel(aid)
+                except (tk.TclError, ValueError, TypeError):
+                    pass
+        setattr(gui, attr, {})
+
+
 __all__ = [
     "PIPELINE_STATUS_FG",
     "PIPELINE_STATUS_RING",
@@ -316,6 +342,7 @@ __all__ = [
     "PipelineStageMetrics",
     "animate_connector_activation",
     "animate_stage_completion",
+    "cancel_all_pipeline_animations",
     "compact_generated_files",
     "format_duration_seconds",
     "install_progress_track",

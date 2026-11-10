@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 
 from stablewalk import config
 from stablewalk.pose.video import is_video_url
-from stablewalk.pose.video_validation import validate_video_source
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9_-]+")
 
@@ -163,6 +162,7 @@ def validate_source(
         return ok, 1.0 if ok else 0.0, qmsg if ok else qmsg
 
     from stablewalk.core.pipeline_reset import release_all_captures
+    from stablewalk.pose.video_validation import validate_video_source
 
     release_all_captures()
     return validate_video_source(

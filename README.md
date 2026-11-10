@@ -403,9 +403,9 @@ Research-oriented demo protocol: **[data/demo_videos/DEMO_VIDEO_SOURCES.md](data
 
 | UI label | Internal key | Target source |
 |----------|--------------|---------------|
-| **Abnormal** | `abnormal` | [GAVD](https://github.com/Rahmyyy/GAVD) — annotations + YouTube URL |
-| **Normal** | `normal` | [Health&Gait](https://zenodo.org/records/14039922) UGS |
-| **Performance** | `athletic` | Health&Gait FGS (fast gait speed) |
+| **Abnormal Gait** | `abnormal` | `abnormal_gait_v2.mp4` — [GAVD](https://github.com/Rahmyyy/GAVD) `gait_pat=parkinsons` |
+| **Normal Gait** | `normal` | `normal_gait_v2.mp4` — [GAVD](https://github.com/Rahmyyy/GAVD) `gait_pat=normal` |
+| **Fast Walking** | `athletic` | `fast_walking_v2.mp4` — Twente RGB [Zenodo 6644593](https://zenodo.org/records/6644593) Subj04 `walk_54` side, 5.4 km/h |
 
 ```bash
 python scripts/demo_video_selection_workflow.py

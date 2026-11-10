@@ -1556,6 +1556,8 @@ def _availability_from_confidence(conf: float) -> tuple[DomainAvailability, floa
 def _finalize_stability_score(
     metrics: list[MetricResult],
     cfg: StabilityScoreConfig,
+    *,
+    usable_gait_cycles: int = 0,
 ) -> tuple[float, list[DomainContribution], float, str]:
     """
     Confidence-weighted renormalization over AVAILABLE and LOW_CONFIDENCE domains.
@@ -1600,6 +1602,12 @@ def _finalize_stability_score(
         badge = "MODERATE CONFIDENCE"
     else:
         badge = "LOW CONFIDENCE"
+
+    # Movement-domain completeness must not advertise HIGH when gait events failed.
+    if usable_gait_cycles <= 0 and badge == "HIGH CONFIDENCE":
+        badge = "LOW CONFIDENCE"
+    elif usable_gait_cycles < 2 and badge == "HIGH CONFIDENCE":
+        badge = "MODERATE CONFIDENCE"
 
     return _clamp(final), contributions, completeness, badge
 
@@ -1716,7 +1724,10 @@ def analyze_biomech_stability(
             m.score = None
             m.summary = f"{m.name} unavailable — excluded from overall score."
 
-    final, contributions, completeness, badge = _finalize_stability_score(metrics, cfg)
+    usable_cycles = ctx.evidence.usable_gait_cycles if ctx.evidence else 0
+    final, contributions, completeness, badge = _finalize_stability_score(
+        metrics, cfg, usable_gait_cycles=usable_cycles
+    )
 
     classification = (
         "Stable" if final >= cfg.stable_min

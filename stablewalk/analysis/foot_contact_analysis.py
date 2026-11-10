@@ -19,6 +19,7 @@ from typing import Any, Literal
 import numpy as np
 
 from stablewalk.analysis.gait_cycle_analysis import (
+    MIN_FOOT_VISIBILITY,
     ContactThresholds,
     DetectedGaitCycle,
     FootLandmarkSample,
@@ -29,10 +30,15 @@ from stablewalk.analysis.gait_cycle_analysis import (
     analyze_gait_cycles,
     compute_temporal_metrics,
     detect_gait_cycles,
+    recording_pose_validity,
     smooth_series,
     symmetry_ratio,
 )
-from stablewalk.analysis.gait_phase_classification import classify_gait_phase_from_contacts
+from stablewalk.analysis.gait_phase_classification import (
+    FLIGHT_CLEARANCE_THRESHOLD_M,
+    both_feet_clearly_airborne,
+    classify_gait_phase_from_contacts,
+)
 from stablewalk.models.gait_motion import GaitMotionRecording, SkeletonSnapshot
 
 logger = logging.getLogger(__name__)
@@ -46,6 +52,18 @@ FootSubStateName = Literal[
 ]
 
 GaitMacroPhase = Literal["stance", "swing", "double_support", "uncertain"]
+
+# Per-foot categorical timeline codes (integers only — never interpolating).
+FOOT_PHASE_UNKNOWN = 0
+FOOT_PHASE_SWING = 1
+FOOT_PHASE_STANCE = 2
+FOOT_PHASE_TICKS: tuple[int, ...] = (
+    FOOT_PHASE_UNKNOWN,
+    FOOT_PHASE_SWING,
+    FOOT_PHASE_STANCE,
+)
+FOOT_PHASE_TICK_LABELS: tuple[str, ...] = ("Unknown", "Swing", "Stance")
+_PROB_OMITTED = object()
 
 
 class FootSubState(str, Enum):
@@ -85,6 +103,10 @@ class FootContactFrame:
     macro_phase: GaitMacroPhase
     left_confidence: float
     right_confidence: float
+    left_contact_known: bool = True
+    right_contact_known: bool = True
+    left_unknown_reason: str = ""
+    right_unknown_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -146,11 +168,26 @@ class FootContactAnalysisResult:
     def right_contact_binary(self) -> np.ndarray:
         return np.array([f.right_contact_binary for f in self.per_frame], dtype=np.int8)
 
+    @property
+    def left_contact_known_mask(self) -> np.ndarray:
+        return np.array(
+            [bool(getattr(f, "left_contact_known", True)) for f in self.per_frame],
+            dtype=bool,
+        )
+
+    @property
+    def right_contact_known_mask(self) -> np.ndarray:
+        return np.array(
+            [bool(getattr(f, "right_contact_known", True)) for f in self.per_frame],
+            dtype=bool,
+        )
+
     def frame_at(self, frame_index: int) -> FootContactFrame | None:
-        for state in self.per_frame:
-            if state.frame_index == frame_index:
-                return state
-        return None
+        idx = getattr(self, "_by_frame", None)
+        if idx is None:
+            idx = {int(f.frame_index): f for f in self.per_frame}
+            self._by_frame = idx
+        return idx.get(int(frame_index))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -224,8 +261,12 @@ def combine_contact_probability(
     vel_score: float | None,
     visibility: float,
     min_visibility: float = 0.35,
-) -> float:
-    """Weighted fusion of clearance, velocity, and confidence."""
+) -> float | None:
+    """Weighted fusion of clearance, velocity, and confidence.
+
+    Returns None when no kinematic scores exist — that is unknown, not
+    confirmed non-contact.
+    """
     parts: list[tuple[float, float]] = []
     if heel_score is not None:
         parts.append((heel_score, 0.30))
@@ -234,7 +275,7 @@ def combine_contact_probability(
     if vel_score is not None:
         parts.append((vel_score, 0.25))
     if not parts:
-        return 0.0
+        return None
     weight_sum = sum(w for _, w in parts)
     raw = sum(s * w for s, w in parts) / weight_sum
     vis_factor = _clamp01(visibility / max(min_visibility, 1e-6))
@@ -242,15 +283,22 @@ def combine_contact_probability(
 
 
 def apply_probability_hysteresis(
-    probabilities: list[float],
+    probabilities: list[float | None],
     *,
     enter: float = PROB_CONTACT_ENTER,
     exit_threshold: float = PROB_CONTACT_EXIT,
 ) -> list[int]:
-    """Schmitt trigger on smoothed contact probabilities."""
+    """Schmitt trigger on smoothed contact probabilities.
+
+    Missing / NaN samples hold the previous state; they are not treated as
+    a confirmed exit to swing.
+    """
     states: list[int] = []
     in_contact = False
     for p in probabilities:
+        if p is None or (isinstance(p, float) and math.isnan(p)):
+            states.append(1 if in_contact else 0)
+            continue
         if in_contact:
             if p < exit_threshold:
                 in_contact = False
@@ -282,12 +330,163 @@ def horizontal_speeds_m_s(
     return out
 
 
-def macro_phase_from_contacts(left: int, right: int) -> GaitMacroPhase:
+def foot_noncontact_is_confirmed(sample: FootLandmarkSample) -> bool:
+    """True when binary 0 is confirmed swing (clearly airborne), not unknown."""
+    if sample.visibility < MIN_FOOT_VISIBILITY:
+        return False
+    if sample.foot_clearance_m is None:
+        return False
+    return float(sample.foot_clearance_m) >= FLIGHT_CLEARANCE_THRESHOLD_M
+
+
+CONTACT_UNKNOWN_REASON_LABELS: dict[str, str] = {
+    "low_foot_visibility": (
+        f"Foot landmark visibility below {MIN_FOOT_VISIBILITY:.2f} — "
+        "not confirmed contact and not confirmed swing."
+    ),
+    "missing_kinematic_probability": (
+        "No heel/toe/velocity contact probability — unknown, not non-contact."
+    ),
+    "missing_foot_clearance": (
+        "Foot clearance was not measured, so an off bit is not confirmed flight."
+    ),
+    "not_confirmed_flight": (
+        f"Foot is off the contact bit but clearance is below the "
+        f"{FLIGHT_CLEARANCE_THRESHOLD_M:.3f} m flight gate — near-ground unknown, "
+        "not confirmed swing."
+    ),
+}
+
+
+def contact_unknown_reason(
+    sample: FootLandmarkSample | None,
+    binary: int,
+    *,
+    probability: float | None | object = _PROB_OMITTED,
+) -> str:
+    """Short code for why a per-foot sample is Unknown, or '' if known.
+
+    Does not change contact thresholds. Unknown is a missing observation.
+    """
+    if sample is None:
+        return "missing_kinematic_probability"
+    if sample.visibility < MIN_FOOT_VISIBILITY:
+        return "low_foot_visibility"
+    if probability is not _PROB_OMITTED:
+        if probability is None:
+            return "missing_kinematic_probability"
+        try:
+            if math.isnan(float(probability)):
+                return "missing_kinematic_probability"
+        except (TypeError, ValueError):
+            return "missing_kinematic_probability"
+    if binary:
+        return ""
+    if sample.foot_clearance_m is None:
+        return "missing_foot_clearance"
+    if float(sample.foot_clearance_m) < FLIGHT_CLEARANCE_THRESHOLD_M:
+        return "not_confirmed_flight"
+    return ""
+
+
+def foot_contact_observation_known(
+    sample: FootLandmarkSample,
+    binary: int,
+    *,
+    probability: float | None | object = _PROB_OMITTED,
+) -> bool:
+    """Whether a per-foot contact bit is a usable observation.
+
+    Missing kinematic probability and low visibility are unknown — not
+    confirmed contact and not confirmed swing. Hysteresis may still hold a
+    previous binary bit for event detection; that hold is not an observation.
+    """
+    if sample.visibility < MIN_FOOT_VISIBILITY:
+        return False
+    if probability is not _PROB_OMITTED:
+        if probability is None:
+            return False
+        try:
+            if math.isnan(float(probability)):
+                return False
+        except (TypeError, ValueError):
+            return False
+    if binary:
+        return True
+    return foot_noncontact_is_confirmed(sample)
+
+
+def display_contact_value(
+    binary: int,
+    sample: FootLandmarkSample | None,
+    *,
+    known: bool | None = None,
+) -> int | None:
+    """Map a contact bit to display: 1 / 0 / None (unknown)."""
+    if known is False:
+        return None
+    if known is True:
+        return int(binary)
+    if sample is None:
+        return int(binary)
+    if binary:
+        return 1
+    return 0 if foot_noncontact_is_confirmed(sample) else None
+
+
+def macro_phase_from_contacts(
+    left: int,
+    right: int,
+    *,
+    left_clearance_m: float | None = None,
+    right_clearance_m: float | None = None,
+    left_known: bool = True,
+    right_known: bool = True,
+) -> GaitMacroPhase:
+    if not left_known or not right_known:
+        return "uncertain"
     if left and right:
         return "double_support"
     if left or right:
         return "stance"
-    return "swing"
+    if both_feet_clearly_airborne(left_clearance_m, right_clearance_m):
+        return "swing"
+    return "uncertain"
+
+
+def foot_phase_category(*, known: bool, in_contact: bool) -> str:
+    """Per-foot categorical phase: unknown / swing / stance."""
+    if not known:
+        return "unknown"
+    return "stance" if in_contact else "swing"
+
+
+def foot_phase_code(*, known: bool, in_contact: bool) -> int:
+    name = foot_phase_category(known=known, in_contact=in_contact)
+    if name == "stance":
+        return FOOT_PHASE_STANCE
+    if name == "swing":
+        return FOOT_PHASE_SWING
+    return FOOT_PHASE_UNKNOWN
+
+
+def per_foot_phase_codes(
+    contact: FootContactAnalysisResult,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Integer left/right phase codes for step plots (includes Unknown)."""
+    n = len(contact.per_frame)
+    left = np.empty(n, dtype=np.int8)
+    right = np.empty(n, dtype=np.int8)
+    for i, frame in enumerate(contact.per_frame):
+        left[i] = foot_phase_code(
+            known=bool(getattr(frame, "left_contact_known", True)),
+            in_contact=bool(frame.left_contact_binary),
+        )
+        right[i] = foot_phase_code(
+            known=bool(getattr(frame, "right_contact_known", True)),
+            in_contact=bool(frame.right_contact_binary),
+        )
+    return left, right
 
 
 def run_foot_substate_machine(
@@ -448,7 +647,7 @@ def _build_side_probability_series(
     entry_v = thresholds.entry_max_vel_m_s if thresholds else 0.28
     exit_v = thresholds.exit_min_vel_m_s if thresholds else 0.42
 
-    raw_probs: list[float] = []
+    raw_probs: list[float | None] = []
     confidences: list[float] = []
     in_contact = False
     for i, sample in enumerate(samples):
@@ -476,8 +675,9 @@ def _build_side_probability_series(
         confidences.append(_clamp01(sample.visibility))
 
     smoothed = smooth_series(raw_probs, smooth_window)
-    smooth_f = [float(v) if v is not None else 0.0 for v in smoothed]
-    binary = apply_probability_hysteresis(smooth_f)
+    # Preserve unknown samples as NaN — do not coerce them to confirmed 0.
+    smooth_f = [float(v) if v is not None else float("nan") for v in smoothed]
+    binary = apply_probability_hysteresis(smoothed)
     return smooth_f, binary, confidences
 
 
@@ -595,8 +795,44 @@ def analyze_foot_contact(
     # Build FrameContactState list for temporal metrics
     frame_states: list[FrameContactState] = []
     per_frame: list[FootContactFrame] = []
+    unknown_both_off = 0
     for i, base in enumerate(gait.per_frame):
-        macro = macro_phase_from_contacts(left_bin[i], right_bin[i])
+        left_prob_i = left_prob[i] if i < len(left_prob) else None
+        right_prob_i = right_prob[i] if i < len(right_prob) else None
+        left_known = foot_contact_observation_known(
+            left_samples[i],
+            left_bin[i],
+            probability=left_prob_i,
+        )
+        right_known = foot_contact_observation_known(
+            right_samples[i],
+            right_bin[i],
+            probability=right_prob_i,
+        )
+        left_reason = (
+            ""
+            if left_known
+            else contact_unknown_reason(
+                left_samples[i], left_bin[i], probability=left_prob_i
+            )
+        )
+        right_reason = (
+            ""
+            if right_known
+            else contact_unknown_reason(
+                right_samples[i], right_bin[i], probability=right_prob_i
+            )
+        )
+        macro = macro_phase_from_contacts(
+            left_bin[i],
+            right_bin[i],
+            left_clearance_m=left_samples[i].foot_clearance_m,
+            right_clearance_m=right_samples[i].foot_clearance_m,
+            left_known=left_known,
+            right_known=right_known,
+        )
+        if not left_bin[i] and not right_bin[i] and not (left_known and right_known):
+            unknown_both_off += 1
         per_frame.append(
             FootContactFrame(
                 frame_index=base.frame_index,
@@ -614,9 +850,20 @@ def analyze_foot_contact(
                 macro_phase=macro,
                 left_confidence=left_conf[i],
                 right_confidence=right_conf[i],
+                left_contact_known=left_known,
+                right_contact_known=right_known,
+                left_unknown_reason=left_reason,
+                right_unknown_reason=right_reason,
             )
         )
-        phase = classify_gait_phase_from_contacts(left_bin[i], right_bin[i])
+        phase = classify_gait_phase_from_contacts(
+            left_bin[i],
+            right_bin[i],
+            left_foot_clearance_m=left_samples[i].foot_clearance_m,
+            right_foot_clearance_m=right_samples[i].foot_clearance_m,
+            left_known=left_known,
+            right_known=right_known,
+        )
         frame_states.append(
             FrameContactState(
                 frame_index=base.frame_index,
@@ -630,7 +877,18 @@ def analyze_foot_contact(
         )
 
     duration_s = recording.duration_s or (len(per_frame) / fps)
-    cycle_list = detect_gait_cycles(events, duration_s=duration_s)
+    if cycles is not None and getattr(cycles, "cycles", None):
+        cycle_list = list(cycles.cycles)
+    else:
+        pose_times, pose_valid = recording_pose_validity(recording)
+        cycle_list = detect_gait_cycles(
+            events,
+            duration_s=duration_s,
+            per_frame=frame_states,
+            pose_times=pose_times,
+            pose_valid=pose_valid,
+            fps=fps,
+        )
     base_metrics = compute_temporal_metrics(
         frame_states,
         events,
@@ -642,6 +900,12 @@ def analyze_foot_contact(
     metrics = compute_foot_contact_metrics(
         per_frame, events, cycle_list, fps=fps, base_metrics=base_metrics
     )
+    if unknown_both_off:
+        warnings.append(
+            f"{unknown_both_off} frames have unknown bilateral contact "
+            "(not confirmed flight). Estimated vGRF is withheld on those "
+            "samples instead of being recorded as zero."
+        )
 
     return FootContactAnalysisResult(
         per_frame=per_frame,
@@ -654,6 +918,46 @@ def analyze_foot_contact(
     )
 
 
+def iter_contact_frame_evidence(
+    contact: FootContactAnalysisResult,
+) -> list[dict[str, Any]]:
+    """Frame-level contact observations and Unknown rejection reasons.
+
+    One row per foot per frame. Missing coverage is not a laterality score.
+    """
+    gait = getattr(contact, "gait_cycles", None)
+    gait_frames = list(getattr(gait, "per_frame", None) or [])
+    rows: list[dict[str, Any]] = []
+    for i, frame in enumerate(contact.per_frame):
+        sample_pair = gait_frames[i] if i < len(gait_frames) else None
+        for side in ("left", "right"):
+            known = bool(getattr(frame, f"{side}_contact_known", True))
+            binary = int(getattr(frame, f"{side}_contact_binary", 0) or 0)
+            prob = getattr(frame, f"{side}_contact_probability", None)
+            reason = str(getattr(frame, f"{side}_unknown_reason", "") or "")
+            sample = getattr(sample_pair, side, None) if sample_pair is not None else None
+            if not known and not reason:
+                reason = contact_unknown_reason(sample, binary, probability=prob)
+            vis = float(getattr(sample, "visibility", float("nan"))) if sample else float("nan")
+            clearance = getattr(sample, "foot_clearance_m", None) if sample else None
+            rows.append(
+                {
+                    "frame_index": int(frame.frame_index),
+                    "time_s": float(frame.time_s),
+                    "side": side,
+                    "visibility": vis if vis == vis else None,
+                    "clearance_m": None if clearance is None else float(clearance),
+                    "probability": None if prob is None else float(prob),
+                    "binary": binary,
+                    "known": known,
+                    "unknown_reason": reason,
+                    "unknown_reason_label": CONTACT_UNKNOWN_REASON_LABELS.get(reason, ""),
+                    "confidence": float(getattr(frame, f"{side}_confidence", 0.0) or 0.0),
+                }
+            )
+    return rows
+
+
 __all__ = [
     "FootSubState",
     "FootSubStateName",
@@ -661,14 +965,28 @@ __all__ = [
     "FootContactMetrics",
     "FootContactAnalysisResult",
     "GaitMacroPhase",
+    "CONTACT_UNKNOWN_REASON_LABELS",
     "analyze_foot_contact",
     "apply_probability_hysteresis",
+    "contact_unknown_reason",
+    "iter_contact_frame_evidence",
     "clearance_contact_score",
     "combine_contact_probability",
     "compute_foot_contact_metrics",
     "detect_event_pulses",
+    "display_contact_value",
+    "foot_contact_observation_known",
+    "foot_noncontact_is_confirmed",
     "horizontal_speeds_m_s",
     "macro_phase_from_contacts",
+    "foot_phase_category",
+    "foot_phase_code",
+    "per_foot_phase_codes",
+    "FOOT_PHASE_UNKNOWN",
+    "FOOT_PHASE_SWING",
+    "FOOT_PHASE_STANCE",
+    "FOOT_PHASE_TICKS",
+    "FOOT_PHASE_TICK_LABELS",
     "run_foot_substate_machine",
     "velocity_contact_score",
 ]

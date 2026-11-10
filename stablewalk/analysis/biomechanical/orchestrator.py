@@ -93,7 +93,11 @@ def _detect_abnormalities(result: BiomechanicalAnalysisResult) -> list[str]:
         and result.stability_margin.stable_pct < 50.0
     ):
         flags.append("Low stability margin — COM frequently near/outside support base")
-    if result.gait_quality and result.gait_quality.score < 55.0:
+    if (
+        result.gait_quality
+        and result.gait_quality.score is not None
+        and result.gait_quality.score < 55.0
+    ):
         flags.append("Low composite gait quality score")
     if result.gait_metrics and result.gait_metrics.cadence:
         cad = result.gait_metrics.cadence.value
@@ -304,18 +308,23 @@ def run_biomechanical_analysis(
     result.warnings.extend(_validate_final_metrics(result))
     result.warnings = list(dict.fromkeys(result.warnings))
 
-    if cycles.metrics.metrics_reliable:
-        result.gait_quality = compute_gait_quality_score(
-            stability=stability,
-            stability_margin=margin,
-            symmetry=symmetry,
-            gait_metrics=gait_metrics,
-            cycles=cycles,
-            contact=contact,
-        )
-    else:
+    result.gait_quality = compute_gait_quality_score(
+        stability=stability,
+        stability_margin=margin,
+        symmetry=symmetry,
+        gait_metrics=gait_metrics,
+        cycles=cycles,
+        contact=contact,
+    )
+    if not getattr(result.gait_quality, "available", False):
         result.warnings.append(
             "Gait quality score unavailable: "
+            f"{cycles.metrics.reliability_reason}"
+        )
+    elif not cycles.metrics.metrics_reliable:
+        result.warnings.append(
+            "Gait quality was scored from available components; "
+            "temporal reliability is limited: "
             f"{cycles.metrics.reliability_reason}"
         )
     result.abnormalities = _detect_abnormalities(result)

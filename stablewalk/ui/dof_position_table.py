@@ -51,12 +51,12 @@ DOF_TABLE_HEADINGS: dict[str, str] = {
     "time": "Time",
     "frame": "Frame",
     "dof": "Selected Point",
-    "x": "X",
-    "y": "Y",
-    "z": "Z",
-    "speed": "Speed",
-    "foot_clearance": "Foot Clearance",
-    "contact_status": "Contact State",
+    "x": "X (m, root-rel.)",
+    "y": "Y (m, root-rel.)",
+    "z": "Z (m, root-rel.)",
+    "speed": "Speed (m/s or °/s)",
+    "foot_clearance": "Foot Clearance (est.)",
+    "contact_status": "Contact State (est.)",
 }
 
 DOF_TABLE_WIDTHS: dict[str, int] = {
@@ -108,8 +108,8 @@ def _dash(value: float | None, *, fmt: str = ".3f", suffix: str = "") -> str:
     return f"{value:{fmt}}{suffix}"
 
 
-def angle_value_for_item(item_id: str, snapshot: SkeletonSnapshot) -> float | None:
-    """Numeric flexion angle (degrees) for a GUI DOF item."""
+def raw_pose_angle_for_item(item_id: str, snapshot: SkeletonSnapshot) -> float | None:
+    """Stored pose interior angle (degrees), optional debug series only."""
     anchor = anchor_joint_for_item(item_id)
     dof_id = _ITEM_DOF_ID.get(item_id)
     dof = snapshot.get_dof(dof_id) if dof_id else None
@@ -121,13 +121,29 @@ def angle_value_for_item(item_id: str, snapshot: SkeletonSnapshot) -> float | No
     return None
 
 
+def angle_value_for_item(item_id: str, snapshot: SkeletonSnapshot) -> float | None:
+    """Primary display angle (degrees) for a GUI DOF item.
+
+    Knees use anatomical flexion from 3D Hip–Knee–Ankle vectors
+    (180° − interior). Other joints keep the stored pose interior angle.
+    Missing HKA landmarks yield None; coordinates are never invented.
+    """
+    from stablewalk.pose.kinematics import knee_flexion_from_snapshot, knee_hka_joint_ids
+
+    if knee_hka_joint_ids(item_id) is not None:
+        return knee_flexion_from_snapshot(snapshot, item_id)
+    return raw_pose_angle_for_item(item_id, snapshot)
+
+
 def _format_table_speed(joint: JointSample | None, dof: DofSample | None) -> str:
-    """Linear or angular rate for the position table (compact numeric)."""
+    """Linear or angular rate for the position table (units always explicit)."""
+    from stablewalk.ui.value_provenance import format_na
+
     if joint is not None and joint.velocity is not None:
-        return f"{joint.velocity:.3f}"
+        return f"{joint.velocity:.3f} m/s"
     if dof is not None and dof.velocity_deg_s is not None:
         return f"{dof.velocity_deg_s:.3f} °/s"
-    return NA_VALUE
+    return format_na("speed not available")
 
 
 def table_row_cell(row: DofTableRow, column: str) -> str:
@@ -143,19 +159,23 @@ def table_row_cell(row: DofTableRow, column: str) -> str:
 
 def _format_detail_velocity(joint: JointSample | None, dof: DofSample | None) -> str:
     """Prefer angular rate for the DOF details card; fall back to linear speed."""
+    from stablewalk.ui.value_provenance import format_na
+
     if dof is not None and dof.velocity_deg_s is not None:
         return f"{dof.velocity_deg_s:.3f} °/s"
     if joint is not None and joint.velocity is not None:
         return f"{joint.velocity:.3f} m/s"
-    return NA_VALUE
+    return format_na("velocity not available")
 
 
 def _format_angle(joint: JointSample | None, dof: DofSample | None) -> str:
+    from stablewalk.ui.value_provenance import format_na
+
     if dof is not None and dof.angle_deg is not None:
         return f"{dof.angle_deg:.1f}°"
     if joint is not None and joint.angle_deg is not None:
         return f"{joint.angle_deg:.1f}°"
-    return NA_VALUE
+    return format_na("angle not available")
 
 
 def _format_delta_angle(value: float | None) -> str:

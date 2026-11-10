@@ -177,9 +177,15 @@ def setup_3d_axes(
             ax.set_proj_type("persp")
         except (AttributeError, ValueError):
             pass
-    ax.set_xlabel("← left · right →", color=MUTED, fontsize=8)
-    ax.set_ylabel("height", color=MUTED, fontsize=8)
-    ax.set_zlabel("", color=MUTED, fontsize=8)
+    from stablewalk.ui.viewers.chart_style import style_3d_axis_labels, unclip_axis_chrome
+
+    style_3d_axis_labels(
+        ax,
+        xlabel="← left · right →",
+        ylabel="height",
+        zlabel="",
+    )
+    unclip_axis_chrome(ax)
     ax.tick_params(colors=MUTED, labelsize=7)
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.pane.fill = False
@@ -1347,6 +1353,12 @@ def draw_painted_human_2d(
 
     title = frame_label or "Body (front view)"
     ax.set_title(title, color=TEXT, fontsize=9, fontweight="medium", pad=6)
+    try:
+        from stablewalk.ui.viewers.chart_style import unclip_axis_chrome
+
+        unclip_axis_chrome(ax)
+    except Exception:
+        ax.title.set_clip_on(False)
     return display
 
 
@@ -1437,6 +1449,12 @@ def draw_skeleton_3d(
 
     title = frame_label or "3D gait reconstruction"
     ax.set_title(title, color=TEXT, fontsize=9.5, fontweight="medium", pad=5)
+    try:
+        from stablewalk.ui.viewers.chart_style import unclip_axis_chrome
+
+        unclip_axis_chrome(ax)
+    except Exception:
+        ax.title.set_clip_on(False)
     return display
 
 

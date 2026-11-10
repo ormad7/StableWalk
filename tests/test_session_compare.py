@@ -9,9 +9,12 @@ from stablewalk.analysis.session_compare import (
     extract_compare_metrics,
     joint_angle_difference_heatmap,
 )
+from stablewalk.ui.tk.compare_state import SESSION_B_NEXT_ACTION
 from stablewalk.ui.tk.session_cache import (
     AnalyzedSessionSnapshot,
     SessionCompareCache,
+    demo_snapshot_is_compare_ready,
+    load_or_analyze_demo_session,
     sessions_are_identical,
     try_build_demo_snapshot,
 )
@@ -25,7 +28,7 @@ def test_compare_metrics_diff_tones() -> None:
         cadence_spm=118.0,
         walking_speed_m_s=1.28,
         symmetry_pct=95.0,
-        stability_label="High",
+        stability_label="Acceptable",
         stability_margin_m=0.05,
         com_excursion_m=0.04,
         knee_rom_deg=62.0,
@@ -56,13 +59,16 @@ def test_compare_metrics_diff_tones() -> None:
     )
     result = compare_session_metrics(left, right)
     by_name = {d.name: d for d in result.diffs}
+    # Primary gait metrics: higher Session B is improvement (abnormal vs normal → worse).
     assert by_name["Cadence difference"].tone_right == "worse"
     assert by_name["ROM difference"].tone_right == "worse"
-    assert by_name["Step length difference"].tone_right == "worse"
-    assert by_name["Stability difference"].tone_right == "worse"
-    assert by_name["Virtual GRF difference"].tone_right == "worse"
-    assert by_name["Timeline difference"].delta is not None
     assert by_name["Walking speed"].tone_right == "worse"
+    # Still context-neutral (no clinical better/worse).
+    assert by_name["Step length difference"].tone_right == "neutral"
+    assert by_name["Virtual GRF difference"].tone_right == "neutral"
+    assert by_name["Timeline difference"].delta is not None
+    # Directionality-defined metrics may use better/worse.
+    assert by_name["Stability difference"].tone_right == "worse"
     assert by_name["Symmetry"].tone_right == "worse"
     assert by_name["COM excursion"].tone_right == "worse"
     assert by_name["Gait quality"].tone_right == "worse"
@@ -124,6 +130,24 @@ def test_sessions_are_identical_detection() -> None:
     assert not sessions_are_identical(snap, other)
 
 
+def test_sessions_with_different_keys_but_same_recording_are_identical(tmp_path) -> None:
+    recording = tmp_path / "walk.mp4"
+    left = AnalyzedSessionSnapshot(
+        key="analysis-a",
+        label="A",
+        source=str(recording),
+        n_frames=10,
+    )
+    right = AnalyzedSessionSnapshot(
+        key="analysis-b",
+        label="B",
+        video_path=str(recording.parent / "." / recording.name),
+        n_frames=8,
+    )
+
+    assert sessions_are_identical(left, right)
+
+
 def test_normal_vs_abnormal_from_disk_nonzero() -> None:
     """Independent Normal and Abnormal pose caches must produce non-zero diffs."""
     normal = try_build_demo_snapshot("normal")
@@ -148,6 +172,23 @@ def test_normal_vs_abnormal_from_disk_nonzero() -> None:
         "Expected non-zero Normal vs Abnormal differences; "
         f"got {[d.display for d in result.diffs]}"
     )
+
+
+def test_load_or_analyze_demo_session_is_compare_ready() -> None:
+    """Cached demo poses must yield a Compare-ready Session B without faking metrics."""
+    snap, err = load_or_analyze_demo_session("abnormal")
+    if snap is None:
+        import pytest
+
+        pytest.skip(f"abnormal demo analysis unavailable: {err}")
+    assert err is None
+    assert snap.key == "abnormal"
+    assert snap.sequence is not None
+    assert int(snap.n_frames) > 0
+    assert demo_snapshot_is_compare_ready(snap)
+    assert snap.metrics.knee_rom_deg is not None
+    assert snap.metrics.stability_margin_m is not None
+    assert snap.video_path or snap.frame_paths
 
 
 def test_cache_pins_independent_sessions() -> None:
@@ -181,7 +222,235 @@ def test_extract_compare_metrics_empty() -> None:
     m = extract_compare_metrics(label="Empty", session_key="x")
     assert m.label == "Empty"
     assert m.gait_quality is None
-    assert m.display_map()["Gait Quality"] == "—"
+    assert m.display_map()["Gait Quality"] == "N/A"
+
+
+def test_display_map_uses_na_for_missing_metrics() -> None:
+    m = CompareMetrics(label="Partial", knee_rom_deg=55.0)
+    dm = m.display_map()
+    assert dm["Knee ROM"] == "55°"
+    assert dm["Gait Quality"] == "N/A"
+    assert dm["Cadence"] == "N/A"
+    assert dm["Speed"] == "N/A"
+
+
+def test_compare_metrics_reuses_analyzed_cycle_cadence() -> None:
+    from types import SimpleNamespace
+
+    cycles = SimpleNamespace(
+        metrics=SimpleNamespace(
+            cadence_steps_per_min=108.0,
+            gait_cycle_count=3,
+            detected_cycle_count=4,
+        )
+    )
+
+    metrics = extract_compare_metrics(label="Session B", cycles=cycles)
+
+    assert metrics.cadence_spm == 108.0
+    assert metrics.display_map()["Cadence"] == "108 steps/min"
+
+
+def test_compare_metrics_reuses_available_summary_cadence() -> None:
+    from types import SimpleNamespace
+
+    summary = SimpleNamespace(
+        overall_gait_quality=None,
+        cadence=SimpleNamespace(available=True, value="96 steps/min"),
+        symmetry=None,
+        stability_margin=None,
+    )
+
+    metrics = extract_compare_metrics(label="Session B", summary=summary)
+
+    assert metrics.cadence_spm == 96.0
+
+
+def test_compare_metrics_keeps_zero_symmetry_when_analysis_reports_it() -> None:
+    from types import SimpleNamespace
+
+    class FalseyMetric:
+        value = 0.0
+
+        def __bool__(self) -> bool:
+            return False
+
+    biomechanical = SimpleNamespace(
+        gait_quality=None,
+        gait_metrics=None,
+        symmetry=SimpleNamespace(overall_symmetry_pct=FalseyMetric()),
+        stability_margin=None,
+        center_of_mass=None,
+    )
+
+    metrics = extract_compare_metrics(
+        label="Session B",
+        biomechanical=biomechanical,
+    )
+
+    assert metrics.symmetry_pct == 0.0
+
+
+def test_compare_metric_display_units_match_difference_sources() -> None:
+    metrics = CompareMetrics(
+        cadence_spm=102.0,
+        walking_speed_m_s=1.15,
+        symmetry_pct=88.0,
+        stability_margin_m=0.032,
+        knee_rom_deg=54.0,
+    )
+    display = metrics.display_map()
+
+    assert display["Cadence"] == "102 steps/min"
+    assert display["Speed"] == "1.15 m/s"
+    assert display["Symmetry"] == "88%"
+    assert display["Mean COM–BoS Margin"] == "0.032 m"
+    assert display["Knee ROM"] == "54°"
+
+
+def test_compare_metrics_ready_requires_primary_kpi() -> None:
+    from stablewalk.ui.tk.dashboard_compare import ComparisonModeController
+
+    incomplete = AnalyzedSessionSnapshot(
+        key="abnormal",
+        label="Abnormal",
+        n_frames=20,
+        frame_paths=[],
+        metrics=CompareMetrics(label="Abnormal", knee_rom_deg=40.0),
+    )
+    # ready property needs sequence/frames/skeletons
+    incomplete_ready = AnalyzedSessionSnapshot(
+        key="abnormal",
+        label="Abnormal",
+        n_frames=20,
+        skeletons={0: object()},  # type: ignore[dict-item]
+        metrics=CompareMetrics(label="Abnormal", knee_rom_deg=40.0, duration_s=2.0),
+    )
+    complete = AnalyzedSessionSnapshot(
+        key="abnormal",
+        label="Abnormal",
+        n_frames=20,
+        skeletons={0: object()},  # type: ignore[dict-item]
+        metrics=CompareMetrics(
+            label="Abnormal",
+            cadence_spm=80.0,
+            knee_rom_deg=40.0,
+            duration_s=2.0,
+        ),
+    )
+    assert not ComparisonModeController._metrics_ready(None)
+    assert not ComparisonModeController._metrics_ready(incomplete)
+    assert not ComparisonModeController._metrics_ready(incomplete_ready)
+    assert ComparisonModeController._metrics_ready(complete)
+
+
+def test_sessions_are_independent_rejects_shared_path_and_metrics() -> None:
+    from stablewalk.ui.tk.dashboard_compare import ComparisonModeController
+    import numpy as np
+
+    shared_path = np.zeros((5, 3), dtype=float)
+    shared_metrics = CompareMetrics(label="Shared", cadence_spm=100.0)
+    a = AnalyzedSessionSnapshot(
+        key="normal",
+        label="Normal",
+        n_frames=10,
+        skeletons={0: object()},  # type: ignore[dict-item]
+        metrics=CompareMetrics(label="Normal", cadence_spm=110.0),
+        path_xyz=shared_path,
+    )
+    b_alias = AnalyzedSessionSnapshot(
+        key="abnormal",
+        label="Abnormal",
+        n_frames=10,
+        skeletons={0: object()},  # type: ignore[dict-item]
+        metrics=shared_metrics,
+        path_xyz=shared_path,
+    )
+    b_ok = AnalyzedSessionSnapshot(
+        key="abnormal",
+        label="Abnormal",
+        n_frames=12,
+        skeletons={0: object()},  # type: ignore[dict-item]
+        metrics=CompareMetrics(label="Abnormal", cadence_spm=80.0),
+        path_xyz=np.ones((5, 3), dtype=float),
+    )
+    ctrl = ComparisonModeController.__new__(ComparisonModeController)
+    assert not ctrl._sessions_are_independent(
+        a, a, left_key="normal", right_key="abnormal"
+    )
+    assert not ctrl._sessions_are_independent(
+        a, b_alias, left_key="normal", right_key="abnormal"
+    )
+    assert not ctrl._sessions_are_independent(
+        a, b_ok, left_key="normal", right_key="normal"
+    )
+    assert ctrl._sessions_are_independent(
+        a, b_ok, left_key="normal", right_key="abnormal"
+    )
+
+
+def test_both_sessions_chart_ready_loading_and_incomplete_messages() -> None:
+    """Trajectories stay locked until both independent sessions are valid."""
+    from types import SimpleNamespace
+    import numpy as np
+
+    from stablewalk.ui.tk.dashboard_compare import ComparisonModeController
+
+    cache = SessionCompareCache()
+    a = AnalyzedSessionSnapshot(
+        key="normal",
+        label="Normal",
+        n_frames=20,
+        skeletons={0: object()},  # type: ignore[dict-item]
+        metrics=CompareMetrics(label="Normal", cadence_spm=110.0, knee_rom_deg=60.0),
+        path_xyz=np.zeros((8, 3), dtype=float),
+    )
+    cache.pin(a)
+    cache.set_slot("left", "normal")
+    cache.set_slot("right", "abnormal")
+
+    ctrl = ComparisonModeController.__new__(ComparisonModeController)
+    ctrl.gui = SimpleNamespace(_compare_session_cache=cache)
+    ctrl._loading_keys = {"abnormal"}
+    ctrl._failed_snapshot_keys = set()
+    ctrl._playing = False
+    ctrl.btn_play = None
+
+    ready, message = ctrl._both_sessions_chart_ready()
+    assert ready is False
+    assert message == "Loading Session B..."
+
+    ctrl._loading_keys.clear()
+    b_incomplete = AnalyzedSessionSnapshot(
+        key="abnormal",
+        label="Abnormal",
+        n_frames=18,
+        skeletons={0: object()},  # type: ignore[dict-item]
+        metrics=CompareMetrics(label="Abnormal", knee_rom_deg=40.0),
+        path_xyz=np.ones((8, 3), dtype=float),
+    )
+    cache.pin(b_incomplete)
+    ready, message = ctrl._both_sessions_chart_ready()
+    assert ready is False
+    assert message == f"Session B analysis is incomplete.\n{SESSION_B_NEXT_ACTION}"
+
+    b_ok = AnalyzedSessionSnapshot(
+        key="abnormal",
+        label="Abnormal",
+        n_frames=18,
+        skeletons={0: object()},  # type: ignore[dict-item]
+        metrics=CompareMetrics(
+            label="Abnormal", cadence_spm=80.0, knee_rom_deg=40.0
+        ),
+        path_xyz=np.ones((8, 3), dtype=float),
+    )
+    cache.pin(b_ok)
+    ready, message = ctrl._both_sessions_chart_ready()
+    assert ready is True
+    assert message == ""
+    assert cache.left() is not cache.right()
+    assert cache.left().metrics is not cache.right().metrics
+    assert cache.left().path_xyz is not cache.right().path_xyz
 
 
 def test_joint_angle_difference_heatmap_empty() -> None:

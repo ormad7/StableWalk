@@ -9,13 +9,13 @@ RELIABILITY_TOOLTIP = (
     "MediaPipe-based IK is not clinical-grade motion capture."
 )
 
-PRESENTATION_MODE_TITLE = "Presentation Demo Mode"
-PRESENTATION_MODE_SUBTITLE = "Synthetic demo — no video export required"
+PRESENTATION_MODE_TITLE = "Example Session Mode"
+PRESENTATION_MODE_SUBTITLE = "Synthetic example — no video export required"
 PRESENTATION_IK_STATUS = "StableWalk IK: Requires analyzed video"
 PRESENTATION_MAPPING_STATUS = "Mapping: Available after video export"
 PRESENTATION_EXPORT_SUMMARY = "Export: Load video to export"
-PRESENTATION_EXPORT_FILE = "Demo mode"
-PRESENTATION_LAST_EXPORT = "Last Export: Demo mode"
+PRESENTATION_EXPORT_FILE = "Example session"
+PRESENTATION_LAST_EXPORT = "Last Export: Example session"
 PRESENTATION_LAST_IK = "Last IK: Requires analyzed video"
 PRESENTATION_RELIABILITY = "Reliability: After real-video export"
 PRESENTATION_WORKFLOW_NOTE = (
@@ -56,8 +56,8 @@ def compact_mode_line(*, sdk: bool) -> str:
 
 def compact_opensim_ready_line(*, sdk: bool, presentation: bool = False) -> str:
     if presentation:
-        return "OpenSim: Demo mode"
-    return "OpenSim: Ready" if sdk else "OpenSim: Not installed"
+        return "OpenSim: Example session"
+    return "OpenSim: SDK installed" if sdk else "OpenSim: SDK unavailable"
 
 
 def compact_model_line(*, model_valid: bool) -> str:
@@ -71,7 +71,7 @@ def compact_export_summary_line(
     presentation: bool = False,
 ) -> str:
     if presentation:
-        return "Export: Demo mode"
+        return "Export: Example session"
     if export_complete:
         return "Export: Complete"
     if has_session:
@@ -268,10 +268,14 @@ def last_export_line(*, completed: bool) -> str:
     return "Last Export: Completed" if completed else "Last Export: Not yet exported"
 
 
-def last_ik_line(*, run_state: str | None, ik_output_on_disk: bool) -> str:
+def last_ik_line(*, run_state: str | None, ik_output_on_disk: bool = False) -> str:
+    """Last IK line from the recorded process state only — never from leftover files."""
+    del ik_output_on_disk  # File presence is not IK success.
     if run_state == "Failed":
         return "Last IK: Failed"
-    if run_state == "Completed" or ik_output_on_disk:
+    if run_state == "Running":
+        return "Last IK: Running"
+    if run_state == "Completed":
         return "Last IK: Completed"
     return "Last IK: Not yet run"
 

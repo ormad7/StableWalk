@@ -70,7 +70,7 @@ python scripts/validate_demo_candidate.py --video data/demo_videos/candidates/ga
 | **2 (interim)** | [WeightGait regular walk](https://datashare.ed.ac.uk/bitstream/handle/10283/8956/1_Normal_Gait.mp4?sequence=15&isAllowed=y) | Auto-download via fetch script | Indoor, full body, ~60 frames, frontal RGB-D camera |
 | **3 (alternative)** | [Toronto Older Adults Gait Archive](https://doi.org/10.6084/m9.figshare.c.5515953) | Figshare `videos/` folder (CC-BY 4.0) | Older adults; front/back walks; 60 s clips |
 
-**Do not use:** Pexels stock (current `normal_gait.mp4`) — subject too small, poor feet, 0 cycles.
+**Do not use:** the deprecated Pexels stock clip (backed up 2026-10-29). Current `normal_gait.mp4` is GAVD `gait_pat=normal` (YouTube `3KnFt8bH3tE`), validator ACCEPT.
 
 ---
 

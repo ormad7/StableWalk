@@ -1,0 +1,26 @@
+{
+  "filename": "abnormal_gait.mp4",
+  "installed_on": "2026-11-01",
+  "replaces": "Utah neuropathic gait_ab_10 (backed up under data/demo_videos/backups/examples_20261101_before_download/)",
+  "source": "GAVD",
+  "source_url": "https://github.com/Rahmyyy/GAVD",
+  "youtube_id": "M-_cogKwXK4",
+  "youtube_url": "https://www.youtube.com/watch?v=M-_cogKwXK4",
+  "youtube_title": "1.12. Vascular Parkinsonism - Parkinsonism and Related [Spring Video Atlas]",
+  "seq": "cljwrgl2p00243n6lwusay4pt",
+  "gait_pat": "parkinsons",
+  "gavd_dataset_column": "Abnormal Gait",
+  "cam_view": "front",
+  "annotated_frames": [4625, 5274],
+  "installed_probe": {
+    "fps": 23.976,
+    "frames": 649,
+    "duration_s": 27.069,
+    "width": 480,
+    "height": 360
+  },
+  "sha256": "e9ae60033621e4ff298e3dc72c37414bd923b673881e77f4488cc053915e1cba",
+  "not_labels": ["dementia", "neuropathic", "Health&Gait FGS"],
+  "timing": "original 23.976 FPS; not looped, slowed, or interpolated",
+  "download_method": "yt-dlp of the GAVD-listed YouTube URL, then ffmpeg trim to annotated frames"
+}

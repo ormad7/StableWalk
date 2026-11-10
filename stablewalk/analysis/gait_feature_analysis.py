@@ -544,10 +544,34 @@ def compute_normalized_gait_features(
     return features
 
 
+# Path + mtime + size → parsed columns. Avoids re-reading MOT on every knee /
+# quality / pipeline refresh that hits the same IK output.
+_MOT_TIMESERIES_CACHE: dict[tuple[str, int, int], dict[str, np.ndarray]] = {}
+_MOT_TIMESERIES_CACHE_MAX = 12
+
+
+def clear_opensim_mot_timeseries_cache() -> None:
+    """Drop cached OpenSim ``.mot`` parses (call when exports are overwritten)."""
+    _MOT_TIMESERIES_CACHE.clear()
+
+
 def read_opensim_mot_timeseries(mot_path: Path) -> dict[str, np.ndarray] | None:
-    """Parse OpenSim ``.mot`` angle columns (time + coordinates)."""
+    """Parse OpenSim ``.mot`` angle columns (time + coordinates).
+
+    Results are cached by resolved path + ``mtime_ns`` + size so repeated UI
+    refreshes do not re-parse the same IK motion file.
+    """
+    path = Path(mot_path)
     try:
-        text = mot_path.read_text(encoding="utf-8", errors="replace")
+        st = path.stat()
+        cache_key = (str(path.resolve()), int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        return None
+    cached = _MOT_TIMESERIES_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -573,7 +597,14 @@ def read_opensim_mot_timeseries(mot_path: Path) -> dict[str, np.ndarray] | None:
             continue
     if len(cols.get("time", [])) < 2:
         return None
-    return {k: np.asarray(v, dtype=float) for k, v in cols.items()}
+    parsed = {k: np.asarray(v, dtype=float) for k, v in cols.items()}
+    if len(_MOT_TIMESERIES_CACHE) >= _MOT_TIMESERIES_CACHE_MAX:
+        try:
+            _MOT_TIMESERIES_CACHE.pop(next(iter(_MOT_TIMESERIES_CACHE)))
+        except (StopIteration, KeyError):
+            _MOT_TIMESERIES_CACHE.clear()
+    _MOT_TIMESERIES_CACHE[cache_key] = parsed
+    return parsed
 
 
 def _angle_at_time_from_mot(
@@ -820,4 +851,5 @@ __all__ = [
     "resample_cycle_trajectory",
     "gait_cycle_percent_grid",
     "read_opensim_mot_timeseries",
+    "clear_opensim_mot_timeseries_cache",
 ]

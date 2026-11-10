@@ -1,4 +1,4 @@
-"""Motion Analysis — temporal gait metrics as modern KPI cards."""
+"""Phase-timing gait metrics as Primary / Secondary / Technical KPI cards."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from stablewalk.analysis.biomechanical.walking_speed import (
     is_reportable_walking_speed,
 )
 from stablewalk.analysis.gait_cycle_analysis import GaitTemporalMetrics
+from stablewalk.ui.metric_tooltips import get_metric_tooltip
 from stablewalk.ui.scientific_labels import (
     LABEL_CADENCE,
     LABEL_WALKING_SPEED,
@@ -19,45 +20,73 @@ from stablewalk.ui.scientific_labels import (
 )
 from stablewalk.ui.summary_metric_style import interpret_summary_metric
 from stablewalk.ui.theme import DASHBOARD_CARD_PAD, PANEL
-from stablewalk.ui.tk.kpi_cards import create_kpi_card, update_kpi_card
-from stablewalk.ui.metric_tooltips import get_metric_tooltip
+from stablewalk.ui.tk.kpi_cards import (
+    create_kpi_card,
+    create_metric_group_label,
+    create_technical_details_panel,
+    update_kpi_card,
+)
 
-_METRIC_SPECS: tuple[tuple[str, str, str, float, str], ...] = (
-    ("stance_pct", "Stance", "percent", 100.0, "calculated"),
-    ("swing_pct", "Swing", "percent", 100.0, "calculated"),
-    ("double_support_pct", "Double Support", "percent", 100.0, "calculated"),
-    ("single_support_pct", "Single Support", "percent", 100.0, "calculated"),
-    ("step_length", "Step Length", "meters", 1.2, "estimated"),
-    ("step_width", "Step Width", "meters", 0.35, "estimated"),
-    ("step_time", "Step Time", "seconds", 1.4, "calculated"),
-    ("stride_time", "Stride Time", "seconds", 2.8, "calculated"),
-    ("contact_duration", "Contact Time", "seconds", 1.2, "calculated"),
-    ("cadence", LABEL_CADENCE, "cadence", 180.0, "calculated"),
-    ("walking_speed", LABEL_WALKING_SPEED, "speed", 2.0, "estimated"),
+# (key, title, kind, scale, data_tier, visual_tier)
+_METRIC_SPECS: tuple[tuple[str, str, str, float, str, str], ...] = (
+    ("cadence", LABEL_CADENCE, "cadence", 180.0, "calculated", "primary"),
+    ("stance_pct", "Stance", "percent", 100.0, "calculated", "primary"),
+    ("walking_speed", LABEL_WALKING_SPEED, "speed", 2.0, "estimated", "secondary"),
+    ("swing_pct", "Swing", "percent", 100.0, "calculated", "secondary"),
+    ("double_support_pct", "Double Support", "percent", 100.0, "calculated", "secondary"),
+    ("single_support_pct", "Single Support", "percent", 100.0, "calculated", "secondary"),
+    ("step_length", "Step Length", "meters", 1.2, "estimated", "technical"),
+    ("step_width", "Step Width", "meters", 0.35, "estimated", "technical"),
+    ("step_time", "Step Time", "seconds", 1.4, "calculated", "technical"),
+    ("stride_time", "Stride Time", "seconds", 2.8, "calculated", "technical"),
+    ("contact_duration", "Contact Time", "seconds", 1.2, "calculated", "technical"),
+)
+
+_GROUP_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Primary", ("cadence", "stance_pct")),
+    (
+        "Secondary",
+        ("walking_speed", "swing_pct", "double_support_pct", "single_support_pct"),
+    ),
+    (
+        "Technical",
+        (
+            "step_length",
+            "step_width",
+            "step_time",
+            "stride_time",
+            "contact_duration",
+        ),
+    ),
 )
 
 
 def _card_title(text: str) -> str:
-    return f"  {text}  "
+    from stablewalk.ui.theme import format_labelframe_title
+
+    return format_labelframe_title(text)
 
 
 def build_motion_temporal_metrics_panel(gui, parent: tk.Misc) -> ttk.LabelFrame:
-    """Install the right-side temporal gait metrics panel on Motion Analysis."""
+    """Install phase-timing KPIs (Primary / Secondary / Technical Details)."""
     panel = ttk.LabelFrame(
         parent,
-        text=_card_title("Temporal Gait Metrics"),
+        text=_card_title("Phase Timing & Stability Drivers"),
         style="Card.TLabelframe",
         padding=DASHBOARD_CARD_PAD,
     )
     panel.columnconfigure(0, weight=1)
 
+    from stablewalk.ui.tk.tab_grid import grid_fill, stretch_columns, stretch_rows
+
     host = tk.Frame(panel, bg=PANEL, highlightthickness=0)
-    host.pack(fill=tk.BOTH, expand=True)
-    host.columnconfigure(0, weight=1)
+    stretch_columns(panel)
+    stretch_rows(panel)
+    grid_fill(host)
+    stretch_columns(host)
 
     gui._motion_metrics_host = host
     gui._motion_kpi_cards = {}
-    # Compatibility shims for older update helpers / tests.
     gui._motion_metric_values = {}
     gui._motion_metric_fills = {}
     gui._motion_metric_tiers = {}
@@ -73,25 +102,48 @@ def build_motion_temporal_metrics_panel(gui, parent: tk.Misc) -> ttk.LabelFrame:
         "stride_time": "gait_cycle",
         "contact_duration": "heel_strike",
     }
+    specs_by_key = {row[0]: row for row in _METRIC_SPECS}
 
-    for key, title, _kind, _scale, tier in _METRIC_SPECS:
-        tip = get_metric_tooltip(tip_map.get(key, "")) or f"{title} — updates after gait analysis"
-        show_bar = _kind in ("percent", "cadence", "speed")
-        kpi = create_kpi_card(
-            host,
-            key=key,
-            title=title,
-            tooltip=tip,
-            compact=True,
-            show_bar=show_bar,
-            fill=False,
-        )
-        gui._motion_kpi_cards[key] = kpi
-        gui._motion_metric_values[key] = kpi.value_lbl
-        gui._motion_metric_fills[key] = kpi.bar_fill or kpi.accent
-        gui._motion_metric_tiers[key] = kpi.quality_lbl
-        # Seed quality label with data tier until live quality is known.
-        kpi.quality_lbl.configure(text=tier.replace("_", " ").title())
+    details = create_technical_details_panel(
+        host,
+        title="Technical details",
+        bg=PANEL,
+        start_expanded=False,
+    )
+    gui._motion_technical_details = details
+
+    for group_title, keys in _GROUP_ORDER:
+        if group_title == "Technical":
+            group_parent = details.content
+            create_metric_group_label(group_parent, group_title, bg=PANEL)
+        else:
+            group_parent = host
+            create_metric_group_label(group_parent, group_title, bg=PANEL)
+
+        for key in keys:
+            _key, title, kind, _scale, data_tier, visual_tier = specs_by_key[key]
+            tip = get_metric_tooltip(tip_map.get(key, "")) or f"{title} — updates after gait analysis"
+            show_bar = kind in ("percent", "cadence", "speed") and visual_tier != "technical"
+            kpi = create_kpi_card(
+                group_parent,
+                key=key,
+                title=title,
+                tooltip=tip,
+                compact=visual_tier != "primary",
+                show_bar=show_bar,
+                fill=False,
+                tier=visual_tier,
+            )
+            gui._motion_kpi_cards[key] = kpi
+            gui._motion_metric_values[key] = kpi.value_lbl
+            gui._motion_metric_fills[key] = kpi.bar_fill or kpi.accent
+            gui._motion_metric_tiers[key] = kpi.quality_lbl
+            if visual_tier != "technical":
+                kpi.quality_lbl.configure(text=data_tier.replace("_", " ").title())
+
+    # Keep Details toggle after Primary/Secondary groups.
+    details.frame.pack_forget()
+    details.frame.pack(fill=tk.X, pady=(8, 0))
 
     gui._motion_temporal_metrics_panel = panel
     return panel
@@ -106,16 +158,21 @@ def _metric_value(
 
 
 def _unavailable_with_confidence(metric: MetricWithConfidence | None) -> str:
-    """Show confidence instead of inventing a number when the metric is gated."""
+    """Show N/A with reason instead of inventing a number when gated."""
+    from stablewalk.ui.value_provenance import format_na
+
     if metric is None:
-        return "—"
+        return format_na("metric not computed")
     conf = float(getattr(metric, "confidence", 0.0) or 0.0)
+    note = str(getattr(metric, "note", "") or "").strip()
+    if note:
+        # Prefer analysis note; avoid inventing clinical values.
+        if note.upper().startswith("N/A"):
+            return format_na(note[3:].lstrip(" —:-") or "unavailable", confidence=conf or None)
+        return format_na(note, confidence=conf or None)
     if conf > 0.0:
-        return f"N/A ({conf:.0%})"
-    note = str(getattr(metric, "note", "") or "")
-    if note.startswith("N/A"):
-        return "N/A"
-    return "—"
+        return format_na("value gated", confidence=conf)
+    return format_na("value not available")
 
 
 def _split_display(key: str, value: float, *, walking_speed_metric=None) -> tuple[str, str]:
@@ -164,7 +221,7 @@ def _quality_for_motion(key: str, value: float | None, *, view_type: str | None 
         return interpret_summary_metric("walking_speed", field, view_type=view_type)  # type: ignore[arg-type]
     if key in ("stance_pct", "swing_pct"):
         # Typical adult walking: stance ~60%, swing ~40%.
-        # Frontal monocular contact stretches these — use a wide band.
+        # Frontal monocular contact stretches these Γאפ use a wide band.
         target = 60.0 if key == "stance_pct" else 40.0
         delta = abs(value - target)
         normal_max = 14.0 if view_limited else 10.0
@@ -175,7 +232,7 @@ def _quality_for_motion(key: str, value: float | None, *, view_type: str | None 
             return "borderline"
         return soften_view_limited_level("abnormal", view_limited=view_limited)
     if key in ("double_support_pct", "single_support_pct"):
-        # Total DS ≈ 20%; ipsilateral SS ≈ 40% of the gait cycle.
+        # Total DS Γיט 20%; ipsilateral SS Γיט 40% of the gait cycle.
         target = 20.0 if key == "double_support_pct" else 40.0
         delta = abs(value - target)
         normal_max = 14.0 if view_limited else 10.0
@@ -251,7 +308,7 @@ def update_motion_temporal_metrics_panel(gui) -> None:
     ws_metric = gait_metrics.walking_speed if gait_metrics is not None else None
 
     data = _collect_metric_data(gait_metrics, temporal)
-    scales = {key: scale for key, _t, _k, scale, _tier in _METRIC_SPECS}
+    scales = {key: scale for key, _t, _k, scale, _data, _tier in _METRIC_SPECS}
     view_type = _session_view_type(gui)
     metric_objs = {
         "stance_pct": getattr(gait_metrics, "stance_pct", None) if gait_metrics else None,
@@ -270,7 +327,7 @@ def update_motion_temporal_metrics_panel(gui) -> None:
         "walking_speed": ws_metric,
     }
 
-    for key, _title, _kind, scale, _tier in _METRIC_SPECS:
+    for key, _title, _kind, scale, _data, _tier in _METRIC_SPECS:
         card = cards.get(key)
         if card is None:
             continue
@@ -301,7 +358,7 @@ def update_motion_temporal_metrics_panel(gui) -> None:
 
         value, unit = _split_display(key, raw, walking_speed_metric=ws_metric)
         # Keep value+unit as one readable string so compact cards never hide the number.
-        if unit and value not in ("—", "N/A", ""):
+        if unit and value not in ("Γאפ", "N/A", ""):
             display = f"{value} {unit}".strip()
             value, unit = display, ""
         fraction = raw / scale if scale > 0 else 0.0

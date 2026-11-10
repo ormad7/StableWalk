@@ -33,7 +33,18 @@ from mediapipe.tasks.python.vision.core import vision_task_running_mode as runni
 from stablewalk.pose.enrichment import enrich_pose_sequence
 from stablewalk.pose.kinematics import compute_joint_angles
 from stablewalk.model_loader import get_pose_model_path
-from stablewalk.models.pose_data import FrameExtractionResult, Keypoint, PoseFrame, PoseSequence
+from stablewalk.models.pose_data import (
+    FrameExtractionResult,
+    Keypoint,
+    PoseFrame,
+    PoseSequence,
+    REJECTION_INCOMPLETE_BODY,
+    REJECTION_INSUFFICIENT_GAIT_DOF,
+    REJECTION_NO_LANDMARKS,
+    REJECTION_NONE,
+    REJECTION_SUBJECT_AMBIGUOUS,
+    REJECTION_SUBJECT_LOCK_LOST,
+)
 from stablewalk.pose.skeleton import draw_skeleton_on_bgr
 from stablewalk.pose.validation import has_full_body_pose, meets_min_gait_dof
 from stablewalk.pose.video import VideoFrame, VideoReader
@@ -45,6 +56,7 @@ PoseLandmarkerOptions = pose_landmarker_lib.PoseLandmarkerOptions
 PoseLandmarksConnections = pose_landmarker_lib.PoseLandmarksConnections
 PoseLandmark = pose_landmarker_lib.PoseLandmark
 
+# BlazePose / MediaPipe Pose: 33 landmarks. These are detections, not DOFs.
 LANDMARK_NAMES = [e.name.lower() for e in PoseLandmark]
 
 
@@ -91,6 +103,9 @@ class PoseEstimator:
         *,
         video_mode: bool = False,
         require_full_body: bool = True,
+        num_poses: int = 2,
+        lock_subject: bool = True,
+        subject_selection=None,
     ) -> None:
         model_path = get_pose_model_path(model_variant)
         running_mode = (
@@ -102,7 +117,7 @@ class PoseEstimator:
         options = PoseLandmarkerOptions(
             base_options=base_options_lib.BaseOptions(model_asset_path=str(model_path)),
             running_mode=running_mode,
-            num_poses=1,
+            num_poses=max(1, int(num_poses)),
             min_pose_detection_confidence=min_detection_confidence,
             min_pose_presence_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
@@ -112,6 +127,9 @@ class PoseEstimator:
         self._timestamp_ms = 0
         self._min_confidence = min_detection_confidence
         self._require_full_body = require_full_body
+        self._lock_subject = bool(lock_subject) and max(1, int(num_poses)) > 1
+        self._subject_lock = None
+        self._subject_selection = subject_selection
 
     def close(self) -> None:
         self._landmarker.close()
@@ -129,6 +147,7 @@ class PoseEstimator:
     def reset_timeline(self) -> None:
         """Reset video-mode timestamps (call before a new video)."""
         self._timestamp_ms = 0
+        self._subject_lock = None
 
     def process_frame(
         self,
@@ -153,53 +172,127 @@ class PoseEstimator:
             results = self._landmarker.detect(mp_image)
 
         ts_ms = int(round(timestamp_s * 1000))
-        base = PoseFrame(
-            frame_index=frame_index,
-            image_path=image_path,
-            timestamp_s=timestamp_s,
-            timestamp_ms=ts_ms,
-            detected=False,
+        from stablewalk.pose.subject_lock import (
+            pick_subject,
+            pose_bbox_norm,
+            selection_for_source,
         )
 
-        if not results.pose_landmarks:
-            return base
-
-        keypoints = self._landmarks_to_keypoints(results.pose_landmarks[0])
-        keypoints = self._clamp_keypoints(keypoints)
-        keypoints = self._add_mid_hip(keypoints)
-
-        if self._require_full_body and not has_full_body_pose(keypoints):
+        def _frame(
+            *,
+            keypoints: list[Keypoint] | None = None,
+            joint_angles=None,
+            detected: bool = False,
+            skipped: bool = False,
+            rejection_reason: str = REJECTION_NONE,
+            n_people: int = 0,
+            subject_bbox: tuple[float, float, float, float] | None = None,
+            other_bboxes: list[tuple[float, float, float, float]] | None = None,
+            identity_locked: bool = False,
+            tracking_status: str = "",
+        ) -> PoseFrame:
             return PoseFrame(
                 frame_index=frame_index,
                 image_path=image_path,
                 timestamp_s=timestamp_s,
                 timestamp_ms=ts_ms,
+                keypoints=list(keypoints or []),
+                joint_angles=joint_angles,
+                detected=detected,
+                skipped=skipped,
+                rejection_reason=rejection_reason,
+                n_people=n_people,
+                subject_bbox=subject_bbox,
+                other_bboxes=list(other_bboxes or []),
+                identity_locked=identity_locked,
+                tracking_status=tracking_status,
+            )
+
+        if not results.pose_landmarks:
+            return _frame(
+                rejection_reason=REJECTION_NO_LANDMARKS,
+                tracking_status="unavailable",
+            )
+
+        candidates = []
+        for landmarks in results.pose_landmarks:
+            kps = self._add_mid_hip(self._clamp_keypoints(self._landmarks_to_keypoints(landmarks)))
+            candidates.append(kps)
+        n_people = len(candidates)
+        keypoints = candidates[0]
+        subject_bbox = pose_bbox_norm(keypoints)
+        others: list[tuple[float, float, float, float]] = []
+        identity_locked = n_people == 1
+        tracking_status = "locked" if identity_locked else ""
+        if self._lock_subject and len(candidates) >= 1:
+            selection = self._subject_selection or selection_for_source(image_path)
+            picked = pick_subject(
+                candidates,
+                self._subject_lock,
+                selection=selection,
+                time_s=timestamp_s,
+            )
+            self._subject_lock = picked.lock
+            others = list(picked.other_bboxes)
+            if picked.keypoints is None:
+                reason = picked.reason or REJECTION_SUBJECT_LOCK_LOST
+                if reason == "subject_identity_ambiguous":
+                    reason = REJECTION_SUBJECT_AMBIGUOUS
+                return _frame(
+                    rejection_reason=reason,
+                    n_people=n_people,
+                    subject_bbox=None,
+                    other_bboxes=others,
+                    identity_locked=False,
+                    tracking_status=picked.tracking_status,
+                )
+            keypoints = picked.keypoints
+            subject_bbox = picked.subject_bbox or pose_bbox_norm(keypoints)
+            identity_locked = bool(picked.identity_locked)
+            tracking_status = picked.tracking_status
+        else:
+            subject_bbox = pose_bbox_norm(keypoints)
+            others = [
+                b
+                for b in (pose_bbox_norm(kps) for kps in candidates[1:])
+                if b is not None
+            ]
+
+        if self._require_full_body and not has_full_body_pose(keypoints):
+            return _frame(
                 keypoints=keypoints,
-                detected=False,
                 skipped=True,
+                rejection_reason=REJECTION_INCOMPLETE_BODY,
+                n_people=n_people,
+                subject_bbox=subject_bbox,
+                other_bboxes=others,
+                identity_locked=identity_locked,
+                tracking_status=tracking_status or "locked",
             )
 
         joint_angles = compute_joint_angles(keypoints)
         if self._require_full_body and not meets_min_gait_dof(joint_angles):
-            return PoseFrame(
-                frame_index=frame_index,
-                image_path=image_path,
-                timestamp_s=timestamp_s,
-                timestamp_ms=ts_ms,
+            return _frame(
                 keypoints=keypoints,
                 joint_angles=joint_angles,
-                detected=False,
                 skipped=True,
+                rejection_reason=REJECTION_INSUFFICIENT_GAIT_DOF,
+                n_people=n_people,
+                subject_bbox=subject_bbox,
+                other_bboxes=others,
+                identity_locked=identity_locked,
+                tracking_status=tracking_status or "locked",
             )
 
-        return PoseFrame(
-            frame_index=frame_index,
-            image_path=image_path,
-            timestamp_s=timestamp_s,
-            timestamp_ms=ts_ms,
+        return _frame(
             keypoints=keypoints,
             joint_angles=joint_angles,
             detected=True,
+            n_people=n_people,
+            subject_bbox=subject_bbox,
+            other_bboxes=others,
+            identity_locked=identity_locked,
+            tracking_status=tracking_status or "locked",
         )
 
     def process_image(
@@ -246,8 +339,12 @@ class PoseEstimator:
                 "enable it in PoseEstimator(..., video_mode=True)."
             )
 
+        from stablewalk.pose.subject_lock import selection_for_source
+
         video_path = str(video_path)
         self.reset_timeline()
+        if self._subject_selection is None:
+            self._subject_selection = selection_for_source(video_path)
         pose_frames: list[PoseFrame] = []
 
         with VideoReader(video_path) as reader:
@@ -267,6 +364,11 @@ class PoseEstimator:
             source_video=video_path,
             fps=meta.fps,
             frames=pose_frames,
+            subject_selection=(
+                self._subject_selection.to_dict()
+                if self._subject_selection is not None
+                else {}
+            ),
         )
         if enrich_gait:
             self._attach_gait_labels(sequence)
@@ -288,8 +390,12 @@ class PoseEstimator:
 
         Avoids the legacy path of extract-all-JPGs then ``cv2.imread`` each file again.
         """
+        from stablewalk.pose.subject_lock import selection_for_source
+
         video_path = str(video_path)
         self.reset_timeline()
+        if self._subject_selection is None:
+            self._subject_selection = selection_for_source(video_path)
         pose_frames: list[PoseFrame] = []
         frame_paths: list[str] = []
         encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
@@ -325,6 +431,11 @@ class PoseEstimator:
             source_video=video_path,
             fps=meta.fps,
             frames=pose_frames,
+            subject_selection=(
+                self._subject_selection.to_dict()
+                if self._subject_selection is not None
+                else {}
+            ),
         )
         if enrich_gait:
             self._attach_gait_labels(sequence)
@@ -356,7 +467,11 @@ class PoseEstimator:
 
         Timestamps are ``frame_index / fps``.
         """
+        from stablewalk.pose.subject_lock import selection_for_source
+
         self.reset_timeline()
+        if self._subject_selection is None:
+            self._subject_selection = selection_for_source(source_video)
         frames = sorted(Path(frames_dir).glob(pattern))
         if max_frames is not None:
             frames = frames[:max_frames]
@@ -369,7 +484,16 @@ class PoseEstimator:
             if (i + 1) % 50 == 0:
                 logger.info("Processed %d / %d frames", i + 1, len(frames))
 
-        sequence = PoseSequence(source_video=source_video, fps=fps, frames=pose_frames)
+        sequence = PoseSequence(
+            source_video=source_video,
+            fps=fps,
+            frames=pose_frames,
+            subject_selection=(
+                self._subject_selection.to_dict()
+                if self._subject_selection is not None
+                else {}
+            ),
+        )
         if enrich_gait:
             self._attach_gait_labels(sequence)
         self._log_summary(pose_frames)
@@ -484,14 +608,25 @@ class PoseEstimator:
                 for vf in reader.iter_frames(max_frames=max_frames):
                     pf = pose_by_index.get(vf.index)
                     out = vf.bgr
-                    if pf and pf.keypoints and pf.detected:
+                    if pf and pf.keypoints and (pf.detected or pf.identity_locked):
                         out = self.draw_skeleton_on_frame(
                             vf.bgr,
                             pf.keypoints,
                             foot_contact=pf.foot_contact or None,
                         )
+                    if pf is not None:
+                        from stablewalk.pose.skeleton import draw_identity_on_bgr
+
+                        out = draw_identity_on_bgr(out, pf)
                     if draw_timestamp and pf:
-                        label = f"t={pf.timestamp_s:.2f}s  conf={self._mean_confidence(pf):.2f}"
+                        conf = self._mean_confidence(pf)
+                        status = pf.processing_status()
+                        label = (
+                            f"src={pf.frame_index}  t={pf.timestamp_s:.2f}s  "
+                            f"{status}"
+                        )
+                        if pf.detected:
+                            label += f"  conf={conf:.2f}"
                         cv2.putText(
                             out,
                             label,
@@ -604,12 +739,19 @@ class PoseEstimator:
     @staticmethod
     def _log_summary(pose_frames: list[PoseFrame]) -> None:
         detected = sum(1 for f in pose_frames if f.detected)
-        skipped = sum(1 for f in pose_frames if f.skipped)
+        filter_skip = sum(1 for f in pose_frames if f.processing_status() == "filter_skip")
+        lock_skip = sum(1 for f in pose_frames if f.processing_status() == "subject_lock_skip")
+        det_fail = sum(
+            1 for f in pose_frames if f.processing_status() == "detection_failed"
+        )
         logger.info(
-            "Pose estimation complete: %d / %d frames with pose (%d skipped)",
+            "Pose estimation complete: %d / %d detected; "
+            "filter_skip=%d lock_skip=%d detection_failed=%d",
             detected,
             len(pose_frames),
-            skipped,
+            filter_skip,
+            lock_skip,
+            det_fail,
         )
 
     @staticmethod
@@ -636,13 +778,23 @@ class PoseEstimator:
         keypoints: list[Keypoint] = []
         for i, lm in enumerate(landmarks):
             name = LANDMARK_NAMES[i] if i < len(LANDMARK_NAMES) else f"landmark_{i}"
+            vis = getattr(lm, "visibility", None)
+            presence = getattr(lm, "presence", None)
+            if vis is not None and presence is not None:
+                confidence = min(float(vis), float(presence))
+            elif vis is not None:
+                confidence = float(vis)
+            elif presence is not None:
+                confidence = float(presence)
+            else:
+                confidence = float("nan")
             keypoints.append(
                 Keypoint(
                     name=name,
                     x=float(lm.x),
                     y=float(lm.y),
                     z=float(lm.z or 0.0),
-                    visibility=float(lm.visibility if lm.visibility is not None else 1.0),
+                    visibility=confidence,
                 )
             )
         return keypoints

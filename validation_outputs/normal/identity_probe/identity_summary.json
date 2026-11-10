@@ -1,0 +1,103 @@
+{
+  "n_frames": 300,
+  "pose_ok": 110,
+  "identity_locked": 110,
+  "tracking_unavailable": 173,
+  "subject_selection": {
+    "seed_xy": [
+      0.12,
+      0.55
+    ],
+    "seed_bbox": null,
+    "policy": "seed",
+    "fingerprint": "xy:0.120,0.550"
+  },
+  "frames": {
+    "80": {
+      "detected": true,
+      "n_people": 2,
+      "processing_status": "pose_ok",
+      "tracking_status": "locked",
+      "identity_locked": true,
+      "rejection_reason": "",
+      "hip_x": 0.33,
+      "subject_bbox": [
+        0.0993,
+        0.2453,
+        0.4508,
+        0.841
+      ],
+      "other_bboxes": [
+        [
+          0.5743,
+          0.2099,
+          0.8987,
+          0.7624
+        ]
+      ]
+    },
+    "148": {
+      "detected": false,
+      "n_people": 1,
+      "processing_status": "subject_lock_skip",
+      "tracking_status": "unavailable",
+      "identity_locked": false,
+      "rejection_reason": "subject_identity_ambiguous",
+      "hip_x": null,
+      "subject_bbox": null,
+      "other_bboxes": [
+        [
+          0.2816,
+          0.2093,
+          0.6991,
+          0.8393
+        ]
+      ]
+    },
+    "191": {
+      "detected": false,
+      "n_people": 2,
+      "processing_status": "filter_skip",
+      "tracking_status": "locked",
+      "identity_locked": true,
+      "rejection_reason": "insufficient_gait_dof",
+      "hip_x": 0.6318,
+      "subject_bbox": null,
+      "other_bboxes": [
+        [
+          0.0716,
+          0.2128,
+          0.4419,
+          0.7622
+        ]
+      ]
+    },
+    "220": {
+      "detected": true,
+      "n_people": 2,
+      "processing_status": "pose_ok",
+      "tracking_status": "locked",
+      "identity_locked": true,
+      "rejection_reason": "",
+      "hip_x": 0.7876,
+      "subject_bbox": [
+        0.5398,
+        0.2343,
+        0.9905,
+        0.8512
+      ],
+      "other_bboxes": [
+        [
+          0.0,
+          0.1945,
+          0.1842,
+          0.7657
+        ]
+      ]
+    }
+  },
+  "poses_path": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\data\\output\\poses\\run_90d21a9367838db7_1793723907553_poses.json",
+  "run_name": "run_90d21a9367838db7_1793723907553",
+  "started_utc": "2026-11-03T16:38:27.553753+00:00",
+  "finished_utc": "2026-11-03T16:38:45.203695+00:00"
+}

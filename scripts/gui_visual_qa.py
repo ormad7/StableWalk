@@ -19,9 +19,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 DEMO_KEYS = (
-    ("abnormal", "Abnormal", "abnormal_gait.mp4"),
-    ("normal", "Normal", "normal_gait.mp4"),
-    ("athletic", "Performance", "athletic_walking.mp4"),
+    ("abnormal", "Abnormal Gait", "abnormal_gait_v2.mp4"),
+    ("normal", "Normal Gait", "normal_gait_v2.mp4"),
+    ("athletic", "Fast Walking", "fast_walking_v2.mp4"),
 )
 
 RESOLUTIONS = (
@@ -41,7 +41,7 @@ REMAINING_LIMITATIONS = [
     "Automated QA cannot detect matplotlib plot ghosting or subtle text-on-plot overlap; "
     "manual playback review is still advised.",
     "Summary comparability badge is not a dedicated widget — derived from gait evidence in Details only.",
-    "Demo pipeline uses up to 120 frames per load (DEMO_MAX_FRAMES); full-length scroll "
+    "Demo pipeline uses up to DEMO_MAX_FRAMES (900) per Examples load; full-length scroll "
     "behavior on very long clips is not re-tested here.",
 ]
 

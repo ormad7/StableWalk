@@ -102,7 +102,7 @@ def draw_knee_chart_cycle_mode(
         ax.text(
             0.5,
             0.5,
-            "Insufficient complete gait cycles for cycle-normalized analysis.",
+            "No reliable cycle detected — switch to Video Time or analyze a longer walk.",
             transform=ax.transAxes,
             ha="center",
             va="center",
@@ -119,7 +119,7 @@ def draw_knee_chart_cycle_mode(
         ax.text(
             0.5,
             0.5,
-            "Insufficient complete gait cycles for cycle-normalized analysis.",
+            "No reliable cycle detected — switch to Video Time or analyze a longer walk.",
             transform=ax.transAxes,
             ha="center",
             color=MUTED,
@@ -136,7 +136,7 @@ def draw_knee_chart_cycle_mode(
         ax.text(
             0.5,
             0.5,
-            "Insufficient complete gait cycles for cycle-normalized analysis.",
+            "No reliable cycle detected — switch to Video Time or analyze a longer walk.",
             transform=ax.transAxes,
             ha="center",
             color=MUTED,
@@ -152,6 +152,7 @@ def draw_knee_chart_cycle_mode(
             return
         from stablewalk.ui.viewers.chart_style import (
             _ANNOTATION_SIZE,
+            mark_secondary_annotation,
             series_plot_kwargs,
         )
 
@@ -160,7 +161,16 @@ def draw_knee_chart_cycle_mode(
         ax.plot(
             pct,
             mean,
-            **series_plot_kwargs(color=color, label=f"{line_label} (mean)", side=side),
+            **series_plot_kwargs(
+                color=color,
+                label=(
+                    f"{line_label} mean (dashed · □)"
+                    if side == "right"
+                    else f"{line_label} mean (solid · ○)"
+                ),
+                side=side,
+                markers=True,
+            ),
         )
         if show_envelope and len(traj.per_cycle) >= min_cycles_for_envelope:
             std = np.asarray(traj.std, dtype=float)
@@ -174,18 +184,20 @@ def draw_knee_chart_cycle_mode(
                 label=f"{line_label} ±1 SD",
             )
         if mean.size:
-            ax.annotate(
-                end_label,
-                xy=(float(pct[-1]), float(mean[-1])),
-                xytext=(5, 0),
-                textcoords="offset points",
-                color=color,
-                fontsize=_ANNOTATION_SIZE,
-                fontweight="bold",
-                va="center",
-                ha="left",
-                clip_on=True,
-                zorder=7,
+            mark_secondary_annotation(
+                ax.annotate(
+                    end_label,
+                    xy=(float(pct[-1]), float(mean[-1])),
+                    xytext=(5, 0),
+                    textcoords="offset points",
+                    color=color,
+                    fontsize=_ANNOTATION_SIZE,
+                    fontweight="bold",
+                    va="center",
+                    ha="left",
+                    clip_on=True,
+                    zorder=7,
+                )
             )
 
     _plot_traj(left, SIDE_LEFT, LABEL_LEFT_KNEE, LABEL_LEFT_KNEE, "left")
@@ -195,7 +207,7 @@ def draw_knee_chart_cycle_mode(
         ax.text(
             0.5,
             0.5,
-            "Insufficient complete gait cycles for cycle-normalized analysis.",
+            "No reliable cycle detected — switch to Video Time or analyze a longer walk.",
             transform=ax.transAxes,
             ha="center",
             color=MUTED,
@@ -216,15 +228,21 @@ def draw_knee_chart_cycle_mode(
     for traj in (left, right):
         if traj is not None and len(traj.per_cycle) >= MIN_CYCLES_FOR_CYCLE_MODE:
             finite.extend(_to_flexion(traj.mean, cc.angle_source).tolist())
+    from stablewalk.ui.viewers.chart_style import (
+        apply_presentation_layout,
+        autoscale_y_with_padding,
+    )
+
     if finite:
-        y_lo = min(float(np.min(finite)), KNEE_FLEXION_NORMAL_DEG[0])
-        y_hi = max(
-            float(np.max(finite)),
-            KNEE_FLEXION_NORMAL_DEG[1],
-            KNEE_FLEXION_ABNORMAL_ABOVE_DEG,
+        autoscale_y_with_padding(
+            ax,
+            [float(v) for v in finite],
+            include=(
+                KNEE_FLEXION_NORMAL_DEG[0],
+                KNEE_FLEXION_NORMAL_DEG[1],
+                KNEE_FLEXION_ABNORMAL_ABOVE_DEG,
+            ),
         )
-        margin = max(6.0, (y_hi - y_lo) * 0.10)
-        ax.set_ylim(y_lo - margin, y_hi + margin)
 
     draw_reference_y_bands(
         ax,
@@ -234,30 +252,66 @@ def draw_knee_chart_cycle_mode(
         label_normal=True,
     )
     _draw_cycle_phase_regions(ax)
-    style_chart_legend(ax, loc="upper right")
+    style_chart_legend(ax, ncol=1)
+    apply_presentation_layout(ax.figure, mode="single")
     return True
 
 
 def _draw_cycle_phase_regions(ax: Axes) -> None:
     """Stance / swing bands + typical HS (0%) and TO (~60%) markers."""
     from stablewalk.ui.viewers.chart_reference import EVENT_HS, EVENT_TO
+    from stablewalk.ui.viewers.chart_style import mark_secondary_annotation
 
-    ax.axvspan(0, 62, facecolor=BORDER, alpha=0.08, zorder=0, label="Stance (~0–62%)")
-    ax.axvspan(62, 100, facecolor=BORDER, alpha=0.04, zorder=0, label="Swing (~62–100%)")
-    ax.axvline(0.0, color=EVENT_HS, linewidth=1.0, alpha=0.55, linestyle=(0, (3, 2)), zorder=2.5)
-    ax.axvline(62.0, color=EVENT_TO, linewidth=1.0, alpha=0.55, linestyle=(0, (3, 2)), zorder=2.5)
+    mark_secondary_annotation(
+        ax.axvspan(0, 62, facecolor=BORDER, alpha=0.07, zorder=0, label="_nolegend_")
+    )
+    mark_secondary_annotation(
+        ax.axvspan(62, 100, facecolor=BORDER, alpha=0.035, zorder=0, label="_nolegend_")
+    )
+    mark_secondary_annotation(
+        ax.axvline(
+            0.0, color=EVENT_HS, linewidth=1.0, alpha=0.50, linestyle=(0, (3, 2)), zorder=2.5
+        )
+    )
+    mark_secondary_annotation(
+        ax.axvline(
+            62.0, color=EVENT_TO, linewidth=1.0, alpha=0.50, linestyle=(0, (3, 2)), zorder=2.5
+        )
+    )
     y0, y1 = ax.get_ylim()
     yr = y1 - y0 if y1 > y0 else 1.0
-    ax.scatter([0.0], [y1 - yr * 0.04], marker="v", s=32, color=EVENT_HS, zorder=6, label="Heel strike")
-    ax.scatter([62.0], [y0 + yr * 0.04], marker="^", s=32, color=EVENT_TO, zorder=6, label="Toe off")
+    mark_secondary_annotation(
+        ax.scatter(
+            [0.0],
+            [y1 - yr * 0.04],
+            marker="v",
+            s=28,
+            color=EVENT_HS,
+            zorder=6,
+            label="_nolegend_",
+        )
+    )
+    mark_secondary_annotation(
+        ax.scatter(
+            [62.0],
+            [y0 + yr * 0.04],
+            marker="^",
+            s=28,
+            color=EVENT_TO,
+            zorder=6,
+            label="_nolegend_",
+        )
+    )
 
 
 def style_gait_chart(ax: Axes, fig) -> None:
     from stablewalk.ui.viewers.chart_style import (
         apply_chart_grid,
         apply_chart_panel_style,
+        apply_motion_knee_layout,
         configure_numeric_y_axis,
         configure_percent_axis,
+        style_motion_knee_legend,
     )
 
     apply_chart_panel_style(ax)
@@ -268,9 +322,7 @@ def style_gait_chart(ax: Axes, fig) -> None:
 
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        from stablewalk.ui.viewers.chart_style import style_chart_legend
-
-        style_chart_legend(ax, loc="upper right", handles=handles, labels=labels)
+        style_motion_knee_legend(ax, handles=handles, labels=labels, ncol=1)
     if ax.get_xlabel() != "Gait Cycle (%)":
         ax.text(
             0.01,
@@ -283,4 +335,12 @@ def style_gait_chart(ax: Axes, fig) -> None:
             fontsize=8.5,
             zorder=12,
         )
-    fig.tight_layout(pad=1.35)
+    # Motion knee margins — title / legend / ticks stay inside the panel.
+    apply_motion_knee_layout(fig)
+    ax.tick_params(axis="x", pad=6)
+    ax.tick_params(axis="y", pad=4)
+    try:
+        ax.xaxis.labelpad = 8
+        ax.yaxis.labelpad = 6
+    except Exception:
+        pass

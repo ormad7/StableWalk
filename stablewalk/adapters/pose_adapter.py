@@ -10,6 +10,7 @@ Downstream OpenSim export: ``stablewalk.biomechanics.export_to_opensim_format(re
 from __future__ import annotations
 
 import logging
+import math
 
 from stablewalk.models.gait_motion import (
     DofSample,
@@ -183,10 +184,29 @@ def _extract_joint_positions(frame: PoseFrame) -> dict[str, Vec3]:
     if frame.positions:
         sources.append(frame.positions)
 
+    _IMAGE_UNSAFE = frozenset(
+        {
+            "left_heel",
+            "right_heel",
+            "left_toe",
+            "right_toe",
+            "left_foot",
+            "right_foot",
+            "left_foot_index",
+            "right_foot_index",
+        }
+    )
+    image_source = frame.positions if isinstance(frame.positions, dict) else None
     for src in sources:
+        from_image = src is image_source
         for raw_name, raw_val in src.items():
             canonical = _POSE_LANDMARK_TO_JOINT.get(raw_name) or normalize_joint_id(raw_name)
             if canonical not in JOINT_IDS and canonical != ROOT_JOINT_ID:
+                continue
+            if from_image and (
+                canonical in _IMAGE_UNSAFE or raw_name in _IMAGE_UNSAFE
+            ):
+                # Image-normalized Y-down coords must not mix with hip-centered 3D.
                 continue
             vec = _vec3_from_blob(raw_val if isinstance(raw_val, dict) else None)
             if vec and canonical not in positions:
@@ -211,10 +231,11 @@ def _body_span_y(positions: dict[str, Vec3]) -> float:
 
 def _ensure_foot_landmarks(positions: dict[str, Vec3]) -> None:
     """
-    Derive or repair foot landmarks from the ipsilateral ankle.
+    Keep heel/toe in the hip-centered frame; drive midfoot from those points.
 
-    Heel/toe from raw 2D ``positions`` can sit above the hip-centered ankle
-    (mixed coordinate sources). Replace invalid foot points with ankle offsets.
+    Heel/toe come from canonical reconstruction when MediaPipe sees them.
+    Image-frame Y-down leftovers are rejected. ``left_foot`` / ``right_foot``
+    are contact aliases (heel–toe midpoint), not independent joints.
     """
     span = _body_span_y(positions)
     foot_drop = max(span * 0.035, 0.025)
@@ -226,7 +247,6 @@ def _ensure_foot_landmarks(positions: dict[str, Vec3]) -> None:
         if a is None:
             continue
         for joint_id, drop, dz in (
-            (f"{side}_foot", foot_drop, foot_fwd * 0.6),
             (f"{side}_heel", foot_drop * 0.5, -heel_back),
             (f"{side}_toe", foot_drop, foot_fwd),
         ):
@@ -234,6 +254,19 @@ def _ensure_foot_landmarks(positions: dict[str, Vec3]) -> None:
             invalid = pos is None or pos.y > a.y + 0.015
             if invalid:
                 positions[joint_id] = Vec3(a.x, a.y - drop, a.z + dz)
+        heel = positions.get(f"{side}_heel")
+        toe = positions.get(f"{side}_toe")
+        if heel is not None and toe is not None:
+            positions[f"{side}_foot"] = Vec3(
+                (heel.x + toe.x) / 2.0,
+                (heel.y + toe.y) / 2.0,
+                (heel.z + toe.z) / 2.0,
+            )
+        else:
+            positions.setdefault(
+                f"{side}_foot",
+                Vec3(a.x, a.y - foot_drop, a.z + foot_fwd * 0.6),
+            )
 
 
 def _extract_image_xy(frame: PoseFrame) -> dict[str, list[float]]:
@@ -352,6 +385,34 @@ def _velocity_vector(frame: PoseFrame, joint_id: str) -> Vec3 | None:
 
 def pose_frame_to_snapshot(frame: PoseFrame, *, fps: float) -> SkeletonSnapshot:
     """Convert one ``PoseFrame`` into a ``SkeletonSnapshot``."""
+    if math.isfinite(frame.timestamp_s) and (
+        float(frame.timestamp_s) > 0.0 or int(frame.frame_index) == 0
+    ):
+        time_s = float(frame.timestamp_s)
+    else:
+        time_s = float(frame.time_seconds(fps))
+
+    meta = {
+        "detected": frame.detected,
+        "skipped": frame.skipped,
+        "rejection_reason": frame.rejection_reason,
+        "processing_status": frame.processing_status(),
+        "n_people": frame.n_people,
+        "subject_bbox": list(frame.subject_bbox) if frame.subject_bbox else None,
+        "gait_phase": dict(frame.gait_phase),
+        "gait_events": list(frame.gait_events),
+        "image_xy": {},
+        "landmark_visibility": {},
+    }
+    if not frame.detected:
+        return SkeletonSnapshot(
+            frame_index=frame.frame_index,
+            time_s=time_s,
+            joints={},
+            dofs={dof_id: DofSample(dof_id=dof_id, angle_deg=None) for dof_id in DOF_IDS},
+            metadata=meta,
+        )
+
     positions = _extract_joint_positions(frame)
     joints: dict[str, JointSample] = {}
 
@@ -413,18 +474,14 @@ def pose_frame_to_snapshot(frame: PoseFrame, *, fps: float) -> SkeletonSnapshot:
             if canonical in JOINT_IDS or canonical == ROOT_JOINT_ID:
                 landmark_visibility[canonical] = float(kp.visibility)
 
+    meta["image_xy"] = image_xy
+    meta["landmark_visibility"] = landmark_visibility
     return SkeletonSnapshot(
         frame_index=frame.frame_index,
-        time_s=frame.time_seconds(fps),
+        time_s=time_s,
         joints=joints,
         dofs=dofs,
-        metadata={
-            "detected": frame.detected,
-            "gait_phase": dict(frame.gait_phase),
-            "gait_events": list(frame.gait_events),
-            "image_xy": image_xy,
-            "landmark_visibility": landmark_visibility,
-        },
+        metadata=meta,
     )
 
 
@@ -447,6 +504,14 @@ def attach_snapshot_kinematic_rates(
         dt = curr.time_s - prev.time_s
         if dt <= 0:
             dt = default_dt
+        # Do not difference across a tracking hole or a missing-pose slot.
+        max_dt = 1.5 / max(fps, 1e-6)
+        if dt > max_dt + 1e-12:
+            continue
+        prev_ok = bool(prev.metadata.get("detected", True)) and bool(prev.joints)
+        curr_ok = bool(curr.metadata.get("detected", True)) and bool(curr.joints)
+        if not prev_ok or not curr_ok:
+            continue
 
         new_dofs = dict(curr.dofs)
         for dof_id, dof in curr.dofs.items():
@@ -502,22 +567,41 @@ def attach_snapshot_kinematic_rates(
 def pose_sequence_to_gait_motion(
     sequence: PoseSequence,
     *,
-    detected_only: bool = True,
+    detected_only: bool = False,
 ) -> GaitMotionRecording:
     """
     Convert a processed ``PoseSequence`` into ``GaitMotionRecording``.
 
     Args:
         sequence: Output from the pose-estimation pipeline.
-        detected_only: If True, include only frames with ``detected=True``.
+        detected_only: If True, drop failed detections (compresses the
+            timeline). Default False keeps one snapshot per stored source
+            frame, including missing poses, so playback IDs/timestamps stay
+            aligned with the source.
     """
     fps = max(sequence.fps, 1e-6)
-    frames = [
-        f for f in sequence.frames if (f.detected or not detected_only)
-    ]
+    if detected_only:
+        frames = [f for f in sequence.frames if f.detected and f.keypoints]
+    else:
+        frames = list(sequence.frames)
 
     snapshots = [pose_frame_to_snapshot(f, fps=fps) for f in frames]
     attach_snapshot_kinematic_rates(snapshots, fps=fps)
+
+    from stablewalk.analysis.timeline_duration import (
+        INTERVAL_COUNTING_CONVENTION,
+        compute_timeline_duration_metrics,
+        valid_pose_mask,
+    )
+
+    times = [float(f.timestamp_s) for f in frames] if frames else []
+    duration = compute_timeline_duration_metrics(
+        times, valid_pose_mask(frames), fps=fps
+    )
+    status_counts: dict[str, int] = {}
+    for frame in frames:
+        key = frame.processing_status()
+        status_counts[key] = status_counts.get(key, 0) + 1
 
     recording = GaitMotionRecording(
         source=sequence.source_video or "pose_estimation",
@@ -525,7 +609,21 @@ def pose_sequence_to_gait_motion(
         snapshots=snapshots,
         source_kind="pose_estimation",
         coordinate_system=CANONICAL_FRAME_ID,
-        metadata={"detected_count": sum(1 for f in frames if f.detected)},
+        metadata={
+            "detected_count": sum(1 for f in frames if f.detected),
+            "analyzed_frame_count": len(frames),
+            "analyzed_span_s": duration.analyzed_span_s,
+            "analyzed_duration_s": duration.analyzed_span_s,
+            "cumulative_valid_duration_s": duration.cumulative_valid_duration_s,
+            "coverage": duration.coverage,
+            "longest_valid_segment_s": duration.longest_valid_segment_s,
+            "n_valid_runs": duration.n_valid_runs,
+            "usable_duration_s": duration.cumulative_valid_duration_s,
+            "interval_counting_convention": INTERVAL_COUNTING_CONVENTION,
+            "status_counts": status_counts,
+            "detected_only": bool(detected_only),
+            "knee_angle_storage": "pose_interior_hka",
+        },
     )
     coord_warnings = audit_recording_anatomy(recording)
     if coord_warnings:

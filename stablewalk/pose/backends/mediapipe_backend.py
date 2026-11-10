@@ -10,19 +10,24 @@ import logging
 
 import cv2
 import numpy as np
-from mediapipe import Image, ImageFormat
-from mediapipe.tasks.python.core import base_options as base_options_lib
-from mediapipe.tasks.python.vision import pose_landmarker as pose_landmarker_lib
-from mediapipe.tasks.python.vision.core import vision_task_running_mode as running_mode_lib
 
 from stablewalk.model_loader import get_pose_model_path
 from stablewalk.models.pose_data import Keypoint
 from stablewalk.pose.backends.base import BackendUnavailableError, HumanMotionBackend
 from stablewalk.pose.backends.canonical import keypoints_to_canonical_frame
 from stablewalk.pose.backends.types import CoordinateSystemMetadata, HumanMotionFrame
-from stablewalk.pose.estimation import PoseEstimator
 from stablewalk.pose.validation import has_full_body_pose, meets_min_gait_dof
 from stablewalk.pose.kinematics import compute_joint_angles
+
+
+def _mediapipe_runtime():
+    """Import MediaPipe Tasks APIs only when a backend instance is created."""
+    from mediapipe import Image, ImageFormat
+    from mediapipe.tasks.python.core import base_options as base_options_lib
+    from mediapipe.tasks.python.vision import pose_landmarker as pose_landmarker_lib
+    from mediapipe.tasks.python.vision.core import vision_task_running_mode as running_mode_lib
+
+    return Image, ImageFormat, base_options_lib, pose_landmarker_lib, running_mode_lib
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +61,16 @@ class MediaPipePoseBackend(HumanMotionBackend):
         if not self.is_available():
             raise BackendUnavailableError(self.name, self.availability_reason())
 
+        (
+            _Image,
+            _ImageFormat,
+            base_options_lib,
+            pose_landmarker_lib,
+            running_mode_lib,
+        ) = _mediapipe_runtime()
+        self._mp_image_cls = _Image
+        self._mp_image_format = _ImageFormat
+
         model_path = get_pose_model_path(model_variant)
         running_mode = (
             running_mode_lib.VisionTaskRunningMode.VIDEO
@@ -65,7 +80,7 @@ class MediaPipePoseBackend(HumanMotionBackend):
         options = pose_landmarker_lib.PoseLandmarkerOptions(
             base_options=base_options_lib.BaseOptions(model_asset_path=str(model_path)),
             running_mode=running_mode,
-            num_poses=1,
+            num_poses=2,
             min_pose_detection_confidence=min_detection_confidence,
             min_pose_presence_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
@@ -74,6 +89,8 @@ class MediaPipePoseBackend(HumanMotionBackend):
         self._video_mode = video_mode
         self._require_full_body = require_full_body
         self._timestamp_ms = 0
+        self._subject_lock = None
+        self._subject_selection = None
 
     @classmethod
     def is_available(cls) -> bool:
@@ -103,6 +120,19 @@ class MediaPipePoseBackend(HumanMotionBackend):
 
     def reset(self) -> None:
         self._timestamp_ms = 0
+        self._subject_lock = None
+
+    def process_video(
+        self,
+        video_path: str,
+        *,
+        max_frames: int | None = None,
+    ):
+        from stablewalk.pose.subject_lock import selection_for_source
+
+        if self._subject_selection is None:
+            self._subject_selection = selection_for_source(video_path)
+        return super().process_video(video_path, max_frames=max_frames)
 
     def process_frame(
         self,
@@ -111,8 +141,12 @@ class MediaPipePoseBackend(HumanMotionBackend):
         frame_index: int,
         timestamp_s: float,
     ) -> HumanMotionFrame:
+        from stablewalk.pose.estimation import PoseEstimator
+
         image_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        mp_image = Image(image_format=ImageFormat.SRGB, data=image_rgb)
+        mp_image = self._mp_image_cls(
+            image_format=self._mp_image_format.SRGB, data=image_rgb
+        )
 
         if self._video_mode:
             self._timestamp_ms = int(round(timestamp_s * 1000))
@@ -129,22 +163,57 @@ class MediaPipePoseBackend(HumanMotionBackend):
                 backend_name=self.name,
                 coordinate_system=self.coordinate_system,
                 detected=False,
+                metadata={"rejection_reason": "no_landmarks", "n_people": 0},
             )
 
-        keypoints = PoseEstimator._landmarks_to_keypoints(results.pose_landmarks[0])
-        keypoints = PoseEstimator._clamp_keypoints(keypoints)
-        keypoints = PoseEstimator._add_mid_hip(keypoints)
+        from stablewalk.pose.subject_lock import pick_subject, selection_for_source
+
+        candidates = [
+            PoseEstimator._add_mid_hip(
+                PoseEstimator._clamp_keypoints(
+                    PoseEstimator._landmarks_to_keypoints(landmarks)
+                )
+            )
+            for landmarks in results.pose_landmarks
+        ]
+        picked = pick_subject(
+            candidates,
+            self._subject_lock,
+            selection=self._subject_selection or selection_for_source(""),
+            time_s=timestamp_s,
+        )
+        self._subject_lock = picked.lock
+        keypoints = picked.keypoints
+        if keypoints is None:
+            return HumanMotionFrame(
+                frame_index=frame_index,
+                timestamp_s=timestamp_s,
+                joint_positions_3d={},
+                landmark_confidence={},
+                backend_name=self.name,
+                coordinate_system=self.coordinate_system,
+                detected=False,
+                metadata={
+                    "rejection_reason": picked.reason or "subject_lock_lost",
+                    "n_people": len(candidates),
+                    "tracking_status": picked.tracking_status,
+                    "identity_locked": False,
+                },
+            )
 
         detected = True
+        rejection = ""
         if self._require_full_body:
             if not has_full_body_pose(keypoints):
                 detected = False
+                rejection = "incomplete_body"
             else:
                 angles = compute_joint_angles(keypoints)
                 if not meets_min_gait_dof(angles):
                     detected = False
+                    rejection = "insufficient_gait_dof"
 
-        return keypoints_to_canonical_frame(
+        frame = keypoints_to_canonical_frame(
             keypoints,
             frame_index=frame_index,
             timestamp_s=timestamp_s,
@@ -152,3 +221,9 @@ class MediaPipePoseBackend(HumanMotionBackend):
             coordinate_system=self.coordinate_system,
             detected=detected,
         )
+        frame.metadata["n_people"] = len(candidates)
+        frame.metadata["identity_locked"] = bool(picked.identity_locked)
+        frame.metadata["tracking_status"] = picked.tracking_status
+        if rejection:
+            frame.metadata["rejection_reason"] = rejection
+        return frame

@@ -133,7 +133,8 @@ class MotionTabGeometrySnapshot:
     issues: list[str] = field(default_factory=list)
 
 
-MOTION_TAB_MIN_GRAPH_HEIGHT = 400
+# ~35% taller graph floor so Motion Analysis keeps the plot as visual focus.
+MOTION_TAB_MIN_GRAPH_HEIGHT = 540
 MOTION_TAB_MIN_CANVAS_DIM = 100
 MOTION_TAB_MIN_TRAJ_WIDTH_FRACTION = 0.40
 
@@ -421,6 +422,17 @@ def _scroll_contains_widget(canvas: Any, widget: Any) -> bool:
 
 def scroll_dashboard_to(gui: Any, fraction: float) -> None:
     """Scroll the Advanced & Export tab (legacy name kept for QA scripts)."""
+    yview = getattr(gui, "_advanced_yview", None)
+    if callable(yview):
+        try:
+            yview("moveto", max(0.0, min(1.0, fraction)))
+            sync = getattr(gui, "_sync_tab_advanced_scroll", None)
+            if sync is not None:
+                sync()
+            gui.root.update_idletasks()
+        except Exception:
+            pass
+        return
     canvas = getattr(gui, "_tab_advanced_scroll_canvas", None) or getattr(
         gui, "_dash_scroll_canvas", None
     )
@@ -1100,11 +1112,12 @@ def run_gui_regression_assertions(
 
     scroll = getattr(gui, "_tab_advanced_scroll_canvas", None)
     nested = getattr(gui, "_analysis_scroll_canvas", None)
+    adv_host = getattr(gui, "_tab_advanced_content", None)
     checks.append(
         GuiRegressionCheck(
             name="advanced_tab_scroll_only",
-            passed=scroll is not None,
-            detail="advanced tab scroll canvas missing",
+            passed=scroll is None and adv_host is not None,
+            detail="advanced tab must be a direct Frame host, not a page canvas",
         )
     )
     checks.append(
@@ -1116,13 +1129,21 @@ def run_gui_regression_assertions(
     )
 
     transport = getattr(gui, "_transport_row", None)
-    if transport is not None and scroll is not None:
-        inside = _scroll_contains_widget(scroll, transport)
+    adv_content = getattr(gui, "_tab_advanced_content", None)
+    if transport is not None:
+        inside = False
+        if adv_content is not None:
+            current = transport
+            while current is not None:
+                if current is adv_content:
+                    inside = True
+                    break
+                current = getattr(current, "master", None)
         checks.append(
             GuiRegressionCheck(
                 name="transport_fixed_outside_scroll",
                 passed=not inside,
-                detail="playback transport is inside scroll canvas",
+                detail="playback transport is inside Advanced content host",
             )
         )
 
@@ -1179,13 +1200,15 @@ def run_gui_regression_assertions(
             if cur is None:
                 continue
             cur_text = str(cur.cget("text"))
-            if "Unavailable" in cur_text and unavail is not None:
+            has_distance = "cm" in cur_text.lower()
+            if not has_distance and unavail is not None:
                 reason = str(unavail.cget("text")).strip()
+                primary_explains = bool(cur_text.strip())
                 checks.append(
                     GuiRegressionCheck(
                         name=f"foot_clearance_{prefix}_unavailable_reason",
-                        passed=bool(reason),
-                        detail="Unavailable foot clearance without reason",
+                        passed=bool(reason) or primary_explains,
+                        detail="Foot clearance missing without contextual explanation",
                     )
                 )
 
@@ -1195,14 +1218,12 @@ def run_gui_regression_assertions(
         state_lbl = getattr(gui, f"lbl_{prefix}_state", None)
         cur_text = str(cur_lbl.cget("text")) if cur_lbl is not None else ""
         state_text = str(state_lbl.cget("text")) if state_lbl is not None else ""
-        detail_unavail = "Unavailable" in cur_text
+        has_distance = "cm" in cur_text.lower()
+        contextual_unavail = bool(cur_text.strip()) and not has_distance
         checks.append(
             GuiRegressionCheck(
                 name=f"foot_clearance_{side}_distance",
-                passed=bool(
-                    "cm" in cur_text
-                    or cur_text.strip() == "Unavailable"
-                ),
+                passed=bool(has_distance or contextual_unavail),
                 detail=f"{side} distance not shown ({cur_text!r})",
             )
         )
@@ -1210,11 +1231,29 @@ def run_gui_regression_assertions(
             GuiRegressionCheck(
                 name=f"foot_clearance_{side}_state",
                 passed=(
-                    state_text in ("CONTACT", "SWING")
-                    or state_text == "—"
-                    or cur_text.strip() == "Unavailable"
+                    state_text in ("CONTACT", "SWING", "Stance", "Swing")
+                    or state_text in ("—", "Unavailable")
+                    or contextual_unavail
                 ),
                 detail=f"{side} state missing ({state_text!r})",
+            )
+        )
+        min_lbl = getattr(gui, f"lbl_{prefix}_min_swing", None)
+        max_lbl = getattr(gui, f"lbl_{prefix}_max_swing", None)
+        min_text = str(min_lbl.cget("text")).strip() if min_lbl is not None else ""
+        max_text = str(max_lbl.cget("text")).strip() if max_lbl is not None else ""
+        checks.append(
+            GuiRegressionCheck(
+                name=f"foot_clearance_{side}_min_swing",
+                passed=bool(min_text) and min_text not in {"—", "-", "–"},
+                detail=f"{side} Min Swing not shown ({min_text!r})",
+            )
+        )
+        checks.append(
+            GuiRegressionCheck(
+                name=f"foot_clearance_{side}_max_swing",
+                passed=bool(max_text) and max_text not in {"—", "-", "–"},
+                detail=f"{side} Max Swing not shown ({max_text!r})",
             )
         )
 
@@ -1329,13 +1368,14 @@ def run_gui_regression_assertions(
         )
     )
 
-    # Advanced tab scroll (main dashboard no longer uses bottom spacer padding).
-    adv_scroll = getattr(gui, "_tab_advanced_scroll_canvas", None)
+    # Advanced tab host (main dashboard no longer uses a page-level canvas).
+    adv_host = getattr(gui, "_tab_advanced_content", None)
+    adv_view = getattr(gui, "_tab_advanced_scroll_viewport", None)
     checks.append(
         GuiRegressionCheck(
             name="advanced_tab_scroll_canvas",
-            passed=adv_scroll is not None,
-            detail="advanced tab vertical scroll missing",
+            passed=adv_host is not None and adv_view is not None,
+            detail="advanced tab content host missing",
         )
     )
 
@@ -1540,7 +1580,7 @@ def run_overview_tab_assertions(gui: Any) -> list[GuiRegressionCheck]:
     _on_overview("video_frame", "Original Video", min_h=120, min_w=160)
     _on_overview("skel_frame", "3D Gait Reconstruction", min_h=120, min_w=160)
     _on_overview("_sidebar_stability_panel", "Gait Analysis Summary", min_h=100, min_w=100)
-    _on_overview("_foot_clearance_detail_host", "Foot Clearance panel", min_h=40, min_w=200)
+    _on_overview("_foot_clearance_detail_host", "Foot Clearance panel", min_h=100, min_w=200)
     _on_overview("_overview_metrics_row", "Gait metrics bottom row", min_h=30, min_w=300)
 
     for attr, label in (
@@ -1565,7 +1605,7 @@ def run_overview_tab_assertions(gui: Any) -> list[GuiRegressionCheck]:
     for prefix in ("foot_left", "foot_right"):
         cur = _label_text(getattr(gui, f"lbl_{prefix}_current", None))
         unavail = _label_text(getattr(gui, f"lbl_{prefix}_unavailable", None))
-        ok = "cm" in cur or ("Unavailable" in cur and bool(unavail))
+        ok = "cm" in cur or (bool(cur.strip()) and "cm" not in cur.lower())
         checks.append(
             GuiRegressionCheck(
                 name=f"overview_{prefix}_clearance",

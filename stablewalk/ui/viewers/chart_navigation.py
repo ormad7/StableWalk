@@ -19,6 +19,49 @@ FIG_NAV_BLOCK_HOVER_ATTR = "_chart_nav_block_hover"
 _WHEEL_ZOOM_BASE = 1.15
 _MIN_X_SPAN_FRAC = 0.01
 _SELECT_MIN_FRAC = 0.008
+# Hide dense secondary annotations when the view is near the full timeline.
+_ZOOMED_OUT_SPAN_FRAC = 0.90
+
+
+def zoom_span_fraction(fig: Figure) -> float:
+    """Return view_span / home_span (1.0 = fully zoomed out)."""
+    state = _get_state(fig)
+    home = state.home_xlim
+    if home is None:
+        return 1.0
+    home_span = float(home[1] - home[0])
+    if home_span <= 1e-12:
+        return 1.0
+    view = state.view_xlim or home
+    view_span = abs(float(view[1] - view[0]))
+    return float(min(1.0, max(0.0, view_span / home_span)))
+
+
+def is_chart_zoomed_out(fig: Figure, *, threshold: float = _ZOOMED_OUT_SPAN_FRAC) -> bool:
+    """True when the current x-view is near the full home timeline."""
+    return zoom_span_fraction(fig) >= float(threshold)
+
+
+def update_secondary_annotation_visibility(fig: Figure) -> None:
+    """Show secondary markers only when zoomed in (declutter full-timeline view)."""
+    from stablewalk.ui.viewers.chart_style import SECONDARY_ANNOTATION_ATTR
+
+    show = not is_chart_zoomed_out(fig)
+    for ax in getattr(fig, "axes", []) or []:
+        buckets = (
+            list(getattr(ax, "lines", []) or []),
+            list(getattr(ax, "patches", []) or []),
+            list(getattr(ax, "collections", []) or []),
+            list(getattr(ax, "texts", []) or []),
+            list(getattr(ax, "artists", []) or []),
+        )
+        for bucket in buckets:
+            for artist in bucket:
+                if getattr(artist, SECONDARY_ANNOTATION_ATTR, False):
+                    try:
+                        artist.set_visible(show)
+                    except Exception:
+                        pass
 
 
 @dataclass
@@ -59,7 +102,18 @@ def reset_chart_navigation(fig: Figure) -> None:
 
 
 def _time_axes(fig: Figure) -> list[Axes]:
-    axes = [ax for ax in fig.axes if getattr(ax, "get_xlim", None) is not None]
+    axes: list[Axes] = []
+    for ax in fig.axes:
+        if getattr(ax, "get_xlim", None) is None:
+            continue
+        # Spectral R(0)/ACF/PSD opt out so a shared time zoom cannot rewrite
+        # lag, frequency, or categorical limits.
+        if getattr(ax, "_sw_nav_xlim", True) is False:
+            continue
+        label = str(ax.get_label() or "")
+        if "colorbar" in label.lower():
+            continue
+        axes.append(ax)
     axes.sort(key=lambda a: a.get_position().y0, reverse=True)
     return axes
 
@@ -129,6 +183,7 @@ def apply_chart_xlim(
     if persist:
         state.view_xlim = clamped
     setattr(fig, FIG_NAV_BLOCK_HOVER_ATTR, False)
+    update_secondary_annotation_visibility(fig)
     return clamped
 
 
@@ -148,6 +203,8 @@ def finalize_chart_view(fig: Figure, canvas: FigureCanvasTkAgg | None = None) ->
     target = state.view_xlim or state.home_xlim
     if target is not None:
         apply_chart_xlim(fig, target, persist=bool(state.view_xlim))
+    else:
+        update_secondary_annotation_visibility(fig)
     if canvas is not None:
         canvas.draw_idle()
 
@@ -159,6 +216,8 @@ def reset_chart_view(fig: Figure, canvas: FigureCanvasTkAgg | None = None) -> No
     _clear_select_patch(state)
     if state.home_xlim is not None:
         apply_chart_xlim(fig, state.home_xlim, persist=False)
+    else:
+        update_secondary_annotation_visibility(fig)
     if canvas is not None:
         canvas.draw_idle()
 
@@ -310,7 +369,10 @@ __all__ = [
     "capture_chart_home_xlim",
     "chart_nav_is_active",
     "finalize_chart_view",
+    "is_chart_zoomed_out",
     "reset_chart_navigation",
     "reset_chart_view",
+    "update_secondary_annotation_visibility",
+    "zoom_span_fraction",
     "zoom_xlim_at",
 ]

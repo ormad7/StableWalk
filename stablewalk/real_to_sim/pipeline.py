@@ -316,12 +316,22 @@ def run_real_to_sim_pipeline(
             None if biomech.gait_quality is None else biomech.gait_quality.score
         ),
     }
-    gq = biomech.gait_quality.score if biomech.gait_quality else 0.0
+    gq_obj = biomech.gait_quality
+    gq_score = (
+        gq_obj.score
+        if gq_obj is not None and getattr(gq_obj, "available", True) and gq_obj.score is not None
+        else None
+    )
+    gq_detail = (
+        f"Biomechanical report — Gait Quality {gq_score:.0f}/100 (estimated)"
+        if gq_score is not None
+        else "Biomechanical report — Gait Quality unavailable"
+    )
     report.stages.append(
         PipelineStageStatus(
             stage="5_biomechanical",
             status="complete" if biomech.center_of_mass else "partial",
-            detail=f"Biomechanical report — Gait Quality {gq:.0f}/100 (estimated)",
+            detail=gq_detail,
             output_path=str(biomech_exports.biomechanical_report_path),
             duration_s=time.perf_counter() - _t0,
         )

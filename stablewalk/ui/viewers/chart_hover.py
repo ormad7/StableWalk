@@ -33,34 +33,72 @@ class ChartHoverPoint:
     joint_name: str = "—"
     metric_name: str = "—"
     unit: str = ""
+    velocity: float | None = None
+    acceleration: float | None = None
+    velocity_unit: str = ""
+    acceleration_unit: str = ""
+
+
+def _format_tooltip_quantity(
+    value: float | str | None, unit: str = ""
+) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, str):
+        return value
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not np.isfinite(num):
+        return "—"
+    if unit:
+        return f"{num:.4g} {unit}"
+    return f"{num:.4g}"
+
+
+def hover_display_frame(point: ChartHoverPoint) -> int | None:
+    """1-based list display frame, matching Live Data / playback F labels."""
+    if point.list_pos is not None:
+        return int(point.list_pos) + 1
+    if point.frame_index is None:
+        return None
+    return int(point.frame_index)
+
+
+def format_inspect_crosshair_chip(x: float, *, x_is_percent: bool = False) -> str:
+    """Compact hover-inspect chip; never mistaken for the playback stamp."""
+    if x_is_percent:
+        return f"Inspect · {float(x):.0f}%"
+    return f"Inspect · {float(x):.2f}s"
 
 
 def format_chart_tooltip(point: ChartHoverPoint) -> str:
-    """Standard multi-line tooltip: frame, time, value, joint, metric."""
-    frame_text = "—" if point.frame_index is None else str(point.frame_index)
+    """Inspect tooltip: Frame · Time · Joint · Current value · Velocity · Acceleration.
+
+    This is an independent hover readout, not the playback-linked plot cursor.
+    """
+    display = hover_display_frame(point)
+    frame_text = "—" if display is None else str(display)
     if point.timestamp_s is None:
         time_text = "—"
-    elif "cycle" in point.metric_name.lower():
+    elif "cycle" in (point.metric_name or "").lower():
         time_text = f"{point.timestamp_s:.1f}% gait cycle"
     else:
         time_text = f"{point.timestamp_s:.3f} s"
 
-    if point.value is None:
-        value_text = "—"
-    elif isinstance(point.value, str):
-        value_text = point.value
-    elif point.unit:
-        value_text = f"{point.value:.4g} {point.unit}"
-    else:
-        value_text = f"{point.value:.4g}"
-
-    return (
-        f"Frame: {frame_text}\n"
-        f"Timestamp: {time_text}\n"
-        f"Value: {value_text}\n"
-        f"Joint: {point.joint_name}\n"
-        f"Metric: {point.metric_name}"
-    )
+    lines = [
+        "Inspect",
+        f"Frame: {frame_text}",
+        f"Time: {time_text}",
+        f"Joint: {point.joint_name or '—'}",
+        f"Current value: {_format_tooltip_quantity(point.value, point.unit)}",
+        f"Velocity: {_format_tooltip_quantity(point.velocity, point.velocity_unit)}",
+        f"Acceleration: {_format_tooltip_quantity(point.acceleration, point.acceleration_unit)}",
+    ]
+    if point.metric_name and point.metric_name != "—":
+        lines.append(f"Metric: {point.metric_name}")
+    return "\n".join(lines)
 
 
 def append_line_hover_points(
@@ -148,6 +186,73 @@ def register_dof_trajectory_hover_points(
 def set_figure_hover_points(fig: Figure, points: list[ChartHoverPoint]) -> None:
     setattr(fig, FIG_HOVER_POINTS_ATTR, points)
     setattr(fig, FIG_HOVER_ANNOT_ATTR, None)
+
+
+def _estimate_hover_size_px(text: str = "", *, dpi: float = 100.0) -> tuple[float, float]:
+    """Approximate tooltip bbox from its multiline contents."""
+    lines = [line for line in (text or "").splitlines() if line] or ["Current value"]
+    max_chars = max(len(line) for line in lines)
+    width_pt = max(160.0, max_chars * 6.8 + 18.0)
+    height_pt = max(72.0, len(lines) * 13.5 + 16.0)
+    px_per_pt = max(1.0, float(dpi) / 72.0)
+    return width_pt * px_per_pt, height_pt * px_per_pt
+
+
+def _fit_hover_offset_px(
+    origin: float,
+    size: float,
+    lo: float,
+    hi: float,
+    *,
+    gap: float = 12.0,
+) -> float:
+    """Pick a side, then clamp so ``[origin+off, origin+off+size]`` stays in clip."""
+    prefer = gap
+    if origin + prefer + size > hi:
+        prefer = -gap - size
+    if origin + prefer < lo:
+        room_pos = hi - origin - gap
+        room_neg = origin - lo - gap
+        if room_neg >= room_pos:
+            prefer = -gap - size
+            if origin + prefer < lo:
+                prefer = lo - origin
+        else:
+            prefer = gap
+            if origin + prefer + size > hi:
+                prefer = hi - size - origin
+    if origin + prefer + size > hi:
+        prefer = hi - size - origin
+    if origin + prefer < lo:
+        prefer = lo - origin
+    return prefer
+
+
+def _edge_aware_hover_offset_pts(
+    ax: "Axes",
+    x: float,
+    y: float,
+    *,
+    text: str = "",
+) -> tuple[float, float]:
+    """Offset-points placement that keeps the tooltip inside the figure."""
+    try:
+        disp = ax.transData.transform((float(x), float(y)))
+        fig = ax.figure
+        fig_bbox = fig.bbox
+    except Exception:
+        return 12.0, 12.0
+    dpi = float(getattr(ax.figure, "dpi", 100.0) or 100.0)
+    px_to_pt = 72.0 / dpi
+    tw, th = _estimate_hover_size_px(text, dpi=dpi)
+    pad = 8.0
+    x0 = float(fig_bbox.x0) + pad
+    y0 = float(fig_bbox.y0) + pad
+    x1 = float(fig_bbox.x1) - pad
+    y1 = float(fig_bbox.y1) - pad
+    dx_px = _fit_hover_offset_px(float(disp[0]), tw, x0, x1, gap=16.0)
+    dy_px = _fit_hover_offset_px(float(disp[1]), th, y0, y1, gap=16.0)
+    return dx_px * px_to_pt, dy_px * px_to_pt
 
 
 def attach_chart_hover_tooltips(
@@ -241,14 +346,20 @@ def attach_chart_hover_tooltips(
                 textcoords="offset points",
                 bbox=dict(boxstyle="round,pad=0.35", facecolor=ELEVATED, edgecolor=BORDER, alpha=0.96),
                 color=TEXT,
-                fontsize=8,
+                fontsize=11,
                 zorder=30,
+                clip_on=False,
                 visible=False,
             )
             setattr(fig, FIG_HOVER_ANNOT_ATTR, annot)
 
         annot.xy = (best.x, best.y)
-        annot.set_text(format_chart_tooltip(best))
+        tooltip_text = format_chart_tooltip(best)
+        annot.set_text(tooltip_text)
+        dx_pts, dy_pts = _edge_aware_hover_offset_pts(
+            best.ax, best.x, best.y, text=tooltip_text
+        )
+        annot.set_position((dx_pts, dy_pts))
         annot.set_visible(True)
         canvas.draw_idle()
 
@@ -267,6 +378,8 @@ __all__ = [
     "append_line_hover_points",
     "attach_chart_hover_tooltips",
     "format_chart_tooltip",
+    "format_inspect_crosshair_chip",
+    "hover_display_frame",
     "register_dof_trajectory_hover_points",
     "set_figure_hover_points",
 ]

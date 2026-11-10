@@ -9,6 +9,9 @@ import pytest
 
 from stablewalk.analysis.estimated_vgrf_analysis import METHOD_NAME, analyze_estimated_vgrf
 from stablewalk.analysis.foot_contact_analysis import (
+    FOOT_PHASE_STANCE,
+    FOOT_PHASE_SWING,
+    FOOT_PHASE_UNKNOWN,
     FootContactAnalysisResult,
     FootContactFrame,
     FootLandmarkSample,
@@ -16,8 +19,11 @@ from stablewalk.analysis.foot_contact_analysis import (
     clearance_contact_score,
     combine_contact_probability,
     detect_event_pulses,
+    display_contact_value,
+    foot_contact_observation_known,
     horizontal_speeds_m_s,
     macro_phase_from_contacts,
+    per_foot_phase_codes,
     run_foot_substate_machine,
     velocity_contact_score,
 )
@@ -155,7 +161,45 @@ def test_detect_heel_strike_and_toe_off() -> None:
 def test_macro_phase_double_support() -> None:
     assert macro_phase_from_contacts(1, 1) == "double_support"
     assert macro_phase_from_contacts(1, 0) == "stance"
-    assert macro_phase_from_contacts(0, 0) == "swing"
+    assert macro_phase_from_contacts(0, 0) == "uncertain"
+    assert (
+        macro_phase_from_contacts(
+            0,
+            0,
+            left_clearance_m=0.16,
+            right_clearance_m=0.18,
+        )
+        == "swing"
+    )
+
+
+def test_combine_probability_unknown_when_no_scores() -> None:
+    assert (
+        combine_contact_probability(
+            heel_score=None, toe_score=None, vel_score=None, visibility=0.9
+        )
+        is None
+    )
+
+
+def test_hysteresis_holds_through_unknown_samples() -> None:
+    states = apply_probability_hysteresis(
+        [0.7, None, float("nan"), 0.7, 0.2],
+        enter=0.58,
+        exit_threshold=0.42,
+    )
+    assert states[:4] == [1, 1, 1, 1]
+    assert states[-1] == 0
+
+
+def test_near_ground_both_off_is_unknown_not_swing() -> None:
+    near = _sample(0.04, visibility=0.9)
+    air = _sample(0.16, visibility=0.9)
+    assert foot_contact_observation_known(near, 0) is False
+    assert foot_contact_observation_known(air, 0) is True
+    assert display_contact_value(0, near) is None
+    assert display_contact_value(0, air) == 0
+    assert display_contact_value(1, near) == 1
 
 
 def test_foot_substate_machine_progression() -> None:
@@ -263,6 +307,148 @@ def test_vgrf_normalization_body_weight(tmp_path: Path) -> None:
     assert str(loaded["method_name"]) == METHOD_NAME
 
 
+def test_per_foot_phase_codes_include_unknown() -> None:
+    frames = []
+    for i, (known, contact_on) in enumerate(((True, 1), (True, 0), (False, 0))):
+        frames.append(
+            FootContactFrame(
+                frame_index=i,
+                time_s=i / 30.0,
+                left_contact_probability=0.8 if contact_on else 0.2,
+                right_contact_probability=0.8,
+                left_contact_binary=contact_on,
+                right_contact_binary=1,
+                left_heel_strike=0,
+                right_heel_strike=0,
+                left_toe_off=0,
+                right_toe_off=0,
+                left_foot_substate="mid_stance" if contact_on else "swing",
+                right_foot_substate="mid_stance",
+                macro_phase="stance" if known else "uncertain",
+                left_confidence=0.8,
+                right_confidence=0.8,
+                left_contact_known=known,
+                right_contact_known=True,
+            )
+        )
+    left, right = per_foot_phase_codes(FootContactAnalysisResult(per_frame=frames, fps=30.0))
+    assert list(left) == [FOOT_PHASE_STANCE, FOOT_PHASE_SWING, FOOT_PHASE_UNKNOWN]
+    assert list(right) == [FOOT_PHASE_STANCE, FOOT_PHASE_STANCE, FOOT_PHASE_STANCE]
+
+
+def test_hysteresis_hold_without_probability_is_unknown() -> None:
+    held = _sample(0.02, visibility=0.9)
+    assert foot_contact_observation_known(held, 1, probability=None) is False
+    assert foot_contact_observation_known(held, 1, probability=float("nan")) is False
+    low_vis = _sample(0.02, visibility=0.1)
+    assert foot_contact_observation_known(low_vis, 1) is False
+
+
+def test_macro_phase_unknown_contralateral_is_uncertain() -> None:
+    assert (
+        macro_phase_from_contacts(1, 0, left_known=True, right_known=False)
+        == "uncertain"
+    )
+
+
+def test_unknown_contact_does_not_become_zero_vgrf() -> None:
+    frames = []
+    for i in range(8):
+        contact_on = i < 4
+        frames.append(
+            FootContactFrame(
+                frame_index=i,
+                time_s=i / 30.0,
+                left_contact_probability=0.8 if contact_on else 0.2,
+                right_contact_probability=0.2,
+                left_contact_binary=1 if contact_on else 0,
+                right_contact_binary=0,
+                left_heel_strike=1 if i == 0 else 0,
+                right_heel_strike=0,
+                left_toe_off=1 if i == 4 else 0,
+                right_toe_off=0,
+                left_foot_substate="mid_stance" if contact_on else "swing",
+                right_foot_substate="swing",
+                macro_phase="stance" if contact_on else "uncertain",
+                left_confidence=0.85,
+                right_confidence=0.85,
+                left_contact_known=contact_on,
+                right_contact_known=False,
+            )
+        )
+    contact = FootContactAnalysisResult(per_frame=frames, fps=30.0)
+    vgrf = analyze_estimated_vgrf(_recording(8), contact, body_mass_kg=70.0)
+    assert vgrf.available
+    assert np.all(np.isfinite(vgrf.left_vgrf_vertical[:4]))
+    assert np.all(np.isnan(vgrf.right_vgrf_vertical[:4]))
+    assert np.all(np.isnan(vgrf.total_vgrf_vertical[:4]))
+    assert np.all(np.isnan(vgrf.total_vgrf_vertical[4:]))
+    assert "withheld" in " ".join(vgrf.notes).lower()
+    assert "assumption" in " ".join(vgrf.notes).lower()
+
+
+def test_unknown_left_during_right_stance_is_nan_not_zero() -> None:
+    frames = []
+    for i in range(8):
+        frames.append(
+            FootContactFrame(
+                frame_index=i,
+                time_s=i / 30.0,
+                left_contact_probability=0.2,
+                right_contact_probability=0.85,
+                left_contact_binary=0,
+                right_contact_binary=1,
+                left_heel_strike=0,
+                right_heel_strike=1 if i == 0 else 0,
+                left_toe_off=0,
+                right_toe_off=0,
+                left_foot_substate="swing",
+                right_foot_substate="mid_stance",
+                macro_phase="uncertain",
+                left_confidence=0.2,
+                right_confidence=0.85,
+                left_contact_known=False,
+                right_contact_known=True,
+            )
+        )
+    contact = FootContactAnalysisResult(per_frame=frames, fps=30.0)
+    vgrf = analyze_estimated_vgrf(_recording(8), contact, body_mass_kg=70.0)
+    assert vgrf.available
+    assert np.all(np.isnan(vgrf.left_vgrf_vertical))
+    assert np.all(np.isfinite(vgrf.right_vgrf_vertical))
+    assert np.all(vgrf.right_vgrf_vertical > 0.0)
+    assert np.all(np.isnan(vgrf.total_vgrf_vertical))
+
+
+def test_confirmed_flight_keeps_zero_vgrf() -> None:
+    frames = [
+        FootContactFrame(
+            frame_index=i,
+            time_s=i / 30.0,
+            left_contact_probability=0.1,
+            right_contact_probability=0.1,
+            left_contact_binary=0,
+            right_contact_binary=0,
+            left_heel_strike=0,
+            right_heel_strike=0,
+            left_toe_off=0,
+            right_toe_off=0,
+            left_foot_substate="swing",
+            right_foot_substate="swing",
+            macro_phase="swing",
+            left_confidence=0.9,
+            right_confidence=0.9,
+            left_contact_known=True,
+            right_contact_known=True,
+        )
+        for i in range(6)
+    ]
+    contact = FootContactAnalysisResult(per_frame=frames, fps=30.0)
+    vgrf = analyze_estimated_vgrf(_recording(6), contact, body_mass_kg=70.0)
+    assert vgrf.available
+    assert np.allclose(vgrf.total_vgrf_vertical, 0.0)
+
+
 def test_short_contact_gap_smoothed_by_hysteresis() -> None:
     probs = [0.1, 0.65, 0.62, 0.1, 0.1]
     states = apply_probability_hysteresis(probs, enter=0.58, exit_threshold=0.42)
@@ -300,3 +486,32 @@ def test_foot_contact_export_pipeline(tmp_path: Path) -> None:
     sync = np.load(result.contact_sync_path)
     assert "mean_sync_score" in sync
     assert "mismatch_frames" in sync
+
+
+def test_frame_at_uses_index_cache() -> None:
+    frames = [
+        FootContactFrame(
+            frame_index=i,
+            time_s=i / 30.0,
+            left_contact_probability=1.0 if i % 2 == 0 else 0.0,
+            right_contact_probability=0.0 if i % 2 == 0 else 1.0,
+            left_contact_binary=1 if i % 2 == 0 else 0,
+            right_contact_binary=0 if i % 2 == 0 else 1,
+            left_heel_strike=0,
+            right_heel_strike=0,
+            left_toe_off=0,
+            right_toe_off=0,
+            left_foot_substate="mid_stance" if i % 2 == 0 else "swing",
+            right_foot_substate="swing" if i % 2 == 0 else "mid_stance",
+            macro_phase="stance",
+            left_confidence=0.9,
+            right_confidence=0.9,
+        )
+        for i in range(8)
+    ]
+    result = FootContactAnalysisResult(per_frame=frames, fps=30.0)
+    hit = result.frame_at(5)
+    assert hit is not None
+    assert hit.frame_index == 5
+    assert result._by_frame[5] is hit
+    assert result.frame_at(99) is None

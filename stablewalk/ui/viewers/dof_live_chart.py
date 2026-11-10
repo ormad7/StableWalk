@@ -102,9 +102,9 @@ _SERIES_STYLE: tuple[tuple[str, str, str, str, float], ...] = (
     ("Angle", "Angle (°)", METRIC_GLOBAL, "-", SERIES_LINE_WIDTH_SECONDARY + 0.35),
 )
 
-# Plot band (top) + x-label band + legend band (bottom).
-DOF_LIVE_CHART_MARGINS = dict(left=0.11, right=0.76, top=0.91, bottom=0.25)
-_LEGEND_ANCHOR = (0.52, 0.03)
+# Plot band (top) + compact bottom legend — larger data area for presentations.
+DOF_LIVE_CHART_MARGINS = dict(left=0.10, right=0.97, top=0.93, bottom=0.18)
+_LEGEND_ANCHOR = (0.5, 0.02)
 
 
 def setup_dof_live_chart_axes(ax: Axes) -> None:

@@ -7,7 +7,7 @@ Used by pose estimation (Step 2) and later by visualization / simulation (Steps 
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
@@ -76,6 +76,133 @@ def angle_at_joint(
 
     cos_angle = np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0)
     return float(math.degrees(math.acos(cos_angle)))
+
+
+# Anatomical knee flexion from Hip–Knee–Ankle (HKA) vectors.
+KNEE_FLEXION_UNITS = "deg"
+KNEE_FLEXION_CONVENTION = (
+    "Anatomical knee flexion in degrees. "
+    "Let θ be the internal 3D angle at the knee formed by the Hip–Knee and "
+    "Ankle–Knee vectors. Knee flexion = 180° − θ. "
+    "0° = full extension (straight limb); larger values = more flexion. "
+    "Missing or low-confidence Hip, Knee, or Ankle landmarks yield no value; "
+    "coordinates are never invented."
+)
+_KNEE_HKA_CHAIN: dict[str, tuple[str, str, str]] = {
+    "left_knee": ("left_hip", "left_knee", "left_ankle"),
+    "right_knee": ("right_hip", "right_knee", "right_ankle"),
+    "left": ("left_hip", "left_knee", "left_ankle"),
+    "right": ("right_hip", "right_knee", "right_ankle"),
+}
+
+
+def knee_hka_joint_ids(item_id: str) -> tuple[str, str, str] | None:
+    """Hip, knee, ankle joint IDs for a GUI knee item or side name."""
+    return _KNEE_HKA_CHAIN.get(str(item_id))
+
+
+def _xyz3(point: Any) -> np.ndarray | None:
+    if point is None:
+        return None
+    try:
+        x = float(point.x)
+        y = float(point.y)
+        z = float(point.z)
+    except (TypeError, AttributeError, ValueError):
+        return None
+    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+        return None
+    return np.array([x, y, z], dtype=float)
+
+
+def _landmark_confident(point: Any, min_visibility: float) -> bool:
+    if point is None:
+        return False
+    vis = getattr(point, "visibility", None)
+    if vis is None:
+        return True
+    try:
+        return float(vis) >= min_visibility
+    except (TypeError, ValueError):
+        return False
+
+
+def interior_angle_3d(
+    proximal: Any,
+    vertex: Any,
+    distal: Any,
+    min_visibility: float = 0.5,
+) -> float | None:
+    """Internal 3D angle (degrees) at ``vertex`` between proximal and distal.
+
+    Always uses XYZ. Returns None if any point is missing, non-finite, or
+    below ``min_visibility``. Does not invent coordinates or drop to 2D.
+    """
+    if not all(
+        _landmark_confident(p, min_visibility) for p in (proximal, vertex, distal)
+    ):
+        return None
+    a, b, c = _xyz3(proximal), _xyz3(vertex), _xyz3(distal)
+    if a is None or b is None or c is None:
+        return None
+    v1 = a - b
+    v2 = c - b
+    n1 = float(np.linalg.norm(v1))
+    n2 = float(np.linalg.norm(v2))
+    if n1 < 1e-8 or n2 < 1e-8:
+        return None
+    cos_angle = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
+    return float(math.degrees(math.acos(cos_angle)))
+
+
+def knee_flexion_from_hka(
+    hip: Any,
+    knee: Any,
+    ankle: Any,
+    min_visibility: float = 0.5,
+) -> float | None:
+    """Anatomical knee flexion (deg) = 180° − internal 3D Hip–Knee–Ankle angle."""
+    interior = interior_angle_3d(hip, knee, ankle, min_visibility)
+    if interior is None:
+        return None
+    return float(180.0 - interior)
+
+
+def _snapshot_joint_position(
+    snapshot: Any,
+    joint_id: str,
+    min_visibility: float,
+) -> Any | None:
+    """Measured joint position, or None if missing / low-confidence. Never filled."""
+    if snapshot is None or not joint_id:
+        return None
+    joints = getattr(snapshot, "joints", None) or {}
+    sample = joints.get(joint_id)
+    if sample is None:
+        return None
+    vis_map = (getattr(snapshot, "metadata", None) or {}).get("landmark_visibility") or {}
+    if joint_id in vis_map:
+        try:
+            if float(vis_map[joint_id]) < min_visibility:
+                return None
+        except (TypeError, ValueError):
+            return None
+    return getattr(sample, "position", None)
+
+
+def knee_flexion_from_snapshot(
+    snapshot: Any,
+    item_id: str,
+    min_visibility: float = 0.5,
+) -> float | None:
+    """Knee flexion (deg) from snapshot HKA vectors, or None if incomplete."""
+    chain = knee_hka_joint_ids(item_id)
+    if chain is None:
+        return None
+    hip = _snapshot_joint_position(snapshot, chain[0], min_visibility)
+    knee = _snapshot_joint_position(snapshot, chain[1], min_visibility)
+    ankle = _snapshot_joint_position(snapshot, chain[2], min_visibility)
+    return knee_flexion_from_hka(hip, knee, ankle, min_visibility)
 
 
 def _segment_angle_from_horizontal(

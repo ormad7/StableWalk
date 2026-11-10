@@ -9,6 +9,19 @@ Use the terminology:
 
 when referring to physics-based or learned proxies intended for comparative research.
 
+## Pose-based estimated vGRF assumptions
+
+The current `estimated_vgrf` proxy is a **model estimate**, not a measurement:
+
+- `F = m · (g + a_pelvis)` using stature-scaled pelvis vertical acceleration
+- Force is allocated only to feet with **confirmed** contact
+- Confirmed airborne (clearly off the floor) is recorded as **zero**
+- Missing or unreliable foot observations are **withheld (NaN)** — never stored as zero force
+- Body-weight normalization: `vGRF_BW = F / (m × 9.81)`
+- Contact masks are timing heuristics, not kinetics
+
+Do **not** retune contact thresholds so a demo clip looks like a force plate.
+
 ## Foot contact vs virtual force
 
 | Signal | Meaning | Is it GRF? |

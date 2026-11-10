@@ -51,14 +51,15 @@ GUI_VIDEO_VALIDATE_MODE = "quick"
 DEFAULT_MIN_VALID_FRAME_RATIO = 0.25
 DEFAULT_VIDEO_VALIDATION_SAMPLES = 20
 
-# Presentation demo (see stablewalk.ui.demo)
-DEMO_MAX_FRAMES = 120
+# Presentation / Examples: analyze the real demo clip (15–30 s @ ~30 FPS).
+DEMO_MAX_FRAMES = 900
 
 # Pose/frames are always regenerated on load (keyed by content hash in video_source)
 DISABLE_POSE_CACHE_REUSE = True
 
-# GUI: limit frames per load for responsive switching (set None for full video)
-GUI_MAX_FRAMES_PER_LOAD = 80
+# GUI: cap decoded frames so analysis stays off the UI thread but still
+# covers ≥2 typical gait cycles (≈8 s at 30 FPS). None = full video.
+GUI_MAX_FRAMES_PER_LOAD = 240
 
 
 def ensure_output_dirs() -> None:

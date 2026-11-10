@@ -67,3 +67,13 @@ def test_nav_state_survives_clear() -> None:
     state: ChartNavState = getattr(fig, FIG_NAV_STATE_ATTR)
     assert state.home_xlim is not None
     assert state.home_xlim[1] > state.home_xlim[0]
+
+
+def test_chart_tools_ensure_deferred_graph_before_reset_or_export() -> None:
+    import inspect
+
+    from stablewalk.ui.viewers.chart_interactions import build_chart_tools_bar
+
+    source = inspect.getsource(build_chart_tools_bar)
+    assert "ensure_chart" in source
+    assert source.count("_ensure_ready_figure()") >= 2

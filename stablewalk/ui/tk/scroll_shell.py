@@ -10,6 +10,57 @@ from tkinter import ttk
 from stablewalk.ui.theme import BG, PAD_SM
 
 
+def apply_overflow_scroll_geometry(
+    canvas: tk.Canvas,
+    window_id: int,
+    scrollbar: tk.Misc,
+    *,
+    content_height: int,
+) -> bool:
+    """Match canvas window width to the viewport; keep height at content size.
+
+    Stretching the inner window to the canvas height creates empty scroll
+    space. Scroll only when content is taller than the view. Returns True
+    when the scrollbar should be active.
+    """
+    try:
+        view_w = max(1, int(canvas.winfo_width() or 1))
+        view_h = max(1, int(canvas.winfo_height() or 1))
+        req_h = max(1, int(content_height))
+        # Unmapped 1×1 canvases must not shrink content to 1px (blank rail)
+        # or enable a fake inner scrollbar. Still give the embedded window a
+        # natural size so a PANEL canvas is not left 0×0 / empty.
+        if view_w < 32 or view_h < 32:
+            nat_w, nat_h = 1, req_h
+            try:
+                win_name = canvas.itemcget(window_id, "window")
+                inner = canvas.nametowidget(str(win_name)) if win_name else None
+                if inner is not None:
+                    nat_w = max(int(inner.winfo_reqwidth() or 0), 1)
+                    nat_h = max(req_h, int(inner.winfo_reqheight() or 0), 1)
+            except (tk.TclError, KeyError, TypeError, ValueError):
+                pass
+            if nat_w >= 32 and nat_h >= 1:
+                canvas.coords(window_id, 0, 0)
+                canvas.itemconfigure(window_id, width=nat_w, height=nat_h)
+                canvas.configure(scrollregion=(0, 0, nat_w, nat_h))
+            return False
+        canvas.coords(window_id, 0, 0)
+        canvas.itemconfigure(window_id, width=view_w, height=req_h)
+        canvas.configure(scrollregion=(0, 0, view_w, req_h))
+        needs_scroll = req_h > view_h + 2
+        if needs_scroll:
+            if not scrollbar.grid_info():
+                scrollbar.grid()
+        else:
+            if scrollbar.grid_info():
+                scrollbar.grid_remove()
+            canvas.yview_moveto(0.0)
+        return needs_scroll
+    except tk.TclError:
+        return False
+
+
 def install_vertical_scroll_shell(
     gui,
     parent: tk.Misc,
@@ -37,6 +88,7 @@ def install_vertical_scroll_shell(
     vsb = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
     canvas.grid(row=0, column=0, sticky="nsew")
     vsb.grid(row=0, column=1, sticky="ns")
+    vsb.grid_remove()
     canvas.configure(yscrollcommand=vsb.set)
 
     # Single scroll content frame — all dashboard sections are direct children.
@@ -54,17 +106,22 @@ def install_vertical_scroll_shell(
     sections_host.grid(row=0, column=0, sticky="ew")
     sections_host.columnconfigure(0, weight=1)
     gui._dash_scroll_sections_host = sections_host
+    sync_state = {"active": False}
 
     def _sync(_event: object | None = None) -> None:
+        if sync_state["active"]:
+            return
+        sync_state["active"] = True
         try:
             canvas.update_idletasks()
-            bbox = canvas.bbox("all")
-            if bbox is not None:
-                canvas.configure(scrollregion=bbox)
-            cw = max(canvas.winfo_width(), 1)
-            canvas.itemconfigure(inner_id, width=cw)
+            req_h = max(int(scroll_content.winfo_reqheight() or 0), 1)
+            apply_overflow_scroll_geometry(
+                canvas, inner_id, vsb, content_height=req_h
+            )
         except tk.TclError:
             pass
+        finally:
+            sync_state["active"] = False
 
     scroll_content.bind("<Configure>", _sync, add="+")
     canvas.bind("<Configure>", _sync, add="+")
@@ -120,7 +177,7 @@ def update_scroll_bottom_padding(gui, pad: int, *, extra_margin: int = 20) -> No
 def measure_fixed_chrome_height(gui) -> int:
     """Combined height of transport bar + status bar (pixels)."""
     total = 0
-    for attr in ("_transport_row", "status"):
+    for attr in ("_transport_row", "_status_bar"):
         widget = getattr(gui, attr, None)
         if widget is None:
             continue

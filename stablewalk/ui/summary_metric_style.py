@@ -2,7 +2,7 @@
 Visual interpretation levels for Results Summary metric cards.
 
 Maps existing summary *display strings* to normal / borderline / abnormal
-color coding. Does not recompute metrics — only classifies rendered values.
+color coding using the shared metrics registry. Does not recompute metrics.
 """
 
 from __future__ import annotations
@@ -12,6 +12,21 @@ from dataclasses import dataclass
 from typing import Literal
 
 from stablewalk.analysis.analysis_summary import SummaryField
+from stablewalk.metrics.definitions import (
+    CADENCE_BORDER_HI,
+    CADENCE_BORDER_LO,
+    CADENCE_NORMAL_HI,
+    CADENCE_NORMAL_LO,
+    CONFIDENCE_BORDERLINE_MIN,
+    CONFIDENCE_NORMAL_MIN,
+    GQ_BORDERLINE_MIN,
+    GQ_NORMAL_MIN,
+    STABLE_PCT_BORDERLINE_MIN,
+    STABLE_PCT_NORMAL_MIN,
+    SYMMETRY_BORDERLINE_MIN,
+    SYMMETRY_NORMAL_MIN,
+)
+from stablewalk.metrics.status import DisplayStatus
 from stablewalk.ui.theme import BORDER, DANGER, MUTED, ORANGE, SUCCESS, TEXT
 
 InterpretationLevel = Literal[
@@ -48,17 +63,17 @@ def _score_over_100(text: str) -> float | None:
 
 
 def _classify_score_100(score: float) -> InterpretationLevel:
-    if score >= 60:
+    if score >= GQ_NORMAL_MIN:
         return "normal"
-    if score >= 45:
+    if score >= GQ_BORDERLINE_MIN:
         return "borderline"
     return "abnormal"
 
 
 def _classify_confidence_score(score: float) -> InterpretationLevel:
-    if score >= 72:
+    if score >= CONFIDENCE_NORMAL_MIN:
         return "normal"
-    if score >= 50:
+    if score >= CONFIDENCE_BORDERLINE_MIN:
         return "borderline"
     return "abnormal"
 
@@ -106,13 +121,32 @@ def interpret_summary_metric(
         pct = _first_number(value)
         if pct is None:
             return "neutral"
-        if pct >= 70:
+        if pct >= SYMMETRY_NORMAL_MIN:
             return "normal"
-        if pct >= 55:
+        if pct >= SYMMETRY_BORDERLINE_MIN:
             return "borderline"
         return "abnormal"
 
     if key == "stability_margin":
+        # Prefer numeric stable-frame share when present (shared registry bands).
+        stable_match = re.search(r"(\d+(?:\.\d+)?)\s*%\s*stable", lower)
+        if stable_match:
+            stable_pct = float(stable_match.group(1))
+            if (
+                view_limited
+                and (
+                    stability_valid_ratio is not None and stability_valid_ratio < 0.45
+                )
+            ) or (
+                view_limited
+                and stable_pct <= 0.0
+            ):
+                return "borderline"
+            if stable_pct >= STABLE_PCT_NORMAL_MIN:
+                return "normal"
+            if stable_pct >= STABLE_PCT_BORDERLINE_MIN:
+                return "borderline"
+            return soften_view_limited_level("abnormal", view_limited=view_limited)
         # Frontal / low-validity COM–BoS is not a clinical Unstable finding.
         if (
             view_limited
@@ -126,28 +160,23 @@ def interpret_summary_metric(
             return "borderline"
         if "unstable" in lower:
             return soften_view_limited_level("abnormal", view_limited=view_limited)
-        if "reduced stability" in lower:
+        if "reduced stability" in lower or "reduced" in lower:
             return "borderline"
-        stable_match = re.search(r"(\d+(?:\.\d+)?)\s*%\s*stable", lower)
-        if stable_match:
-            stable_pct = float(stable_match.group(1))
-            if stable_pct >= 70:
-                return "normal"
-            if stable_pct >= 55:
-                return "borderline"
-            return soften_view_limited_level("abnormal", view_limited=view_limited)
         if "stable" in lower and "reduced" not in lower and "unstable" not in lower:
             return "normal"
+        if "acceptable" in lower:
+            return "normal"
+        if "borderline" in lower:
+            return "borderline"
         return "neutral"
 
     if key == "cadence":
         spm = _first_number(value)
         if spm is None:
             return "neutral"
-        # Monocular demos often under-count steps; keep a wide adult walking band.
-        if 60 <= spm <= 130:
+        if CADENCE_NORMAL_LO <= spm <= CADENCE_NORMAL_HI:
             return "normal"
-        if 48 <= spm < 60 or 130 < spm <= 145:
+        if CADENCE_BORDER_LO <= spm < CADENCE_NORMAL_LO or CADENCE_NORMAL_HI < spm <= CADENCE_BORDER_HI:
             return "borderline"
         return "abnormal"
 
@@ -221,26 +250,97 @@ def interpret_gait_event(*, detected: bool) -> InterpretationLevel:
     return "normal" if detected else "abnormal"
 
 
+# Heuristic / coverage metrics must not wear a clinical "Acceptable" badge.
+_UNVALIDATED_HEURISTIC_KEYS = frozenset(
+    {
+        "gait_quality",
+        "gait_quality_composite",
+        "gait_coordination",
+        "gait_quality_coordination",
+        "symmetry",
+    }
+)
+_HEURISTIC_STATUS_KEYS = frozenset(
+    {
+        "gait_quality",
+        "gait_quality_composite",
+        "gait_coordination",
+        "gait_quality_coordination",
+        "symmetry",
+        "movement_stability",
+        "pelvis_stability",
+        "stability_margin",
+        "stable_pct",
+        "stability_state",
+        "stability",
+        "video_quality",
+        "tracking_confidence",
+        "analysis_confidence",
+        "pose_coverage",
+        "contact_coverage",
+        "spectral_reliability",
+        "biomechanical_validity",
+    }
+)
+_COVERAGE_STATUS_KEYS = frozenset(
+    {
+        "video_quality",
+        "tracking_confidence",
+        "pose_coverage",
+        "contact_coverage",
+        "spectral_reliability",
+        "biomechanical_validity",
+    }
+)
+
+
+def kpi_status_label(level: InterpretationLevel, *, key: str | None = None) -> str:
+    """Badge text for a KPI. Heuristic bands are labeled Heuristic, not Acceptable."""
+    style = metric_visual_style(level)
+    metric = (key or "").strip()
+    if level == "unavailable":
+        return "N/A"
+    if metric in _COVERAGE_STATUS_KEYS and level not in ("unavailable", "neutral"):
+        return "Not accuracy"
+    if metric in _UNVALIDATED_HEURISTIC_KEYS and level not in ("unavailable", "neutral"):
+        return DisplayStatus.UNVALIDATED_HEURISTIC.value
+    if metric in _HEURISTIC_STATUS_KEYS and level == "normal":
+        return DisplayStatus.HEURISTIC.value
+    return style.status_label
+
+
 def metric_visual_style(level: InterpretationLevel) -> MetricVisualStyle:
+    # Shared user-facing vocabulary (Acceptable / Borderline / Reduced).
     if level == "normal":
-        return MetricVisualStyle("normal", SUCCESS, SUCCESS, "Normal")
+        return MetricVisualStyle(
+            "normal", SUCCESS, SUCCESS, DisplayStatus.ACCEPTABLE.value
+        )
     if level == "borderline":
-        return MetricVisualStyle("borderline", ORANGE, ORANGE, "Borderline")
+        return MetricVisualStyle(
+            "borderline", ORANGE, ORANGE, DisplayStatus.BORDERLINE.value
+        )
     if level == "abnormal":
-        return MetricVisualStyle("abnormal", DANGER, DANGER, "Abnormal")
+        return MetricVisualStyle(
+            "abnormal", DANGER, DANGER, DisplayStatus.REDUCED.value
+        )
     if level == "unavailable":
         return MetricVisualStyle("unavailable", MUTED, BORDER, "")
     return MetricVisualStyle("neutral", TEXT, BORDER, "")
 
 
-def format_status_line(level: InterpretationLevel, tier: str) -> str:
+def format_status_line(
+    level: InterpretationLevel,
+    tier: str,
+    *,
+    key: str | None = None,
+) -> str:
     """Status badge text: interpretation label plus data tier."""
     from stablewalk.ui.scientific_labels import format_tier_badge
 
-    style = metric_visual_style(level)
+    label = kpi_status_label(level, key=key)
     tier_text = format_tier_badge(tier)
-    if style.status_label and tier_text:
-        return f"{style.status_label} · {tier_text}"
-    if style.status_label:
-        return style.status_label
+    if label and tier_text:
+        return f"{label} · {tier_text}"
+    if label:
+        return label
     return tier_text

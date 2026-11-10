@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 HEEL_LANDMARKS = ("left_heel", "right_heel")
 TOE_LANDMARKS = ("left_foot_index", "right_foot_index")
+LEFT_TRACK_LANDMARKS = ("left_hip", "left_knee", "left_ankle", "left_heel")
+RIGHT_TRACK_LANDMARKS = ("right_hip", "right_knee", "right_ankle", "right_heel")
 BODY_LANDMARKS = (
     "left_shoulder",
     "right_shoulder",
@@ -103,6 +105,10 @@ class DemoCandidateReport:
     issues: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    left_heel_strike_count: int = 0
+    right_heel_strike_count: int = 0
+    left_tracking_rate: float = 0.0
+    right_tracking_rate: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -122,8 +128,11 @@ class DemoCandidateReport:
             f"Camera motion score: {self.camera_motion_score:.3f}",
             f"Estimated usable gait cycles: {self.estimated_usable_gait_cycles}",
             f"Detected gait cycles: {self.detected_gait_cycles}",
-            f"Heel strikes: {self.total_heel_strikes}",
+            f"Heel strikes: {self.total_heel_strikes} "
+            f"(L {self.left_heel_strike_count} / R {self.right_heel_strike_count})",
             f"Steps: {self.total_steps}",
+            f"Left tracking rate: {self.left_tracking_rate:.1%}",
+            f"Right tracking rate: {self.right_tracking_rate:.1%}",
             f"View: {self.view_type or 'unknown'} ({self.view_confidence:.0%})",
             f"Analysis completeness: {self.analysis_completeness_pct:.1f}%",
             f"Stability confidence badge: {self.stability_confidence_badge}",
@@ -254,6 +263,21 @@ def _evaluate_verdict(
         )
         soft_only = True
 
+    if min(report.left_tracking_rate, report.right_tracking_rate) < 0.40:
+        report.warnings.append(
+            "Left/right landmark tracking is uneven or sparse "
+            f"(L {report.left_tracking_rate:.0%} / R {report.right_tracking_rate:.0%})"
+        )
+        soft_only = True
+    if (
+        report.left_heel_strike_count == 0 or report.right_heel_strike_count == 0
+    ) and report.total_heel_strikes > 0:
+        report.warnings.append(
+            "Heel strikes were detected on only one side "
+            f"(L {report.left_heel_strike_count} / R {report.right_heel_strike_count})"
+        )
+        soft_only = True
+
     if hard_fail:
         return "REJECT"
     if soft_only:
@@ -343,6 +367,7 @@ def validate_demo_candidate(
     cap.release()
 
     pose_valid = foot_frames = heel_frames = toe_frames = 0
+    left_track_frames = right_track_frames = 0
     confidences: list[float] = []
     bbox_ratios: list[float] = []
     centers: list[tuple[float, float]] = []
@@ -365,6 +390,10 @@ def validate_demo_candidate(
                 heel_frames += 1
             if keypoints and _both_visible(keypoints, TOE_LANDMARKS):
                 toe_frames += 1
+            if keypoints and _both_visible(keypoints, LEFT_TRACK_LANDMARKS):
+                left_track_frames += 1
+            if keypoints and _both_visible(keypoints, RIGHT_TRACK_LANDMARKS):
+                right_track_frames += 1
             for kp in keypoints:
                 if kp.visibility > 0:
                     confidences.append(float(kp.visibility))
@@ -412,6 +441,10 @@ def validate_demo_candidate(
             cycles.metrics.left_heel_strike_count
             + cycles.metrics.right_heel_strike_count
         ),
+        left_heel_strike_count=cycles.metrics.left_heel_strike_count,
+        right_heel_strike_count=cycles.metrics.right_heel_strike_count,
+        left_tracking_rate=left_track_frames / denom,
+        right_tracking_rate=right_track_frames / denom,
         view_type=view.view_type.value if view else None,
         view_confidence=view.view_confidence if view else 0.0,
         analysis_completeness_pct=stability.completeness_pct,

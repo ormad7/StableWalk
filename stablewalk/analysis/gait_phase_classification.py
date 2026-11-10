@@ -27,6 +27,8 @@ GaitPhaseName = Literal[
 CONTACT_CONFIDENCE_LOW_THRESHOLD = 0.48
 
 # Both feet must exceed this clearance (body-scale m) to classify FLIGHT.
+# Same 0.100 m body-scale gate as NEAR_GROUND_THRESHOLD_M — confirmed flight
+# only. Values below it stay Unknown when the contact bit is off.
 FLIGHT_CLEARANCE_THRESHOLD_M = NEAR_GROUND_THRESHOLD_M
 
 _PHASE_DISPLAY: dict[str, str] = {
@@ -67,6 +69,8 @@ def classify_gait_phase_from_contacts(
     confidence_tier: str | None = None,
     left_foot_clearance_m: float | None = None,
     right_foot_clearance_m: float | None = None,
+    left_known: bool = True,
+    right_known: bool = True,
 ) -> GaitPhaseName:
     """
     Derive gait phase from the final smoothed contact mask.
@@ -77,7 +81,13 @@ def classify_gait_phase_from_contacts(
         L=1, R=1 → DOUBLE_SUPPORT
         L=0, R=0 → FLIGHT if confidence OK and both feet clearly airborne,
                     else UNCERTAIN
+
+    If either foot is not a usable observation, the bilateral phase is
+    UNCERTAIN — missing contact is not treated as swing or stance.
     """
+    if not left_known or not right_known:
+        return "UNCERTAIN"
+
     left = bool(left_contact)
     right = bool(right_contact)
 

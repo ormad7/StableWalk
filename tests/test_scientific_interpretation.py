@@ -124,3 +124,34 @@ def test_report_export_includes_interpretation_section():
     report = format_analysis_summary_report(summary)
     assert "Scientific Interpretation" in report
     assert "clinical diagnosis" in report.lower()
+
+
+def test_unreportable_monocular_stability_is_not_a_reduced_conclusion():
+    from types import SimpleNamespace
+
+    summary = _rich_summary()
+    summary.stability_margin = SummaryField(
+        LABEL_STABILITY_MARGIN,
+        "Not available",
+        TIER_DERIVED,
+        False,
+        "Monocular COM–BoS is experimental and is not a physical stability score.",
+    )
+    ba = SimpleNamespace(
+        stability_margin=SimpleNamespace(
+            reportable=False,
+            stable_pct=5.83,
+            experimental_note=(
+                "Monocular COM–BoS is experimental and is not a physical stability score."
+            ),
+            per_frame=[
+                SimpleNamespace(stability_state="Unstable"),
+                SimpleNamespace(stability_state="Unstable"),
+            ],
+        )
+    )
+    text = build_scientific_interpretation(summary, biomechanical=ba).lower()
+    assert "5.83" not in text
+    assert "markedly reduced stability" not in text
+    assert "not a physical stability score" in text or "not reportable" in text
+    assert "must not" in text or "confident" in text

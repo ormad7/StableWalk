@@ -1,0 +1,51 @@
+{
+  "generated_on": "2026-11-01",
+  "notes": [
+    "Official Examples files are the *_v2.mp4 names only.",
+    "athletic_walking.mp4, abnormal_gait.mp4, and normal_gait.mp4 are legacy and are not loaded.",
+    "Clips were copied without looping, slowing, speeding, or duplicating frames."
+  ],
+  "examples": [
+    {
+      "category": "Abnormal Gait",
+      "internal_key": "abnormal",
+      "installed_filename": "abnormal_gait_v2.mp4",
+      "available": true,
+      "dataset": "GAVD (Gait Abnormality in Video Dataset)",
+      "original_url": "https://www.youtube.com/watch?v=M-_cogKwXK4",
+      "source_filename_or_id": "YouTube M-_cogKwXK4 / GAVD seq cljwrgl2p00243n6lwusay4pt",
+      "documented_activity_or_condition": "gait_pat=parkinsons. YouTube title: 1.12. Vascular Parkinsonism - Parkinsonism and Related [Spring Video Atlas]. Not dementia.",
+      "selected_interval": "source frames 4625–5274 (649 frames, 23.976 FPS, 27.07 s)",
+      "license": "GAVD annotations MIT; video retrieved independently under YouTube Terms of Service",
+      "sha256": "e9ae60033621e4ff298e3dc72c37414bd923b673881e77f4488cc053915e1cba"
+    },
+    {
+      "category": "Normal Gait",
+      "internal_key": "normal",
+      "installed_filename": "normal_gait_v2.mp4",
+      "available": true,
+      "dataset": "GAVD (Gait Abnormality in Video Dataset)",
+      "original_url": "https://www.youtube.com/watch?v=eCCYhDSDlDc",
+      "source_filename_or_id": "YouTube eCCYhDSDlDc / GAVD seq cljwtgpsm000y3n6lgbj91b5h",
+      "documented_activity_or_condition": "gait_pat=normal, dataset=Normal Gait. YouTube title: How to walk properly (Without pain). Not fast walking.",
+      "selected_interval": "source frames 379–678 (300 frames, 29.970 FPS, 10.01 s)",
+      "license": "GAVD annotations MIT; video retrieved independently under YouTube Terms of Service",
+      "sha256": "77601a1932af4e34646f19316cb431d8c70926b076ef3187931df003a4e77868"
+    },
+    {
+      "category": "Fast Walking",
+      "internal_key": "athletic",
+      "installed_filename": "fast_walking_v2.mp4",
+      "available": true,
+      "dataset": "Twente wearable-system validation RGB (Zenodo 6644593)",
+      "original_url": "https://zenodo.org/records/6644593",
+      "source_filename_or_id": "Subj04/walk_54_side_anonymized.avi",
+      "documented_activity_or_condition": "Treadmill walking at 5.4 km/h (walk_54). Fastest walking condition before running at 6.3 km/h. Wang et al., Wearable Technologies 2023 (10.1017/wtc.2023.7). Not Health&Gait FGS. Not running.",
+      "selected_interval": "full source trial (2261 frames, 33.000 FPS, 68.52 s); stream-copied AVI→MP4",
+      "license": "Zenodo 10.5281/zenodo.6644593 CC BY 4.0 (anonymized RGB)",
+      "sha256": "122779bb974ec17aa579af5b860797b34d800f4dcc32aa9c2cd138b75fd621d4",
+      "companion_paper": "https://doi.org/10.1017/wtc.2023.7",
+      "kuopio_checked_first": "PMC11385067 / Zenodo 10559504 is mocap/IMU/OpenPose JSON only — no RGB"
+    }
+  ]
+}

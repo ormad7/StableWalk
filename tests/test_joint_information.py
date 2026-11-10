@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 
 from stablewalk.models.gait_motion import (
@@ -28,21 +29,27 @@ def _snap(
     pos: tuple[float, float, float] = (0.1, 0.8, 0.2),
 ) -> SkeletonSnapshot:
     x, y, z = pos
+    rad = math.radians(float(angle))
+    thigh, shank = 0.04, 0.04
+    hip = Vec3(x, y + thigh, z)
+    ankle = Vec3(x + shank * math.sin(rad), y - shank * math.cos(rad), z)
     return SkeletonSnapshot(
         frame_index=frame,
         time_s=time_s,
         joints={
+            "right_hip": JointSample(joint_id="right_hip", position=hip),
             "right_knee": JointSample(
                 joint_id="right_knee",
                 position=Vec3(x, y, z),
-                angle_deg=angle,
+                angle_deg=180.0 - float(angle),
                 velocity=0.05,
-            )
+            ),
+            "right_ankle": JointSample(joint_id="right_ankle", position=ankle),
         },
         dofs={
             "right_knee_flexion": DofSample(
                 dof_id="right_knee_flexion",
-                angle_deg=angle,
+                angle_deg=180.0 - float(angle),
                 velocity_deg_s=omega,
                 joint_id="right_knee",
             )
@@ -54,22 +61,22 @@ class JointInformationTests(unittest.TestCase):
     def test_field_catalog_covers_required_metrics(self) -> None:
         required = {
             "Joint",
-            "X (cm)",
-            "Y (cm)",
-            "Z (cm)",
-            "Angle",
-            "ω (°/s)",
-            "α (°/s²)",
-            "ROM",
+            "X (cm, root-rel.)",
+            "Y (cm, root-rel.)",
+            "Z (cm, root-rel.)",
+            "Current angle (est., °)",
+            "ω (°/s, derived)",
+            "α (°/s², derived)",
+            "Session ROM (°)",
             "Frame",
             "Time",
-            "Confidence",
-            "Contact",
-            "Phase",
-            "Clearance",
+            "Tracking confidence",
+            "Contact state",
+            "Phase (derived)",
+            "Clearance (est., cm)",
         }
         self.assertEqual(set(JOINT_INFO_TITLES.values()), required)
-        self.assertEqual(len(JOINT_INFO_FIELD_ORDER), 12)
+        self.assertEqual(len(JOINT_INFO_FIELD_ORDER), 11)
 
     def test_empty_snapshot_uses_dashes(self) -> None:
         info = empty_joint_information()
@@ -103,7 +110,8 @@ class JointInformationTests(unittest.TestCase):
         # Δω/Δt = (40 - 20) / 0.1 = 200 °/s²
         self.assertEqual(info.angular_acceleration, "200.0 °/s²")
         self.assertEqual(info.gait_phase, "Mid-stance")
-        self.assertEqual(info.foot_clearance, "—")
+        self.assertTrue(info.foot_clearance.startswith("N/A"))
+        self.assertIn("foot", info.foot_clearance.lower())
         self.assertIn("–", info.rom)
 
     def test_no_selection_returns_empty(self) -> None:

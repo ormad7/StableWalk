@@ -22,12 +22,12 @@ DEMO_EXPLANATION = (
 DEFAULT_DEMO_DOF_IDS: frozenset[str] = frozenset({"right_hip", "left_shoulder"})
 
 PRESENTATION_VIDEO_CAPTION = (
-    "Demo mode — synthetic walking skeleton\n"
-    "For real video analysis, load or analyze a walking video from the toolbar."
+    "Example session — synthetic walking skeleton\n"
+    "For recorded video analysis, load or analyze a walking video from the toolbar."
 )
 
-PRESENTATION_SESSION_SUMMARY = "Presentation walk — synthetic gait cycle"
-PRESENTATION_GAIT_HINT = "Demo selection: Right Hip + Left Shoulder"
+PRESENTATION_SESSION_SUMMARY = "Example walk — synthetic gait cycle"
+PRESENTATION_GAIT_HINT = "Example selection: Right Hip + Left Shoulder"
 PRESENTATION_STABILITY_LABEL = "Ready · skeleton + DOF + OpenSim-ready export"
 
 # Slightly longer walk for smoother demo loops

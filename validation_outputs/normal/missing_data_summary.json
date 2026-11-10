@@ -1,0 +1,255 @@
+{
+  "started_utc": "2026-11-10T09:54:21.844043+00:00",
+  "finished_utc": "2026-11-10T09:54:24.514396+00:00",
+  "poses_path": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\data\\output\\poses\\run_90d21a9367838db7_1793723907553_poses.json",
+  "mediapipe_rerun": false,
+  "before": {
+    "n_frames": 300,
+    "pose_ok": 110,
+    "identity_locked": 110,
+    "tracking_unavailable": 173,
+    "note": "Walker-seed dump after subject-selection fix. pose_ok is gait-usable frames, not identity-present frames."
+  },
+  "after": {
+    "n_frames": 300,
+    "detected_frames": 127,
+    "usable_frames": 110,
+    "pose_ok": 110,
+    "identity_locked": 127,
+    "tracking_unavailable": 173,
+    "candidate_cycles": 1,
+    "accepted_cycles": 0,
+    "accepted_left": 0,
+    "accepted_right": 0,
+    "summary_cadence_spm": null,
+    "raw_cadence_spm": null,
+    "cadence_field": {
+      "label": "Cadence (calculated)",
+      "value": "Not available",
+      "tier": "calculated",
+      "available": false,
+      "reason": "N/A \u2014 Only 0 left / 0 right complete same-side heel-strike cycle(s); at least 2 ipsilateral cycles on one side are required for cadence."
+    },
+    "pose_coverage_field": {
+      "label": "Pose coverage",
+      "value": "127 detected \u00b7 109 usable / 300",
+      "tier": "derived",
+      "available": true,
+      "reason": "127 detected / 300 frames (42% detection). Gaps reduce usable duration. 109 usable for gait. Detected landmarks and visibility scores are not a claim of accurate tracking."
+    },
+    "cycle_evidence_field": {
+      "label": "Cycle evidence",
+      "value": "0 L / 0 R accepted \u00b7 1 candidates",
+      "tier": "derived",
+      "available": true,
+      "reason": "1 candidate HS\u2013HS interval(s); 0 accepted. Only 0 left / 0 right complete same-side heel-strike cycle(s); at least 2 ipsilateral cycles on one side are required for cadence."
+    },
+    "hud": {
+      "detected_frames": 127,
+      "usable_gait_frames": 109,
+      "detection_pct": 42.333333333333336,
+      "usable_gait_pct": 36.333333333333336
+    },
+    "video_quality_checks": {
+      "fps": 29.97,
+      "frame_count": 300,
+      "detected_frame_pct": 42.33,
+      "usable_frame_pct": 36.33,
+      "detected_frames": 127,
+      "usable_frames": 109,
+      "feet_detected_pct": 100.0,
+      "head_visible_pct": 100.0,
+      "truncation_score": 100.0,
+      "camera_stability_score": 40.0,
+      "pelvis_jitter": 0.2341,
+      "pose_confidence_score": 93.5,
+      "low_confidence_joint_pct": 11.4,
+      "motion_blur_magnitude": 0.0027,
+      "occlusion_risk": false,
+      "pose_coverage_pct": 42.333333333333336,
+      "pose_coverage_status": "limited",
+      "landmark_confidence_status": "computed",
+      "mean_landmark_visibility": 0.85
+    },
+    "validity_cycle": {
+      "layer": "cycle_detection",
+      "status": "insufficient",
+      "explanation": "1 candidate HS\u2013HS interval(s); 0 accepted. Only 0 left / 0 right complete same-side heel-strike cycle(s); at least 2 ipsilateral cycles on one side are required for cadence.",
+      "label": "insufficient \u2014 1 candidate HS\u2013HS interval(s); 0 accepted. Only 0 left / 0 right complete same-side heel-strike cycle(s); at least 2 ipsilateral cycles on one side are required for cadence.",
+      "coverage_pct": null,
+      "mean_visibility": null,
+      "usable_duration_s": 9.976633333333334,
+      "gap_fraction": null,
+      "n_frames": 0,
+      "n_detected": 0,
+      "n_cycles": 0,
+      "formula": "Candidates = raw ipsilateral HS\u2013HS; accepted = cycles that passed coverage gates",
+      "note": "",
+      "extras": {
+        "n_left": 0,
+        "n_right": 0,
+        "contact_confidence": 0.8498509475900456,
+        "n_accepted": 0,
+        "n_candidates": 1
+      }
+    },
+    "com_missing_samples": 190,
+    "com_valid_zeros": 0,
+    "com_plot_nan_breaks": 201,
+    "timeline": {
+      "source_frame_count": 300,
+      "source_duration_s": null,
+      "analyzed_frame_count": 300,
+      "analyzed_span_s": 9.976633333333334,
+      "analyzed_duration_s": 9.976633333333334,
+      "detected_count": 110,
+      "usable_gait_frames": 109,
+      "cumulative_valid_duration_s": 3.2699333333333325,
+      "coverage": 0.3277591973244146,
+      "coverage_pct": 32.776,
+      "longest_valid_segment_s": 1.3346666666666667,
+      "n_valid_runs": 12,
+      "usable_duration_s": 3.2699333333333325,
+      "first_detected_timestamp_s": 0.03336666666666667,
+      "last_detected_timestamp_s": 7.6076,
+      "status_counts": {
+        "pose_ok": 110,
+        "filter_skip": 17,
+        "subject_lock_skip": 173,
+        "detection_failed": 0,
+        "undetected_unclassified": 0
+      },
+      "timestamp_gaps_if_detected_only": 11,
+      "interval_counting_convention": "Durations use original source timestamps, not 1/fps. A contiguous run of n valid frames contributes t[n-1] \u2212 t[0] (n\u22121 adjacent intervals). An isolated valid frame contributes 0 s. Analyzed span is last_analyzed_timestamp \u2212 first_analyzed_timestamp and includes internal gaps. Cumulative valid duration is the sum of those run lengths. Coverage = cumulative_valid_duration / analyzed_span. Longest valid segment is the maximum run length."
+    },
+    "reason_counts": {
+      "occlusion_or_incomplete_body": 3,
+      "pose_ok": 110,
+      "insufficient_gait_dof": 14,
+      "identity_ambiguity": 173
+    },
+    "long_gap_runs": [
+      {
+        "reason": "identity_ambiguity",
+        "start_frame": 90,
+        "end_frame": 189,
+        "n_frames": 100,
+        "rejection_reason": "subject_identity_ambiguous"
+      },
+      {
+        "reason": "identity_ambiguity",
+        "start_frame": 229,
+        "end_frame": 299,
+        "n_frames": 71,
+        "rejection_reason": "subject_identity_ambiguous"
+      }
+    ],
+    "frames": {
+      "80": {
+        "detected": true,
+        "n_people": 2,
+        "processing_status": "pose_ok",
+        "tracking_status": "locked",
+        "identity_locked": true,
+        "rejection_reason": "",
+        "gap_class": "pose_ok",
+        "n_keypoints": 34,
+        "hip_x": 0.33,
+        "subject_bbox": [
+          0.0993,
+          0.2453,
+          0.4508,
+          0.841
+        ],
+        "other_bboxes": [
+          [
+            0.5743,
+            0.2099,
+            0.8987,
+            0.7624
+          ]
+        ]
+      },
+      "148": {
+        "detected": false,
+        "n_people": 1,
+        "processing_status": "subject_lock_skip",
+        "tracking_status": "unavailable",
+        "identity_locked": false,
+        "rejection_reason": "subject_identity_ambiguous",
+        "gap_class": "identity_ambiguity",
+        "n_keypoints": 0,
+        "hip_x": null,
+        "subject_bbox": null,
+        "other_bboxes": [
+          [
+            0.2816,
+            0.2093,
+            0.6991,
+            0.8393
+          ]
+        ]
+      },
+      "191": {
+        "detected": false,
+        "n_people": 2,
+        "processing_status": "filter_skip",
+        "tracking_status": "locked",
+        "identity_locked": true,
+        "rejection_reason": "insufficient_gait_dof",
+        "gap_class": "insufficient_gait_dof",
+        "n_keypoints": 34,
+        "hip_x": 0.6318,
+        "subject_bbox": [
+          0.461,
+          0.2511,
+          0.8442,
+          0.8468
+        ],
+        "other_bboxes": [
+          [
+            0.0716,
+            0.2128,
+            0.4419,
+            0.7622
+          ]
+        ]
+      },
+      "220": {
+        "detected": true,
+        "n_people": 2,
+        "processing_status": "pose_ok",
+        "tracking_status": "locked",
+        "identity_locked": true,
+        "rejection_reason": "",
+        "gap_class": "pose_ok",
+        "n_keypoints": 34,
+        "hip_x": 0.7876,
+        "subject_bbox": [
+          0.5398,
+          0.2343,
+          0.9905,
+          0.8512
+        ],
+        "other_bboxes": [
+          [
+            0.0,
+            0.1945,
+            0.1842,
+            0.7657
+          ]
+        ]
+      }
+    }
+  },
+  "coverage_delta": {
+    "pose_ok_before": 110,
+    "pose_ok_after": 110,
+    "detected_after": 127,
+    "usable_after": 110,
+    "note": "Tracking thresholds were not relaxed. Pose-ok coverage is unchanged. Detected now counts identity-present frames (including filter_skip with a locked walker); usable remains gait-ready pose_ok frames."
+  },
+  "audit_csv": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\frame_audit.csv",
+  "overlay_dir": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\missing_data_probe",
+  "overlap_clip": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\missing_data_probe\\overlap_clip_0130_0200.mp4"
+}

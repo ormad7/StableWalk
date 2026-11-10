@@ -44,6 +44,16 @@ class GaitPhaseClassificationTests(unittest.TestCase):
         )
         self.assertEqual(phase, "FLIGHT")
 
+    def test_unknown_foot_is_uncertain_not_contralateral_stance(self) -> None:
+        self.assertEqual(
+            classify_gait_phase_from_contacts(0, 1, left_known=False, right_known=True),
+            "UNCERTAIN",
+        )
+        self.assertEqual(
+            classify_gait_phase_from_contacts(1, 0, left_known=True, right_known=False),
+            "UNCERTAIN",
+        )
+
     def test_contact_display_mapping(self) -> None:
         self.assertEqual(contact_to_display_state(1), "CONTACT")
         self.assertEqual(contact_to_display_state(0), "SWING")

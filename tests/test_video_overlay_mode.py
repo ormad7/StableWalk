@@ -76,6 +76,7 @@ class VideoOverlayComposeTests(unittest.TestCase):
                 com=False,
                 ground_reaction=False,
                 joint_trajectory=False,
+                ground_plane=False,
             ),
             opacity=1.0,
         )
@@ -108,6 +109,127 @@ class VideoOverlayComposeTests(unittest.TestCase):
         buf.update(3, [_kp("left_ankle", 0.39, 0.9)])
         trails = buf.trails()
         self.assertEqual(trails, {})
+
+    def test_ground_line_uses_measured_y_only(self) -> None:
+        from stablewalk.pose.video_overlay_compose import (
+            estimate_image_ground_y,
+            image_y_from_vertical_correspondence,
+        )
+
+        self.assertIsNone(estimate_image_ground_y([]))
+        self.assertIsNone(
+            estimate_image_ground_y(
+                [_kp("nose", 0.5, 0.1)],
+                foot_contact={"left": True, "right": False},
+            )
+        )
+        y = estimate_image_ground_y(
+            [
+                _kp("left_heel", 0.4, 0.91),
+                _kp("left_foot_index", 0.42, 0.93),
+            ],
+            foot_contact={"left": True, "right": False},
+        )
+        self.assertIsNotNone(y)
+        assert y is not None
+        self.assertAlmostEqual(y, 0.92, delta=0.02)
+
+        mapped = image_y_from_vertical_correspondence(0.55, 0.90, 0.50, 0.02, 0.02)
+        self.assertIsNotNone(mapped)
+        assert mapped is not None
+        self.assertAlmostEqual(mapped, 0.90, delta=0.01)
+        self.assertIsNone(
+            image_y_from_vertical_correspondence(0.5, 0.9, 0.5, 0.5, 0.0)
+        )
+
+    def test_ground_plane_layer_paints_when_y_known(self) -> None:
+        base = np.full((100, 80, 3), 40, dtype=np.uint8)
+        out = compose_video_skeleton_overlay(
+            base,
+            [],
+            layers=VideoOverlayLayers(
+                skeleton=False,
+                joint_labels=False,
+                com=False,
+                ground_reaction=False,
+                joint_trajectory=False,
+                ground_plane=True,
+            ),
+            opacity=1.0,
+            ground_y_norm=0.80,
+        )
+        self.assertFalse(np.array_equal(out, base))
+
+    def test_ground_plane_not_invented_without_landmarks(self) -> None:
+        base = np.full((60, 60, 3), 12, dtype=np.uint8)
+        out = compose_video_skeleton_overlay(
+            base,
+            [],
+            layers=VideoOverlayLayers(
+                skeleton=False,
+                joint_labels=False,
+                com=False,
+                ground_reaction=False,
+                joint_trajectory=False,
+                ground_plane=True,
+            ),
+            opacity=1.0,
+            ground_y_norm=None,
+        )
+        np.testing.assert_array_equal(out, base)
+
+    def test_foot_clearance_hud_draws_bottom_labels(self) -> None:
+        from stablewalk.pose.video_overlay_compose import draw_foot_clearance_hud
+
+        base = np.full((160, 120, 3), 30, dtype=np.uint8)
+        out = draw_foot_clearance_hud(base, left_cm=4.2, right_cm=2.8)
+        self.assertEqual(out.shape, base.shape)
+        self.assertFalse(np.array_equal(out, base))
+        # Original buffer must stay untouched (shared decode/cache safety).
+        self.assertTrue(np.array_equal(base, np.full((160, 120, 3), 30, dtype=np.uint8)))
+        # Labels sit in the lower band of the frame.
+        top = out[:80, :, :]
+        bottom = out[100:, :, :]
+        self.assertTrue(np.array_equal(top, np.full_like(top, 30)))
+        self.assertFalse(np.array_equal(bottom, np.full_like(bottom, 30)))
+
+    def test_foot_clearance_hud_unavailable_still_labels(self) -> None:
+        from stablewalk.pose.video_overlay_compose import draw_foot_clearance_hud
+
+        base = np.zeros((100, 80, 3), dtype=np.uint8)
+        out = draw_foot_clearance_hud(base, left_cm=None, right_cm=None)
+        self.assertFalse(np.array_equal(out, base))
+
+    def test_foot_ground_drop_indicator_for_selected_sides(self) -> None:
+        from stablewalk.pose.video_overlay_compose import draw_foot_ground_drop_indicators
+
+        base = np.full((160, 120, 3), 25, dtype=np.uint8)
+        out = draw_foot_ground_drop_indicators(
+            base,
+            _sample_keypoints(),
+            ground_y_norm=0.96,
+            sides=("left", "right"),
+            left_cm=4.2,
+            right_cm=2.8,
+        )
+        self.assertEqual(out.shape, base.shape)
+        self.assertFalse(np.array_equal(out, base))
+        # Source buffer unchanged.
+        self.assertTrue(np.array_equal(base, np.full((160, 120, 3), 25, dtype=np.uint8)))
+
+    def test_foot_ground_drop_skips_without_sides(self) -> None:
+        from stablewalk.pose.video_overlay_compose import draw_foot_ground_drop_indicators
+
+        base = np.full((80, 60, 3), 18, dtype=np.uint8)
+        out = draw_foot_ground_drop_indicators(
+            base,
+            _sample_keypoints(),
+            ground_y_norm=0.9,
+            sides=(),
+            left_cm=3.0,
+            right_cm=3.0,
+        )
+        np.testing.assert_array_equal(out, base)
 
 
 class OverlayModeControlsTests(unittest.TestCase):

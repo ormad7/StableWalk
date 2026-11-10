@@ -61,9 +61,14 @@ _COM = MetricTooltip(
     ),
     calculation=(
         "Weighted average of pose landmarks using anthropometric segment "
-        "mass fractions (monocular / root-relative estimate)."
+        "mass fractions (monocular / hip-centered estimate). Charts plot "
+        "pelvis-relative COM Y labeled approx. BH."
     ),
-    units="meters (body-scaled) or normalized height",
+    units=(
+        "BH = body height. Chart Y is pelvis-relative hip-centered units "
+        "(approx. BH), not floor-absolute COM height. Physical metres use "
+        "assumed stature / measured head–ankle span and are not tape-calibrated."
+    ),
     normal=(
         "Near midline; vertical oscillation typically ~2–5 cm at preferred "
         "walking speed in healthy adults."
@@ -158,14 +163,15 @@ _CADENCE = MetricTooltip(
 _SYMMETRY = MetricTooltip(
     title="Gait Symmetry",
     meaning=(
-        "Left–right similarity of temporal and/or spatial gait features "
-        "(stance, swing, ROM, or kinematics)."
+        "Overview reports a multi-feature composite (step, stride, stance, "
+        "swing, cadence, knee/hip/ankle ROM). That is not the same number as "
+        "knee-only SI_norm, signed Robinson SI, or absolute ASI on Asymmetry."
     ),
     calculation=(
-        "Derived index comparing bilateral metrics (e.g. stance-time or "
-        "ROM ratios), often expressed as percent symmetry or asymmetry."
+        "overall_symmetry_pct = 100 × weighted mean of component SI_norm or "
+        "min/max ratios. Knee SI_norm = 2·min(L,R)/(L+R) uses only knee ROM."
     ),
-    units="percent (%) or unitless symmetry index",
+    units="Overall: 0–100 composite %. Knee SI_norm: 0–1. SI/ASI: relative %.",
     normal=(
         "Healthy gait is near-symmetric; mild asymmetry (<5–10%) is common; "
         "larger differences warrant clinical attention."
@@ -239,23 +245,26 @@ _TOE = MetricTooltip(
 )
 
 _CLEARANCE = MetricTooltip(
-    title="Foot Clearance",
+    title="Estimated Foot Clearance",
     meaning=(
-        "Vertical distance between the swing foot (toe/heel/ankle landmark) "
-        "and the estimated floor plane."
+        "Vertical distance from min(heel, toe) to a ground plane estimated "
+        "from stable stance-foot landmarks (monocular pose)."
     ),
     calculation=(
-        "Minimum vertical clearance during mid-swing relative to a "
-        "body-scaled ground reference from pose."
+        "Sequence-level floor from stance-weighted heel/toe heights; "
+        "clearance = max(0, landmark_Y − floor_Y) at body-normalized scale, "
+        "shown in cm. Current, minimum swing, and maximum swing are "
+        "computed only from valid pose samples — never filled in."
     ),
-    units="centimeters (cm)",
+    units="centimeters (cm, body-scale)",
     normal=(
         "Healthy mid-swing toe clearance is often on the order of ~1–2 cm "
         "(highly sensitive to measurement method)."
     ),
     clinical=(
         "Insufficient clearance increases trip risk; excessive clearance "
-        "may reflect compensatory steppage or circumduction."
+        "may reflect compensatory steppage or circumduction. This is a "
+        "pose estimate, not a clinical measurement."
     ),
 )
 
@@ -265,10 +274,13 @@ _JOINT_ANGLE = MetricTooltip(
         "Instantaneous orientation between adjacent body segments at a "
         "selected joint (e.g. knee flexion)."
     ),
-    calculation=(
-        "Angle between segment vectors from 2D/3D pose landmarks; "
-        "convention depends on joint (flexion positive for knee)."
-    ),
+        calculation=(
+            "For the knee: anatomical flexion (deg) = 180° minus the internal "
+            "3D Hip–Knee–Ankle angle (0° = full extension). Missing or "
+            "low-confidence landmarks are omitted. Other joints: pose interior "
+            "angle between adjacent segments. Raw pose interior is an optional "
+            "debug series only."
+        ),
     units="degrees (°)",
     normal=(
         "Healthy knee flexion peaks near ~60–70° in swing; stance knee "
@@ -322,18 +334,24 @@ METRIC_TOOLTIPS: dict[str, MetricTooltip] = {
     "gait_quality": MetricTooltip(
         title="Gait Quality",
         meaning=(
-            "Composite score of timing regularity, symmetry, contact quality, "
-            "and cycle repeatability."
+            "Heuristic session descriptor from the pose-derived components that "
+            "were available. Missing inputs are omitted and weights renormalized. "
+            "Not pose coverage, landmark visibility, spectral reliability, or a "
+            "clinical diagnosis."
         ),
         calculation=(
-            "Derived aggregation of available gait-cycle and symmetry features "
-            "when sufficient strides are detected."
+            "Weighted mean of active components (stability, stable-frame share, "
+            "symmetry, cadence/cycle consistency, contact, motion quality). "
+            "See Metric Details for the formula, missing inputs, and threshold source."
         ),
-        units="score (0–100)",
-        normal="Higher scores indicate steadier, more repeatable walking patterns.",
+        units="heuristic score (0–100)",
+        normal=(
+            "Display bands (≥60 / ≥45) are heuristic, not a clinical normality "
+            "cut-off, and independent of source video labels."
+        ),
         clinical=(
-            "Low scores flag irregular or poorly tracked gait and should be "
-            "interpreted with analysis confidence."
+            "Do not treat this number as a clinical grade or as evidence that "
+            "tracking was accurate. Interpret only with the listed components."
         ),
     ),
     "walking_speed": MetricTooltip(
@@ -357,8 +375,10 @@ METRIC_TOOLTIPS: dict[str, MetricTooltip] = {
         title="Knee Motion",
         meaning="Knee flexion–extension angle time series during walking.",
         calculation=(
-            "Angle between thigh and shank segments from pose landmarks; "
-            "left/right traces compared over time or gait cycles."
+            "Anatomical knee flexion (deg) = 180° − internal 3D Hip–Knee–Ankle "
+            "angle (0° = full extension). The same convention is used on Knee "
+            "Motion and Motion Analysis. Raw pose interior angle is kept only "
+            "as an optional debug series."
         ),
         units="degrees (°)",
         normal=(
@@ -390,19 +410,58 @@ METRIC_TOOLTIPS: dict[str, MetricTooltip] = {
     "analysis_confidence": MetricTooltip(
         title="Analysis Confidence",
         meaning=(
-            "Overall trustworthiness of the derived metrics given tracking "
-            "quality and gait evidence."
+            "Legacy composite only. Results now show pose coverage, per-foot "
+            "contact coverage, spectral reliability, and biomechanical validity "
+            "separately. A High pose-detection rate is not spectral quality."
         ),
         calculation=(
-            "Heuristic from pose detection rate, foot visibility, cycle count, "
-            "and related quality checks."
+            "Heuristic from cycle/event evidence. Detection rate and landmark "
+            "visibility are reported on Tracking and are not this score."
         ),
         units="categorical (High / Moderate / Low) or score",
-        normal="High confidence requires sufficient detected strides and stable tracking.",
-        clinical=(
-            "Low confidence means values are exploratory — avoid strong "
-            "clinical conclusions until tracking improves."
+        normal=(
+            "A high detection rate is not accuracy and does not by itself "
+            "make derived scores valid."
         ),
+        clinical=(
+            "Low confidence means values are exploratory — not a diagnosis, "
+            "and not interchangeable with tracking coverage."
+        ),
+    ),
+    "pose_coverage": MetricTooltip(
+        title="Pose coverage",
+        meaning="Fraction of frames with a detected pose. Presence only — not tracking accuracy.",
+        calculation="detected_frames / n_frames",
+        units="percent of frames",
+        normal="High coverage is not accurate kinematics.",
+        clinical="Does not validate spectral, contact, or COM–BoS results.",
+    ),
+    "contact_coverage": MetricTooltip(
+        title="Contact coverage",
+        meaning=(
+            "Per-foot fraction of usable contact observations. Unknown is a gap, "
+            "not swing. Unequal L/R coverage is not a laterality finding."
+        ),
+        calculation="known_frames / n_frames per foot",
+        units="percent known",
+        normal="Both feet should have comparable known coverage before laterality is discussed.",
+        clinical="Missing left (or right) samples must not be read as limp or asymmetry.",
+    ),
+    "spectral_reliability": MetricTooltip(
+        title="Spectral reliability",
+        meaning="Duration, gaps, contributing cycles, and ACF peak quality of the processed series.",
+        calculation="Quality layer from duration, gap fraction, cycle count, and ACF peak ρ.",
+        units="computed / limited / insufficient / unavailable",
+        normal="Short clips and weak ACF peaks stay limited or insufficient.",
+        clinical="Not pose coverage and not a clinical cadence.",
+    ),
+    "biomechanical_validity": MetricTooltip(
+        title="Biomechanical validity",
+        meaning="Whether a physical interpretation is supported (calibrated metric, force plates, reportable COM–BoS).",
+        calculation="Physical validity requires calibrated metric and/or measured GRF.",
+        units="computed / limited / insufficient / unavailable",
+        normal="Monocular COM–BoS stays unavailable when unreportable.",
+        clinical="Unavailable physical stability is not a Low stability score.",
     ),
     "joint_movement_3d": MetricTooltip(
         title="3D Joint Movement Path",
@@ -474,6 +533,10 @@ METRIC_WIDGET_TOOLTIPS: tuple[tuple[str, str], ...] = (
     ("lbl_foot_clearance_confidence", "foot_clearance"),
     ("lbl_foot_left_current", "foot_clearance"),
     ("lbl_foot_right_current", "foot_clearance"),
+    ("lbl_foot_left_min_swing", "foot_clearance"),
+    ("lbl_foot_right_min_swing", "foot_clearance"),
+    ("lbl_foot_left_max_swing", "foot_clearance"),
+    ("lbl_foot_right_max_swing", "foot_clearance"),
     ("lbl_knee_summary_compact", "joint_angle"),
     ("lbl_joint_motion_hint", "joint_angle"),
     ("lbl_joint_movement_title", "joint_movement_3d"),

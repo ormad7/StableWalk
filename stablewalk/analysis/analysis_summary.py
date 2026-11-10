@@ -21,13 +21,25 @@ from stablewalk.analysis.estimated_vgrf_analysis import EstimatedVGRFResult
 from stablewalk.config import DEFAULT_SUBJECT_HEIGHT_M
 from stablewalk.analysis.foot_contact_analysis import FootContactAnalysisResult
 from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult
+from stablewalk.metrics.session_view import _extract_cadence
+from stablewalk.analysis.result_validity import (
+    ResultValidityReport,
+    build_result_validity,
+    gait_quality_withhold_reason,
+    laterality_withhold_reason,
+)
 from stablewalk.ui.scientific_labels import (
     LABEL_ANALYSIS_CONFIDENCE,
+    LABEL_BIOMECHANICAL_VALIDITY,
     LABEL_CADENCE,
     LABEL_COM_FULL,
+    LABEL_CONTACT_COVERAGE,
     LABEL_GAIT_QUALITY,
     LABEL_JOINT_ROM_SUMMARY,
+    LABEL_POSE_COVERAGE,
+    LABEL_SPECTRAL_RELIABILITY,
     LABEL_STABILITY_MARGIN,
+    LABEL_SYMMETRY,
     LABEL_PIPELINE_CONFIDENCE,
     LABEL_TRACKING_CONFIDENCE,
     LABEL_VIRTUAL_GRF_PANEL,
@@ -41,6 +53,23 @@ from stablewalk.ui.scientific_labels import (
 )
 
 ConfidenceLevel = Literal["High", "Moderate", "Low"]
+
+# Measurement-reliability levels — not pose tracking and not pipeline success.
+# HIGH requires all of:
+#   • ≥ HIGH_MIN_CYCLES complete same-side heel-strike cycles
+#   • session duration ≥ HIGH_MIN_DURATION_S
+#   • contact / cycle measurement score ≥ HIGH_MIN_SCORE
+#   • contact tier is not LOW_CONFIDENCE
+# Two cycles on a ~5 s clip can never be High, even if MediaPipe visibility is 95%+.
+HIGH_MIN_CYCLES = 3
+HIGH_MIN_DURATION_S = 6.0
+HIGH_MIN_SCORE = 0.72
+HIGH_CONFIDENCE_DEFINITION = (
+    "High analysis confidence means measurement reliability, not execution "
+    f"success: >={HIGH_MIN_CYCLES} complete same-side heel-strike cycles, "
+    f"duration >={HIGH_MIN_DURATION_S:.0f} s, and contact/cycle score "
+    f">={HIGH_MIN_SCORE:.0%}. Pose tracking is a separate field."
+)
 
 _PIPELINE_STATUS_SCORE = {
     "completed": 1.0,
@@ -91,6 +120,14 @@ class AnalysisSummary:
     tracking_confidence: SummaryField | None = None
     pipeline_confidence: SummaryField | None = None
     analysis_confidence: SummaryField | None = None
+    pose_coverage: SummaryField | None = None
+    contact_coverage: SummaryField | None = None
+    contact_coverage_left: SummaryField | None = None
+    contact_coverage_right: SummaryField | None = None
+    cycle_evidence: SummaryField | None = None
+    spectral_reliability: SummaryField | None = None
+    biomechanical_validity: SummaryField | None = None
+    result_validity: ResultValidityReport | None = None
     pipeline_status: dict[str, Any] | None = None
     scientific_interpretation: str = ""
     terminology: dict[str, str] = field(default_factory=export_terminology_block)
@@ -124,9 +161,47 @@ class AnalysisSummary:
             "analysis_confidence": None
             if self.analysis_confidence is None
             else self.analysis_confidence.to_dict(),
+            "pose_coverage": None if self.pose_coverage is None else self.pose_coverage.to_dict(),
+            "contact_coverage": None
+            if self.contact_coverage is None
+            else self.contact_coverage.to_dict(),
+            "contact_coverage_left": None
+            if self.contact_coverage_left is None
+            else self.contact_coverage_left.to_dict(),
+            "contact_coverage_right": None
+            if self.contact_coverage_right is None
+            else self.contact_coverage_right.to_dict(),
+            "cycle_evidence": None
+            if self.cycle_evidence is None
+            else self.cycle_evidence.to_dict(),
+            "spectral_reliability": None
+            if self.spectral_reliability is None
+            else self.spectral_reliability.to_dict(),
+            "biomechanical_validity": None
+            if self.biomechanical_validity is None
+            else self.biomechanical_validity.to_dict(),
+            "result_validity": None
+            if self.result_validity is None
+            else self.result_validity.to_dict(),
             "pipeline_status": self.pipeline_status,
             "scientific_interpretation": self.scientific_interpretation,
         }
+
+
+def _map_stability_display(engine_state: str) -> str:
+    """Map engine states to shared Acceptable / Borderline / Reduced labels."""
+    from stablewalk.metrics.status import DisplayStatus
+
+    key = (engine_state or "").strip().lower()
+    if key in ("—", "-", "unavailable", ""):
+        return "—"
+    if key == "stable":
+        return DisplayStatus.ACCEPTABLE.value
+    if "reduced" in key:
+        return DisplayStatus.BORDERLINE.value
+    if key == "unstable":
+        return DisplayStatus.REDUCED.value
+    return engine_state
 
 
 def _dominant_stability_state(ba: BiomechanicalAnalysisResult) -> str:
@@ -137,7 +212,9 @@ def _dominant_stability_state(ba: BiomechanicalAnalysisResult) -> str:
         if f.stability_state == "Unavailable":
             continue
         counts[f.stability_state] = counts.get(f.stability_state, 0) + 1
-    return max(counts, key=counts.get) if counts else "—"
+    if not counts:
+        return "—"
+    return _map_stability_display(max(counts, key=counts.get))
 
 
 def _format_joint_rom_summary(ba: BiomechanicalAnalysisResult) -> tuple[str, str, bool]:
@@ -208,6 +285,156 @@ def _tracking_confidence_field(ba: BiomechanicalAnalysisResult | None) -> Summar
         False,
         "Pose confidence metrics were not recorded for this session.",
     )
+
+
+def _field_from_evidence(label: str, evidence: Any) -> SummaryField:
+    status = str(getattr(evidence, "status", "unavailable") or "unavailable")
+    expl = str(getattr(evidence, "explanation", "") or "")
+    extras = getattr(evidence, "extras", None) or {}
+    coverage = getattr(evidence, "coverage_pct", None)
+    n_detected = getattr(evidence, "n_detected", None)
+    n_frames = getattr(evidence, "n_frames", None)
+    n_usable = extras.get("n_usable")
+    if extras.get("left_pct") is not None and extras.get("right_pct") is not None:
+        value = (
+            f"{status} · L {float(extras['left_pct']):.0f}% · "
+            f"R {float(extras['right_pct']):.0f}% known"
+        )
+    elif n_usable is not None and n_detected is not None and n_frames:
+        value = (
+            f"{int(n_detected)} detected · {int(n_usable)} usable / {int(n_frames)}"
+        )
+    elif coverage is not None:
+        value = f"{status} · {float(coverage):.0f}%"
+    else:
+        value = status
+    available = status not in {"unavailable"}
+    return SummaryField(label, value, TIER_DERIVED, available, expl)
+
+
+def _per_foot_contact_field(label: str, evidence: Any, side: str) -> SummaryField:
+    extras = getattr(evidence, "extras", None) or {}
+    key = "left_pct" if side == "left" else "right_pct"
+    pct = extras.get(key)
+    status = str(getattr(evidence, "status", "unavailable") or "unavailable")
+    if pct is None:
+        return SummaryField(
+            label,
+            "Not available",
+            TIER_DERIVED,
+            False,
+            "Per-foot contact coverage was not recorded.",
+        )
+    return SummaryField(
+        label,
+        f"{float(pct):.0f}% known · {status}",
+        TIER_DERIVED,
+        True,
+        (
+            f"{side.capitalize()} foot: {float(pct):.0f}% of analyzed frames have a known "
+            f"contact state. Missing contact is not gait asymmetry."
+        ),
+    )
+
+
+def _cycle_evidence_field(validity: ResultValidityReport) -> SummaryField:
+    extras = getattr(validity.cycle_detection, "extras", None) or {}
+    n_left = extras.get("n_left")
+    n_right = extras.get("n_right")
+    n_total = getattr(validity.cycle_detection, "n_cycles", None)
+    expl = str(getattr(validity.cycle_detection, "explanation", "") or "")
+    if n_left is None and n_right is None:
+        if n_total is None:
+            return SummaryField(
+                "Cycle evidence",
+                "Not available",
+                TIER_DERIVED,
+                False,
+                expl or "Cycle counts were not recorded.",
+            )
+        return SummaryField(
+            "Cycle evidence",
+            f"{int(n_total)} cycle(s)",
+            TIER_DERIVED,
+            True,
+            expl,
+        )
+    left_n = int(n_left or 0)
+    right_n = int(n_right or 0)
+    n_cand = extras.get("n_candidates")
+    value = f"{left_n} L / {right_n} R accepted"
+    if n_cand is not None:
+        value = f"{value} · {int(n_cand)} candidates"
+    return SummaryField(
+        "Cycle evidence",
+        value,
+        TIER_DERIVED,
+        True,
+        expl or "Accepted per-foot event cycles vs raw HS–HS candidates. Unequal counts are not gait asymmetry.",
+    )
+
+
+def _attach_validity_fields(summary: AnalysisSummary, validity: ResultValidityReport) -> None:
+    summary.result_validity = validity
+    summary.pose_coverage = _field_from_evidence(LABEL_POSE_COVERAGE, validity.pose_coverage)
+    summary.contact_coverage = _field_from_evidence(
+        LABEL_CONTACT_COVERAGE, validity.contact_coverage
+    )
+    summary.contact_coverage_left = _per_foot_contact_field(
+        "Left contact coverage", validity.contact_coverage, "left"
+    )
+    summary.contact_coverage_right = _per_foot_contact_field(
+        "Right contact coverage", validity.contact_coverage, "right"
+    )
+    summary.cycle_evidence = _cycle_evidence_field(validity)
+    summary.spectral_reliability = _field_from_evidence(
+        LABEL_SPECTRAL_RELIABILITY, validity.spectral
+    )
+    summary.biomechanical_validity = _field_from_evidence(
+        LABEL_BIOMECHANICAL_VALIDITY, validity.biomechanical
+    )
+
+
+def _apply_heuristic_withholds(
+    summary: AnalysisSummary,
+    validity: ResultValidityReport,
+    gait_quality_value: str | None,
+) -> None:
+    """Withhold or mark gait-quality / laterality when required inputs are insufficient."""
+    laterality_reason = laterality_withhold_reason(validity)
+    quality_reason = gait_quality_withhold_reason(validity)
+    if laterality_reason:
+        summary.symmetry = SummaryField(
+            LABEL_SYMMETRY,
+            "Not available",
+            TIER_DERIVED,
+            False,
+            laterality_reason,
+        )
+    if quality_reason:
+        summary.overall_gait_quality = SummaryField(
+            LABEL_GAIT_QUALITY,
+            "Not available",
+            TIER_DERIVED,
+            False,
+            quality_reason,
+        )
+    elif gait_quality_value and gait_quality_value != "Not available":
+        existing = summary.overall_gait_quality
+        reason = getattr(existing, "reason", "") or ""
+        if "Unvalidated heuristic" not in reason:
+            reason = (
+                f"{reason} Unvalidated heuristic — not a validated gait-quality grade."
+                if reason
+                else "Unvalidated heuristic — not a validated gait-quality grade."
+            )
+        summary.overall_gait_quality = SummaryField(
+            LABEL_GAIT_QUALITY,
+            gait_quality_value,
+            TIER_DERIVED,
+            True,
+            reason,
+        )
 
 
 def _pipeline_confidence_field(pipeline_status: dict[str, Any] | None) -> SummaryField:
@@ -330,37 +557,106 @@ def _gait_event_status(contact: FootContactAnalysisResult | None) -> list[GaitEv
     ]
 
 
+def _session_duration_s(cycles: GaitCycleAnalysisResult | None) -> float | None:
+    if cycles is None:
+        return None
+    times: list[float] = []
+    for event in getattr(cycles, "events", None) or ():
+        t = getattr(event, "time_s", None)
+        if t is not None:
+            times.append(float(t))
+    for cycle in getattr(cycles, "cycles", None) or ():
+        times.append(float(getattr(cycle, "start_time_s", 0.0) or 0.0))
+        times.append(float(getattr(cycle, "end_time_s", 0.0) or 0.0))
+    if len(times) < 2:
+        return None
+    return max(times) - min(times)
+
+
 def _analysis_confidence(
     ba: BiomechanicalAnalysisResult | None,
     cycles: GaitCycleAnalysisResult | None,
     contact: FootContactAnalysisResult | None,
 ) -> tuple[ConfidenceLevel, str, float]:
+    """Measurement reliability. Pose / pipeline success are reported elsewhere."""
     if ba is None:
         return "Low", "No biomechanical analysis available.", 0.0
-    parts: list[float] = []
+    measure: list[float] = []
     notes: list[str] = []
+    n_cycles = 0
+    duration = _session_duration_s(cycles)
+    contact_tier = ""
     if contact is not None:
-        parts.append(contact.metrics.contact_confidence)
+        cc = getattr(getattr(contact, "metrics", None), "contact_confidence", None)
+        if cc is not None:
+            measure.append(float(cc))
+    n_left = n_right = 0
     if cycles is not None:
-        parts.append(cycles.metrics.contact_confidence)
-    if ba.video_quality is not None:
-        parts.append(ba.video_quality.overall_quality_score / 100.0)
-    if ba.gait_quality is not None:
-        parts.append(ba.gait_quality.confidence)
-    score = float(np.mean(parts)) if parts else 0.35
-    if ba.video_quality and ba.video_quality.overall_quality_score < 50:
-        notes.append("low video quality")
-    if cycles and cycles.metrics.gait_cycle_count < 1:
-        notes.append("few usable gait cycles")
-    if score >= 0.72:
+        n_cycles = int(getattr(cycles.metrics, "gait_cycle_count", 0) or 0)
+        ccyc = getattr(cycles.metrics, "contact_confidence", None)
+        if ccyc is not None:
+            measure.append(float(ccyc))
+        contact_tier = str(getattr(cycles.metrics, "confidence_tier", "") or "")
+        for cycle in getattr(cycles, "cycles", None) or ():
+            side = str(getattr(cycle, "boundary_side", "") or "").lower()
+            if side.startswith("left"):
+                n_left += 1
+            elif side.startswith("right"):
+                n_right += 1
+    score = float(np.mean(measure)) if measure else 0.0
+
+    if n_cycles <= 0:
+        notes.append("no usable gait cycles")
+    elif n_cycles < HIGH_MIN_CYCLES:
+        notes.append(
+            f"only {n_cycles} complete cycle(s); High needs >={HIGH_MIN_CYCLES}"
+        )
+    if n_left == 0 or n_right == 0:
+        notes.append(
+            f"event-based cycles {n_left} L / {n_right} R — unequal coverage "
+            "is not a laterality finding"
+        )
+    if duration is not None and duration < HIGH_MIN_DURATION_S:
+        notes.append(
+            f"clip {duration:.1f} s is shorter than the {HIGH_MIN_DURATION_S:.0f} s High floor"
+        )
+    if contact_tier == "LOW_CONFIDENCE":
+        notes.append("contact confidence tier is LOW")
+
+    sm = getattr(ba, "stability_margin", None)
+    if sm is not None and getattr(sm, "reportable", True) is False:
+        notes.append("physical COM–BoS unavailable")
+
+    can_high = (
+        n_cycles >= HIGH_MIN_CYCLES
+        and n_left >= 1
+        and n_right >= 1
+        and (duration is None or duration >= HIGH_MIN_DURATION_S)
+        and contact_tier != "LOW_CONFIDENCE"
+        and score >= HIGH_MIN_SCORE
+    )
+    if can_high:
         level: ConfidenceLevel = "High"
-    elif score >= 0.5:
+    elif n_cycles >= 1 and score >= 0.45:
         level = "Moderate"
     else:
         level = "Low"
-    detail = f"Composite confidence {score:.0%}"
+
+    tracking = None
+    if ba.video_quality is not None:
+        tracking = ba.video_quality.overall_quality_score
+    detail = (
+        f"Legacy composite {level} "
+        f"(score {score:.0%}, {n_cycles} cycle(s), {n_left} L / {n_right} R"
+        + (f", {duration:.1f} s" if duration is not None else "")
+        + "). Results display pose coverage, contact coverage, spectral "
+        "reliability, and biomechanical validity separately. "
+        + HIGH_CONFIDENCE_DEFINITION
+    )
+    if tracking is not None:
+        detail += f" Pose tracking (separate): {tracking:.0f}/100."
     if notes:
-        detail += f" ({', '.join(notes)})"
+        detail += " " + "; ".join(notes) + "."
     return level, detail, score
 
 
@@ -374,6 +670,7 @@ def build_analysis_summary(
     frame_index: int | None = None,
     timestamp_s: float | None = None,
     pipeline_status: dict[str, Any] | None = None,
+    spectral: Any | None = None,
 ) -> AnalysisSummary:
     """Assemble summary fields from the current analysis bundle."""
     summary = AnalysisSummary(
@@ -397,6 +694,14 @@ def build_analysis_summary(
         summary.gait_events = _gait_event_status(None)
         summary.video_quality = na
         summary.tracking_confidence = _tracking_confidence_field(None)
+        validity = build_result_validity(
+            biomechanical=None,
+            contact=contact,
+            cycles=cycles,
+            spectral=spectral,
+            duration_s=_session_duration_s(cycles),
+        )
+        _attach_validity_fields(summary, validity)
         conf_level, conf_detail, _ = _analysis_confidence(None, cycles, contact)
         summary.analysis_confidence = SummaryField(
             LABEL_ANALYSIS_CONFIDENCE, conf_level, TIER_DERIVED, False, conf_detail
@@ -412,37 +717,64 @@ def build_analysis_summary(
     ba = biomechanical
     gm = ba.gait_metrics
 
-    if ba.gait_quality is not None:
+    gq = ba.gait_quality
+    if (
+        gq is not None
+        and getattr(gq, "available", True)
+        and gq.score is not None
+    ):
         summary.overall_gait_quality = SummaryField(
             LABEL_GAIT_QUALITY,
-            f"{ba.gait_quality.score:.0f}/100",
+            f"{gq.score:.0f}/100",
             TIER_DERIVED,
             True,
-            ba.gait_quality.explanation[:160],
+            gq.explanation[:160],
         )
     else:
+        reason = (
+            gq.explanation
+            if gq is not None and gq.explanation
+            else "Gait quality score was not computed."
+        )
         summary.overall_gait_quality = SummaryField(
             LABEL_GAIT_QUALITY,
             "Not available",
             TIER_DERIVED,
             False,
-            "Gait quality score was not computed.",
+            reason,
         )
 
-    if gm and gm.cadence and gm.cadence.value is not None:
+    cadence_spm, _cadence_confidence = _extract_cadence(ba, cycles)
+    if cadence_spm is not None:
+        cadence_note = (
+            gm.cadence.note
+            if gm and gm.cadence and gm.cadence.value is not None
+            else "From detected gait-cycle timing"
+        )
         summary.cadence = SummaryField(
             LABEL_CADENCE,
-            format_cadence_value(gm.cadence.value),
+            format_cadence_value(cadence_spm),
             TIER_CALCULATED,
             True,
-            gm.cadence.note or "From heel-strike intervals",
+            cadence_note or "From heel-strike intervals",
         )
     else:
-        cadence_reason = (
-            gm.cadence.note
-            if gm and gm.cadence and gm.cadence.note
-            else "Insufficient complete heel-strike cycles for cadence."
-        )
+        from stablewalk.analysis.gait_cycle_analysis import cadence_is_exploratory
+
+        metrics = getattr(cycles, "metrics", None) if cycles is not None else None
+        if cadence_is_exploratory(metrics, cycles):
+            cadence_reason = (
+                "Exploratory — withheld from summary (low-confidence or "
+                "single-channel cadence)."
+            )
+            if metrics is not None and getattr(metrics, "reliability_reason", ""):
+                cadence_reason = f"{cadence_reason} {metrics.reliability_reason}"
+        else:
+            cadence_reason = (
+                gm.cadence.note
+                if gm and gm.cadence and gm.cadence.note
+                else "Insufficient complete heel-strike cycles for cadence."
+            )
         summary.cadence = SummaryField(
             LABEL_CADENCE,
             "Not available",
@@ -492,32 +824,40 @@ def build_analysis_summary(
             "Insufficient bilateral metrics for symmetry index.",
         )
 
-    if ba.stability_margin is not None and ba.stability_margin.stable_pct is not None:
+    sm = ba.stability_margin
+    reportable_stab = bool(getattr(sm, "reportable", True)) if sm is not None else False
+    if reportable_stab and sm is not None and sm.stable_pct is not None:
         dominant = _dominant_stability_state(ba)
         if frame_index is not None:
-            for f in ba.stability_margin.per_frame:
+            for f in sm.per_frame:
                 if f.frame_index == frame_index:
-                    dominant = f.stability_state
+                    dominant = _map_stability_display(f.stability_state)
                     break
         summary.stability_margin = SummaryField(
             LABEL_STABILITY_MARGIN,
-            f"{dominant} ({ba.stability_margin.stable_pct:.0f}% stable frames)",
+            f"{dominant} ({sm.stable_pct:.0f}% stable frames)",
             TIER_DERIVED,
             True,
             "COM–base-of-support margin classification",
         )
     else:
-        stability_reason = (
-            ba.stability_margin.warnings[0]
-            if ba.stability_margin is not None and ba.stability_margin.warnings
-            else "Stability margin requires reliable COM and support polygon data."
-        )
+        if sm is not None and getattr(sm, "reportable", True) is False:
+            stability_reason = (
+                getattr(sm, "experimental_note", None)
+                or "Monocular COM–BoS is experimental and is not a physical stability score."
+            )
+        else:
+            stability_reason = (
+                sm.warnings[0]
+                if sm is not None and getattr(sm, "warnings", None)
+                else "Stability margin requires reliable COM and support polygon data."
+            )
         summary.stability_margin = SummaryField(
             LABEL_STABILITY_MARGIN,
             "Not available",
             TIER_DERIVED,
             False,
-            stability_reason,
+            str(stability_reason),
         )
 
     com_text, com_reason = _interpret_com(ba)
@@ -550,12 +890,19 @@ def build_analysis_summary(
     summary.gait_events = _gait_event_status(contact)
 
     if ba.video_quality is not None:
+        checks = getattr(ba.video_quality, "checks", None) or {}
+        cov = checks.get("pose_coverage_pct")
+        vis = checks.get("mean_landmark_visibility")
+        if cov is not None and vis is not None:
+            vq_text = f"Coverage {float(cov):.0f}% · visibility {float(vis):.0%}"
+        else:
+            vq_text = f"{ba.video_quality.overall_quality_score:.0f}/100"
         summary.video_quality = SummaryField(
             LABEL_VIDEO_QUALITY,
-            f"{ba.video_quality.overall_quality_score:.0f}/100",
+            vq_text,
             TIER_DERIVED,
             True,
-            ba.video_quality.summary_explanation[:200],
+            (ba.video_quality.summary_explanation or "")[:240],
         )
     else:
         summary.video_quality = SummaryField(
@@ -567,6 +914,25 @@ def build_analysis_summary(
         )
 
     summary.tracking_confidence = _tracking_confidence_field(ba)
+
+    validity = build_result_validity(
+        biomechanical=ba,
+        contact=contact,
+        cycles=cycles,
+        spectral=spectral,
+        duration_s=_session_duration_s(cycles),
+        n_pose_frames=int((ba.video_quality.checks or {}).get("n_frames") or 0)
+        if ba.video_quality is not None
+        else 0,
+        coordinate_system=str(
+            getattr(getattr(ba, "center_of_mass", None), "coordinate_frame", "") or ""
+        ),
+    )
+    _attach_validity_fields(summary, validity)
+    gq_value = (
+        summary.overall_gait_quality.value if summary.overall_gait_quality is not None else None
+    )
+    _apply_heuristic_withholds(summary, validity, gq_value)
 
     conf_level, conf_detail, _ = _analysis_confidence(ba, cycles, contact)
     summary.analysis_confidence = SummaryField(

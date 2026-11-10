@@ -1,0 +1,39 @@
+2026-11-03 13:07:25 UTC  START full-analysis rerun  python=C:\Users\ormad\AppData\Local\Programs\Python\Python310\python.exe
+2026-11-03 13:07:25 UTC  ROOT=C:\Users\ormad\Downloads\Stable__Walk\StableWalk
+2026-11-03 13:07:27 UTC  PIPELINE Abnormal Gait source=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\demo_videos\abnormal_gait_v2.mp4 run=run_8a254c44e19fc08b_1793711247114 max_frames=None cache=False
+2026-11-03 13:07:27 UTC    abnormal Loading video... 5%
+2026-11-03 13:07:28 UTC    abnormal Extracting frames... 18%
+2026-11-03 13:07:28 UTC    abnormal Pose estimation... 28%
+2026-11-03 13:08:16 UTC    abnormal Pose estimation... 72% frames=649/649
+2026-11-03 13:08:16 UTC    abnormal Saving pose export... 78% frames=649/649
+2026-11-03 13:08:20 UTC    abnormal Pose estimation complete 58% frames=649/649
+2026-11-03 13:08:20 UTC  OK abnormal frames=649 poses=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\output\poses\run_8a254c44e19fc08b_1793711247114_poses.json elapsed=53.62s
+2026-11-03 13:08:20 UTC  PIPELINE Normal Gait source=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\demo_videos\normal_gait_v2.mp4 run=run_90d21a9367838db7_1793711300741 max_frames=None cache=False
+2026-11-03 13:08:20 UTC    normal Loading video... 5%
+2026-11-03 13:08:23 UTC    normal Extracting frames... 18%
+2026-11-03 13:08:23 UTC    normal Pose estimation... 28%
+2026-11-03 13:08:50 UTC    normal Pose estimation... 72% frames=300/300
+2026-11-03 13:08:50 UTC    normal Saving pose export... 78% frames=300/300
+2026-11-03 13:08:52 UTC    normal Pose estimation complete 58% frames=300/300
+2026-11-03 13:08:52 UTC  OK normal frames=300 poses=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\output\poses\run_90d21a9367838db7_1793711300741_poses.json elapsed=31.79s
+2026-11-03 13:08:52 UTC  PIPELINE Fast Walking source=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\demo_videos\fast_walking_v2.mp4 run=run_8c6680fd92975d40_1793711332538 max_frames=None cache=False
+2026-11-03 13:08:52 UTC    athletic Loading video... 5%
+2026-11-03 13:08:54 UTC    athletic Extracting frames... 18%
+2026-11-03 13:08:54 UTC    athletic Pose estimation... 28%
+2026-11-03 13:12:33 UTC    athletic Pose estimation... 72% frames=2261/2261
+2026-11-03 13:12:33 UTC    athletic Saving pose export... 78% frames=2261/2261
+2026-11-03 13:12:45 UTC    athletic Pose estimation complete 58% frames=2261/2261
+2026-11-03 13:12:46 UTC  OK athletic frames=2261 poses=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\output\poses\run_8c6680fd92975d40_1793711332538_poses.json elapsed=233.51s
+2026-11-03 13:12:46 UTC  Starting validation export from newly written pose dumps
+2026-11-03 13:12:46 UTC  AUDIT Abnormal Gait dump=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\output\poses\run_8a254c44e19fc08b_1793711247114_poses.json
+2026-11-03 13:13:10 UTC  AUDIT OK abnormal source=649 analyzed=649 excluded=0
+2026-11-03 13:13:10 UTC  AUDIT Normal Gait dump=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\output\poses\run_90d21a9367838db7_1793711300741_poses.json
+2026-11-03 13:13:16 UTC  AUDIT OK normal source=300 analyzed=300 excluded=0
+2026-11-03 13:13:16 UTC  AUDIT Fast Walking dump=C:\Users\ormad\Downloads\Stable__Walk\StableWalk\data\output\poses\run_8c6680fd92975d40_1793711332538_poses.json
+2026-11-03 13:14:37 UTC  AUDIT OK athletic source=2261 analyzed=2261 excluded=0
+2026-11-03 13:14:37 UTC  Running pytest subset
+2026-11-03 13:14:43 UTC  ........................................................................ [ 86%]
+...........                                                              [100%]
+83 passed in 4.94s
+2026-11-03 13:14:43 UTC  Wrote C:\Users\ormad\Downloads\Stable__Walk\StableWalk\validation_outputs\validation_report.md
+2026-11-03 13:14:43 UTC  DONE

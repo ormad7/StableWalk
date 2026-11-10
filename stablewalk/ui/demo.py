@@ -48,8 +48,8 @@ def get_demo_clips() -> tuple[DemoClip, DemoClip]:
     )
 
 
-# Faster processing during live demo (still enough frames for charts)
-DEMO_MAX_FRAMES: int | None = 120
+# Cover a 15–30 s example at ~30 FPS without looping or interpolating frames.
+DEMO_MAX_FRAMES: int | None = 900
 
 # Pause between demo steps (milliseconds)
 DEMO_PAUSE_MS = 4000

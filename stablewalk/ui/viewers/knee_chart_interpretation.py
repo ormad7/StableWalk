@@ -286,14 +286,18 @@ def build_knee_motion_summary(
 
 def format_interpretation_panel(summary: KneeMotionSummary) -> str:
     lines = ["KNEE MOTION SUMMARY", ""]
+    if summary.chart_mode == "gait_cycle_pct":
+        left_label, right_label = "Left-cycle ROM", "Right-cycle ROM"
+    else:
+        left_label, right_label = "Left full-session ROM", "Right full-session ROM"
     if summary.left_rom_deg is not None:
-        lines.append(f"Left ROM: {summary.left_rom_deg:.0f}°")
+        lines.append(f"{left_label}: {summary.left_rom_deg:.0f}°")
     else:
-        lines.append("Left ROM: —")
+        lines.append(f"{left_label}: —")
     if summary.right_rom_deg is not None:
-        lines.append(f"Right ROM: {summary.right_rom_deg:.0f}°")
+        lines.append(f"{right_label}: {summary.right_rom_deg:.0f}°")
     else:
-        lines.append("Right ROM: —")
+        lines.append(f"{right_label}: —")
     if summary.rom_asymmetry_pct is not None:
         lines.append(f"ROM asymmetry: {summary.rom_asymmetry_pct:.1f}%")
     if summary.cycle_repeatability and summary.chart_mode == "gait_cycle_pct":

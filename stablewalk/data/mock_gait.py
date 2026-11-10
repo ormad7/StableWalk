@@ -297,6 +297,7 @@ def generate_mock_gait(
             "generator": "stablewalk.data.mock_gait",
             "cadence_hz": cfg.cadence_hz,
             "stride_length_m": cfg.stride_length_m,
+            "knee_angle_storage": "anatomical_flexion",
         },
     )
     recording.build_time_series()

@@ -126,6 +126,7 @@ def _run_legacy_two_pass(
     max_frames: int | None,
     progress: ProgressCallback,
     pose_backend: str | None = None,
+    subject_selection=None,
 ) -> tuple[FrameExtractionResult, list[str], PoseExtractionResult]:
     """Extract JPGs, then re-read each file for pose (slow, debug-friendly)."""
     _emit(
@@ -171,6 +172,7 @@ def _run_legacy_two_pass(
         backend_name=pose_backend or config.POSE_BACKEND,
         max_frames=max_frames,
         enrich=True,
+        subject_selection=subject_selection,
     )
     _emit(
         progress,
@@ -194,6 +196,7 @@ def _run_single_pass(
     max_frames: int | None,
     progress: ProgressCallback,
     pose_backend: str | None = None,
+    subject_selection=None,
 ) -> tuple[FrameExtractionResult, list[str], PoseExtractionResult]:
     """One video decode: pose inference + optional JPG cache for GUI playback."""
     _emit(
@@ -215,6 +218,7 @@ def _run_single_pass(
         max_frames=max_frames,
         jpeg_quality=config.DEFAULT_JPEG_QUALITY,
         enrich=True,
+        subject_selection=subject_selection,
     )
     if extraction.frame_count == 0:
         raise RuntimeError("Video returned no frames — invalid or empty video source.")
@@ -269,6 +273,7 @@ def run_gait_pipeline(
     cache_frames: CacheFramesMode | None = None,
     on_progress: ProgressCallback | None = None,
     pose_backend: str | None = None,
+    subject_selection=None,
 ) -> PipelineResult:
     """
     Process a video from URL or local path.
@@ -318,6 +323,7 @@ def run_gait_pipeline(
             max_frames=max_frames,
             progress=progress,
             pose_backend=backend,
+            subject_selection=subject_selection,
         )
     else:
         extraction, frame_paths, pose_result = _run_single_pass(
@@ -328,6 +334,7 @@ def run_gait_pipeline(
             max_frames=max_frames,
             progress=progress,
             pose_backend=backend,
+            subject_selection=subject_selection,
         )
 
     ff_hash = _first_frame_hash(frame_paths)

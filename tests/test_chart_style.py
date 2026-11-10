@@ -7,13 +7,56 @@ import matplotlib
 matplotlib.use("Agg")
 from matplotlib.figure import Figure
 
+from stablewalk.ui.colors import TEXT, TEXT_SECONDARY
 from stablewalk.ui.viewers.chart_style import (
     TIMELINE_X_LABEL,
     apply_chart_grid,
+    apply_chart_panel_style,
     configure_time_axis,
     finalize_stacked_time_axes,
+    style_3d_axis_labels,
     style_single_time_series_chart,
+    unclip_axis_chrome,
 )
+
+
+def _luminance(color) -> float:
+    from matplotlib.colors import to_rgb
+
+    r, g, b = to_rgb(color)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def test_apply_chart_panel_style_uses_light_tick_text() -> None:
+    fig = Figure(figsize=(5, 3))
+    ax = fig.add_subplot(111)
+    apply_chart_panel_style(ax)
+    assert ax.xaxis._major_tick_kw.get("labelcolor") == TEXT_SECONDARY
+    assert _luminance(ax.xaxis.label.get_color()) >= 0.62
+
+
+def test_unclip_recolors_black_titles_and_axes() -> None:
+    fig = Figure(figsize=(5, 3))
+    ax = fig.add_subplot(111)
+    ax.set_title("Knee flexion", color="black")
+    ax.set_xlabel("Time (s)", color="k")
+    ax.set_ylabel("deg", color="#000000")
+    unclip_axis_chrome(ax)
+    assert ax.title.get_color() == TEXT
+    assert bool(ax.title.get_clip_on()) is False
+    assert ax.xaxis.label.get_color() == TEXT_SECONDARY
+    assert ax.yaxis.label.get_color() == TEXT_SECONDARY
+    assert bool(ax.xaxis.label.get_clip_on()) is False
+
+
+def test_style_3d_axis_labels_are_light() -> None:
+    fig = Figure(figsize=(4, 4))
+    ax = fig.add_subplot(111, projection="3d")
+    style_3d_axis_labels(ax)
+    assert _luminance(ax.xaxis.label.get_color()) >= 0.62
+    assert _luminance(ax.yaxis.label.get_color()) >= 0.62
+    assert _luminance(ax.zaxis.label.get_color()) >= 0.62
+    assert bool(ax.xaxis.label.get_clip_on()) is False
 
 
 def test_style_single_time_series_chart_sets_time_and_units() -> None:
@@ -109,4 +152,82 @@ def test_style_chart_legend_is_dynamic() -> None:
     leg = style_chart_legend(ax)
     assert leg is not None
     assert len(leg.get_texts()) == 2
-    assert leg.get_texts()[0].get_fontsize() >= 9.5
+    assert leg.get_texts()[0].get_fontsize() >= 11.0
+    # Outside-axes placement by default (projector-friendly).
+    bb = leg.get_bbox_to_anchor()
+    assert bb is not None
+
+
+def test_presentation_layout_widens_plot_area() -> None:
+    from stablewalk.ui.viewers.chart_style import (
+        PRESENTATION_SINGLE_MARGINS,
+        apply_presentation_layout,
+    )
+
+    fig = Figure(figsize=(6, 4))
+    fig.add_subplot(111)
+    apply_presentation_layout(fig, mode="single")
+    assert fig.subplotpars.right == PRESENTATION_SINGLE_MARGINS["right"]
+    assert fig.subplotpars.left == PRESENTATION_SINGLE_MARGINS["left"]
+    # Wider data band than the previous right=0.78 convention.
+    assert fig.subplotpars.right - fig.subplotpars.left > 0.75
+
+
+def test_motion_knee_layout_keeps_chrome_inside_panel() -> None:
+    from stablewalk.ui.viewers.chart_style import (
+        MOTION_KNEE_MARGINS,
+        apply_motion_knee_layout,
+        style_motion_knee_legend,
+    )
+
+    fig = Figure(figsize=(6.5, 3.5))
+    ax = fig.add_subplot(111)
+    ax.plot([0.0, 1.0], [10.0, 20.0], label="Left")
+    ax.plot([0.0, 1.0], [12.0, 18.0], label="Right")
+    ax.set_title("Knee flexion · Pose-derived")
+    style_motion_knee_legend(ax, ncol=1)
+    apply_motion_knee_layout(fig)
+
+    assert fig.subplotpars.left == MOTION_KNEE_MARGINS["left"]
+    assert fig.subplotpars.right == MOTION_KNEE_MARGINS["right"]
+    assert fig.subplotpars.top == MOTION_KNEE_MARGINS["top"]
+    assert fig.subplotpars.bottom == MOTION_KNEE_MARGINS["bottom"]
+    # Legend stays inside the axes so it cannot clip off the panel.
+    leg = ax.get_legend()
+    assert leg is not None
+    assert leg._loc == 1 or str(leg._loc) in ("1", "upper right")  # type: ignore[attr-defined]
+    # Data band is wide — no right-side legend rail stealing plot width.
+    assert fig.subplotpars.right - fig.subplotpars.left > 0.80
+
+
+def test_autoscale_y_uses_shared_padding() -> None:
+    from stablewalk.ui.viewers.chart_style import Y_AUTOSCALE_PAD, autoscale_y_with_padding
+
+    fig = Figure(figsize=(4, 3))
+    ax = fig.add_subplot(111)
+    ylim = autoscale_y_with_padding(ax, [0.0, 100.0])
+    assert ylim is not None
+    span = ylim[1] - ylim[0]
+    assert abs(span - 100.0 * (1.0 + 2.0 * Y_AUTOSCALE_PAD)) < 1e-6
+
+
+def test_compact_mpl_toolbar_omits_subplot_config() -> None:
+    from stablewalk.ui.tk.mpl_toolbar import CompactNavigationToolbar
+
+    names = [item[0] for item in CompactNavigationToolbar.toolitems]
+    assert "Subplots" not in names
+    assert "Home" in names
+    assert "Save" in names
+
+
+def test_bh_is_defined_in_methods_and_com_tooltip() -> None:
+    from stablewalk.ui.metric_tooltips import get_metric_tooltip
+    from stablewalk.ui.scientific_labels import BH_DEFINITION, METHODS_OVERVIEW
+
+    assert "body height" in BH_DEFINITION.lower()
+    assert "pelvis-relative" in BH_DEFINITION.lower()
+    assert BH_DEFINITION in METHODS_OVERVIEW
+    tip = get_metric_tooltip("com")
+    assert tip is not None
+    assert "BH" in tip
+    assert "body height" in tip.lower()

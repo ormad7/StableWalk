@@ -1,10 +1,11 @@
 """
-Professional StableWalk session PDF report (ReportLab).
+Professional StableWalk Research PDF report (ReportLab).
 
-Generates a multi-page biomechanics laboratory report including session
-metadata, pipeline status, gait/biomech metrics, joint ROM, graphs,
-skeleton / trajectory figures, foot-contact and COM analysis, plus an
-automatic conclusion and recommendations.
+Multi-page research / laboratory report including:
+patient/session info, screenshots, pipeline summary, gait quality,
+stability, cadence, ROM, COM, symmetry, heel strikes, contact timing,
+graph snapshots, comparison summary, clinical-style interpretation,
+confidence, and processing information.
 """
 
 from __future__ import annotations
@@ -31,19 +32,22 @@ from stablewalk.analysis.foot_contact_analysis import FootContactAnalysisResult
 from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult
 from stablewalk.analysis.session_compare import com_path_xyz, knee_angle_series
 from stablewalk.models.pose_data import PoseSequence
+from stablewalk.ui.scientific_labels import (
+    DISCLAIMER_RESEARCH,
+    METHODS_OVERVIEW,
+    UNITS_COORD_LEGEND,
+)
 
 logger = logging.getLogger(__name__)
 
-REPORT_SCHEMA_VERSION = "1.0"
-DISCLAIMER = (
-    "Monocular pose-estimated biomechanics — for research and education only. "
-    "Not a clinical diagnosis or medical device output."
-)
+REPORT_SCHEMA_VERSION = "2.0"
+DISCLAIMER = DISCLAIMER_RESEARCH
+REPORT_TITLE = "StableWalk Research Report"
 
 
 @dataclass
 class SessionPdfReportContext:
-    """All inputs required to render a professional session PDF."""
+    """All inputs required to render a professional research PDF."""
 
     source: str = ""
     run_name: str = ""
@@ -70,6 +74,12 @@ class SessionPdfReportContext:
     skeleton_connections: list[tuple[int, int]] = field(default_factory=list)
     conclusion: str = ""
     recommendations: str = ""
+    app_version: str = ""
+    pose_backend: str = ""
+    comparison_summary: str = ""
+    clinical_interpretation: str = ""
+    processing_lines: list[str] = field(default_factory=list)
+    screenshot_paths: list[Path] = field(default_factory=list)
 
 
 def _require_reportlab():
@@ -159,17 +169,22 @@ def _load_video_thumbnail(
             import cv2
 
             cap = cv2.VideoCapture(str(video_path))
-            if not cap.isOpened():
-                return None
-            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            frame_i = int(round(progress * max(total - 1, 0)))
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_i)
-            ok, bgr = cap.read()
-            cap.release()
-            if not ok or bgr is None:
-                return None
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            return Image.fromarray(rgb)
+            try:
+                if not cap.isOpened():
+                    return None
+                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                frame_i = int(round(progress * max(total - 1, 0)))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_i)
+                ok, bgr = cap.read()
+                if not ok or bgr is None:
+                    return None
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                return Image.fromarray(rgb)
+            finally:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
         except Exception:
             return None
     return None
@@ -305,11 +320,128 @@ def _render_contact_graph(ctx: SessionPdfReportContext, path: Path) -> Path | No
     ax.set_yticks([0.5, 1.65])
     ax.set_yticklabels(["Left", "Right"])
     ax.set_xlabel("Time (s)")
-    ax.set_title("Foot contact analysis")
+    ax.set_title("Foot contact timing (estimated)")
     ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, axis="x", alpha=0.3)
     fig.tight_layout()
     return _fig_to_png(fig, path)
+
+
+def _render_heel_strike_graph(ctx: SessionPdfReportContext, path: Path) -> Path | None:
+    """Mark estimated heel-strike events on the contact timeline."""
+    cycles = ctx.cycles
+    contact = ctx.foot_contact
+    events = getattr(cycles, "events", None) if cycles is not None else None
+    frames = getattr(contact, "per_frame", None) if contact is not None else None
+    if not events and not frames:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7.2, 2.2), dpi=120)
+    if frames:
+        t = [float(f.time_s) for f in frames]
+        left = [float(getattr(f, "left_contact_binary", 0)) for f in frames]
+        right = [float(getattr(f, "right_contact_binary", 0)) + 1.15 for f in frames]
+        ax.fill_between(t, 0, left, step="mid", alpha=0.35, color="#2563eb")
+        ax.fill_between(t, 1.15, right, step="mid", alpha=0.35, color="#dc2626")
+
+    lhs = [
+        float(e.time_s)
+        for e in (events or [])
+        if getattr(e, "event_type", "") == "left_heel_strike"
+    ]
+    rhs = [
+        float(e.time_s)
+        for e in (events or [])
+        if getattr(e, "event_type", "") == "right_heel_strike"
+    ]
+    for ti in lhs:
+        ax.axvline(ti, color="#1d4ed8", linewidth=1.2, alpha=0.9)
+    for ti in rhs:
+        ax.axvline(ti, color="#b91c1c", linewidth=1.2, alpha=0.9, linestyle="--")
+    if lhs:
+        ax.plot([], [], color="#1d4ed8", label=f"Left HS (n={len(lhs)})")
+    if rhs:
+        ax.plot([], [], color="#b91c1c", linestyle="--", label=f"Right HS (n={len(rhs)})")
+    ax.set_yticks([0.5, 1.65])
+    ax.set_yticklabels(["Left", "Right"])
+    ax.set_xlabel("Time (s)")
+    ax.set_title("Heel strikes (estimated timing)")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(True, axis="x", alpha=0.3)
+    fig.tight_layout()
+    return _fig_to_png(fig, path)
+
+
+def _render_stability_margin_graph(ctx: SessionPdfReportContext, path: Path) -> Path | None:
+    ba = ctx.biomechanical
+    sm = getattr(ba, "stability_margin", None) if ba is not None else None
+    frames = getattr(sm, "per_frame", None) if sm is not None else None
+    if not frames:
+        return None
+    t = [float(f.time_s) for f in frames]
+    y = [
+        float(f.stability_margin_m)
+        if getattr(f, "stability_margin_m", None) is not None
+        else np.nan
+        for f in frames
+    ]
+    if not any(np.isfinite(v) for v in y):
+        return None
+    fig, ax = plt.subplots(figsize=(7.2, 2.4), dpi=120)
+    ax.plot(t, y, color="#0f766e", linewidth=1.5, label="COM–BoS signed distance")
+    ax.axhline(
+        0.0,
+        color="#64748b",
+        linestyle="--",
+        linewidth=1.0,
+        label="BoS boundary (signed distance = 0)",
+    )
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Signed distance (m)")
+    ax.set_title("COM–BoS signed distance (unvalidated preview)")
+    ax.legend(fontsize=7, loc="upper right")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return _fig_to_png(fig, path)
+
+
+def _render_vgrf_graph(ctx: SessionPdfReportContext, path: Path) -> Path | None:
+    vgrf = ctx.estimated_vgrf
+    if vgrf is None or not getattr(vgrf, "available", False):
+        return None
+    t = np.asarray(getattr(vgrf, "timestamps", []), dtype=float)
+    total = np.asarray(getattr(vgrf, "total_vgrf_bw", None) or [], dtype=float)
+    if total.size == 0:
+        left = np.asarray(getattr(vgrf, "left_vgrf_bw", []), dtype=float)
+        right = np.asarray(getattr(vgrf, "right_vgrf_bw", []), dtype=float)
+        if left.size and right.size and left.size == right.size:
+            total = left + right
+    if t.size < 2 or total.size != t.size:
+        return None
+    fig, ax = plt.subplots(figsize=(7.2, 2.4), dpi=120)
+    ax.plot(t, total, color="#7c3aed", linewidth=1.5, label="Total vGRF")
+    left = np.asarray(getattr(vgrf, "left_vgrf_bw", []), dtype=float)
+    right = np.asarray(getattr(vgrf, "right_vgrf_bw", []), dtype=float)
+    if left.size == t.size:
+        ax.plot(t, left, color="#2563eb", linewidth=1.0, alpha=0.75, label="Left")
+    if right.size == t.size:
+        ax.plot(t, right, color="#dc2626", linewidth=1.0, alpha=0.75, label="Right")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Force (BW)")
+    ax.set_title("Estimated Virtual GRF (pose-based)")
+    ax.legend(fontsize=7, loc="upper right")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return _fig_to_png(fig, path)
+
+
+def _escape(text: str) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def _fmt(v: Any, *, digits: int = 2, suffix: str = "") -> str:
@@ -420,6 +552,36 @@ def build_validation_warnings(ctx: SessionPdfReportContext) -> list[str]:
         warnings.extend(ctx.cycles.warnings)
     if ctx.biomechanical is not None:
         warnings.extend(ctx.biomechanical.warnings)
+
+    # OpenSim residual / pose↔IK agreement when session artifacts exist on disk.
+    run_name = getattr(ctx, "run_name", None) or ""
+    if run_name:
+        try:
+            from stablewalk.analysis.pipeline_validation import (
+                compare_pose_mot_to_ik_mot,
+                find_ik_marker_errors_sto,
+                find_ik_mot,
+                find_pose_mot,
+                opensim_session_dir,
+                parse_ik_marker_errors,
+            )
+
+            session_dir = opensim_session_dir(str(run_name))
+            sto = find_ik_marker_errors_sto(session_dir)
+            ik_err = parse_ik_marker_errors(sto) if sto else None
+            if ik_err is not None:
+                warnings.append(ik_err.summary_line())
+                warnings.extend(ik_err.warnings)
+            pose_mot = find_pose_mot(session_dir, str(run_name))
+            ik_mot = find_ik_mot(session_dir, str(run_name))
+            if pose_mot is not None and ik_mot is not None:
+                agree = compare_pose_mot_to_ik_mot(pose_mot, ik_mot)
+                if agree is not None:
+                    warnings.append(agree.summary_line())
+                    warnings.extend(agree.warnings[:2])
+        except Exception:
+            logger.debug("OpenSim validation warnings unavailable", exc_info=True)
+
     return list(dict.fromkeys(w.strip() for w in warnings if w and w.strip()))
 
 
@@ -520,6 +682,19 @@ def build_session_pdf_context_from_gui(gui: Any) -> SessionPdfReportContext:
     patient_id = str(getattr(gui, "_report_patient_id", "") or run_name or "")
     notes = str(getattr(gui, "_report_session_notes", "") or "")
 
+    try:
+        from stablewalk import __version__ as _sw_ver
+    except Exception:
+        _sw_ver = ""
+    pose_backend = ""
+    if meta is not None:
+        pose_backend = str(getattr(meta, "pose_backend_used", "") or "")
+    if not pose_backend:
+        try:
+            pose_backend = str(gui._selected_pose_backend())
+        except Exception:
+            pose_backend = "mediapipe"
+
     pipe = None
     if summary is not None:
         pipe = summary.pipeline_status
@@ -554,7 +729,101 @@ def build_session_pdf_context_from_gui(gui: Any) -> SessionPdfReportContext:
         pipeline_status=pipe,
         skeleton_xyz=skeleton_xyz,
         skeleton_connections=connections,
+        app_version=str(_sw_ver),
+        pose_backend=pose_backend,
     )
+
+    # Clinical-style interpretation (non-diagnostic) from AnalysisSummary.
+    if summary is not None and getattr(summary, "scientific_interpretation", ""):
+        ctx.clinical_interpretation = str(summary.scientific_interpretation).strip()
+
+    # Comparison summary from Compare cache when Session A and B are ready.
+    try:
+        from stablewalk.analysis.session_compare import compare_session_metrics
+        from stablewalk.ui.tk.session_cache import (
+            ensure_compare_cache,
+            sessions_are_identical,
+        )
+
+        cache = ensure_compare_cache(gui)
+        left = cache.left()
+        right = cache.right()
+        if left is not None and right is not None:
+            if sessions_are_identical(left, right):
+                ctx.comparison_summary = (
+                    "Compare Mode: Session A and Session B are identical — "
+                    "no metric deltas."
+                )
+            else:
+                result = compare_session_metrics(left.metrics, right.metrics)
+                parts = [
+                    result.lab_report_summary or result.interpretation or "",
+                    result.research_summary or "",
+                ]
+                ctx.comparison_summary = "\n\n".join(p.strip() for p in parts if p.strip())
+    except Exception:
+        logger.debug("Could not attach comparison summary for PDF", exc_info=True)
+
+    # Processing information (display / provenance only).
+    processing: list[str] = [
+        f"StableWalk version: {ctx.app_version or '—'}",
+        f"Pose backend: {ctx.pose_backend or '—'}",
+        f"Report schema: {REPORT_SCHEMA_VERSION}",
+        f"Generated (UTC): {ctx.generated_at}",
+        f"Source: {ctx.source or '—'}",
+        f"Frames detected/total: {ctx.detected_frames}/{ctx.n_frames}",
+        f"FPS: {_fmt(ctx.fps, digits=1)}",
+        f"Duration: {_fmt(ctx.duration_s, digits=2, suffix=' s')}",
+    ]
+    if meta is not None:
+        for attr, label in (
+            ("pose_backend_requested", "Backend requested"),
+            ("pose_backend_used", "Backend used"),
+            ("pose_backend_fallback", "Backend fallback"),
+        ):
+            val = getattr(meta, attr, None)
+            if val is not None and str(val) != "":
+                processing.append(f"{label}: {val}")
+    if cycles is not None:
+        m = cycles.metrics
+        processing.append(
+            f"Usable gait cycles: {getattr(m, 'gait_cycle_count', None) or '—'}"
+        )
+        processing.append(
+            f"Contact confidence: {_fmt(getattr(m, 'contact_confidence', None), digits=2)}"
+        )
+    processing.append(UNITS_COORD_LEGEND)
+    processing.append(DISCLAIMER_RESEARCH)
+    ctx.processing_lines = processing
+
+    # Optional live-figure snapshots from the dashboard (display only).
+    screenshot_paths: list[Path] = []
+    try:
+        tmp_shots = Path(tempfile.mkdtemp(prefix="stablewalk_pdf_shots_"))
+        for attr, name in (
+            ("fig_biomech", "biomech_timeline"),
+            ("fig", "knee_flexion"),
+            ("fig_contact_gait", "contact_vgrf"),
+        ):
+            fig = getattr(gui, attr, None)
+            if fig is None:
+                continue
+            out_p = tmp_shots / f"{name}.png"
+            try:
+                fig.savefig(
+                    out_p,
+                    dpi=140,
+                    bbox_inches="tight",
+                    facecolor=fig.get_facecolor(),
+                )
+                if out_p.is_file():
+                    screenshot_paths.append(out_p)
+            except Exception:
+                continue
+    except Exception:
+        screenshot_paths = []
+    ctx.screenshot_paths = screenshot_paths
+
     ctx.conclusion = build_automatic_conclusion(ctx)
     ctx.recommendations = build_recommendations(ctx)
     return ctx
@@ -658,9 +927,24 @@ def export_session_pdf_report(
     com_fig = _render_com_graph(ctx, tmp / "com.png")
     traj_path = _render_trajectory_3d(ctx, tmp / "traj3d.png")
     contact_path = _render_contact_graph(ctx, tmp / "contact.png")
-    for p in (skel_path, knee_path, com_fig, traj_path, contact_path):
+    hs_path = _render_heel_strike_graph(ctx, tmp / "heel_strikes.png")
+    margin_path = _render_stability_margin_graph(ctx, tmp / "stability_margin.png")
+    vgrf_path = _render_vgrf_graph(ctx, tmp / "vgrf.png")
+    for p in (
+        skel_path,
+        knee_path,
+        com_fig,
+        traj_path,
+        contact_path,
+        hs_path,
+        margin_path,
+        vgrf_path,
+    ):
         if p is not None:
             assets.append(p)
+    for p in ctx.screenshot_paths:
+        if p is not None and Path(p).is_file():
+            assets.append(Path(p))
 
     def _table(data: list[list[Any]], *, col_widths: list[float] | None = None) -> Any:
         t = Table(data, colWidths=col_widths, hAlign="LEFT")
@@ -698,12 +982,21 @@ def export_session_pdf_report(
 
     story: list[Any] = []
 
-    story.append(RLImage(str(logo), width=150 * mm, height=40 * mm, kind="proportional"))
-    story.append(Spacer(1, 4 * mm))
-    story.append(Paragraph("Professional Gait Analysis Report", styles["SWTitle"]))
+    # ── Cover ────────────────────────────────────────────────────────────
+    story.append(RLImage(str(logo), width=150 * mm, height=36 * mm, kind="proportional"))
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph(REPORT_TITLE, styles["SWTitle"]))
+    story.append(
+        Paragraph(
+            "Pose-estimated gait biomechanics — research &amp; laboratory review",
+            styles["SWSmall"],
+        )
+    )
     story.append(Paragraph(DISCLAIMER, styles["SWSmall"]))
     story.append(Spacer(1, 4 * mm))
 
+    # ── 1. Patient / session information ────────────────────────────────
+    story.append(Paragraph("1. Patient / Session Information", styles["SWHeading"]))
     meta_rows = [
         ["Field", "Value"],
         ["Generated", ctx.generated_at],
@@ -717,16 +1010,25 @@ def export_session_pdf_report(
         ["Duration", _fmt(ctx.duration_s, digits=2, suffix=" s")],
         ["Selected joints", ", ".join(ctx.selected_joints) if ctx.selected_joints else "—"],
         ["Notes", ctx.notes or "—"],
+        ["StableWalk version", ctx.app_version or "—"],
+        ["Pose backend", ctx.pose_backend or "—"],
         ["Report schema", REPORT_SCHEMA_VERSION],
     ]
-    story.append(Paragraph("Patient / Session Information", styles["SWHeading"]))
     story.append(_table(meta_rows, col_widths=[55 * mm, 120 * mm]))
-    story.append(Spacer(1, 4 * mm))
+    story.append(Spacer(1, 3 * mm))
 
+    story.append(Paragraph("Methods", styles["SWHeading"]))
+    story.append(Paragraph(METHODS_OVERVIEW, styles["SWBody"]))
+    story.append(Spacer(1, 1 * mm))
+    story.append(Paragraph(UNITS_COORD_LEGEND, styles["SWMeta"]))
+    story.append(Spacer(1, 3 * mm))
+
+    # ── 2. Screenshot ───────────────────────────────────────────────────
+    story.append(Paragraph("2. Session Screenshot", styles["SWHeading"]))
     media_cells = [
         [
-            Paragraph("<b>Video thumbnail</b>", styles["SWMeta"]),
-            Paragraph("<b>Skeleton image</b>", styles["SWMeta"]),
+            Paragraph("<b>Video frame</b>", styles["SWMeta"]),
+            Paragraph("<b>Skeleton snapshot</b>", styles["SWMeta"]),
         ],
         [
             _img(thumb_path, width=80 * mm, height=55 * mm),
@@ -736,9 +1038,21 @@ def export_session_pdf_report(
     media = Table(media_cells, colWidths=[90 * mm, 90 * mm])
     media.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(media)
+    if ctx.screenshot_paths:
+        story.append(Spacer(1, 2 * mm))
+        story.append(
+            Paragraph(
+                "<i>Dashboard graph snapshots captured at export time:</i>",
+                styles["SWMeta"],
+            )
+        )
+        for shot in ctx.screenshot_paths[:3]:
+            story.append(Spacer(1, 2 * mm))
+            story.append(_img(Path(shot), width=170 * mm))
     story.append(PageBreak())
 
-    story.append(Paragraph("Pipeline Summary", styles["SWHeading"]))
+    # ── 3. Pipeline summary ─────────────────────────────────────────────
+    story.append(Paragraph("3. Pipeline Summary", styles["SWHeading"]))
     pipe_rows = [["Stage", "Status", "Detail"]]
     pipe = ctx.pipeline_status or {}
     diagram = pipe.get("diagram") if isinstance(pipe, dict) else None
@@ -768,92 +1082,89 @@ def export_session_pdf_report(
         else:
             pipe_rows.append(["Pipeline", "Unavailable", "No pipeline status for this session"])
     story.append(_table(pipe_rows, col_widths=[45 * mm, 30 * mm, 100 * mm]))
-    story.append(Spacer(1, 3 * mm))
-    conf_rows = [
-        ["Confidence", "Value"],
-        ["Video quality", _field_value(ctx.summary, "video_quality")],
-        ["Tracking confidence", _field_value(ctx.summary, "tracking_confidence")],
-        ["Pipeline confidence", _field_value(ctx.summary, "pipeline_confidence")],
-        ["Analysis confidence", _field_value(ctx.summary, "analysis_confidence")],
-    ]
-    story.append(_table(conf_rows, col_widths=[60 * mm, 115 * mm]))
     story.append(PageBreak())
 
-    story.append(Paragraph("Gait Metrics", styles["SWHeading"]))
-    gait_rows = [
+    # ── 4–9. Core metrics ───────────────────────────────────────────────
+    ba = ctx.biomechanical
+    story.append(Paragraph("4. Gait Quality", styles["SWHeading"]))
+    gq_rows = [
         ["Metric", "Value"],
         ["Overall gait quality", _field_value(ctx.summary, "overall_gait_quality")],
+    ]
+    if ba is not None and ba.gait_quality is not None:
+        gq = ba.gait_quality
+        gq_rows.append(["Composite score", _fmt(gq.score, digits=1, suffix=" / 100")])
+        gq_rows.append(["Composite confidence", _fmt(gq.confidence, digits=2)])
+        if gq.explanation:
+            gq_rows.append(["Explanation", str(gq.explanation)[:140]])
+        if gq.dominant_factors:
+            gq_rows.append(["Dominant factors", ", ".join(gq.dominant_factors[:4])])
+    story.append(_table(gq_rows, col_widths=[55 * mm, 120 * mm]))
+
+    story.append(Paragraph("5. Stability", styles["SWHeading"]))
+    stab_rows = [
+        ["Metric", "Value"],
+        ["Stability (summary)", _field_value(ctx.summary, "stability_margin")],
+    ]
+    if ba is not None and ba.stability_margin is not None:
+        sm = ba.stability_margin
+        if getattr(sm, "reportable", True) is False:
+            note = str(
+                getattr(sm, "experimental_note", "")
+                or "Monocular COM–BoS is experimental and is not a physical stability score."
+            )
+            stab_rows.extend(
+                [
+                    ["Reportable", "No"],
+                    ["Note", note[:140]],
+                ]
+            )
+        else:
+            stab_rows.extend(
+                [
+                    ["Stable-frame %", _fmt(sm.stable_pct, digits=1, suffix=" %")],
+                    ["Mean stability margin", _fmt(sm.mean_margin_m, digits=3, suffix=" m")],
+                    ["Valid frame ratio", _fmt(sm.valid_frame_ratio, digits=2)],
+                    ["Margin confidence", _fmt(sm.confidence, digits=2)],
+                ]
+            )
+    story.append(_table(stab_rows, col_widths=[55 * mm, 120 * mm]))
+    if margin_path is not None:
+        story.append(Spacer(1, 2 * mm))
+        story.append(_img(margin_path, width=170 * mm))
+
+    story.append(Paragraph("6. Cadence", styles["SWHeading"]))
+    cad_rows = [
+        ["Metric", "Value"],
         ["Cadence", _field_value(ctx.summary, "cadence")],
         ["Walking speed", _field_value(ctx.summary, "walking_speed")],
-        ["Symmetry", _field_value(ctx.summary, "symmetry")],
-        ["Estimated virtual GRF", _field_value(ctx.summary, "estimated_virtual_grf")],
     ]
     if ctx.cycles is not None:
         m = ctx.cycles.metrics
-        gait_rows.extend(
+        cad_rows.extend(
             [
                 ["Gait cycles (usable)", _fmt(getattr(m, "gait_cycle_count", None), digits=0)],
+                ["Stride time", _fmt(getattr(m, "stride_time_s", None), digits=3, suffix=" s")],
                 [
-                    "Stride time",
-                    _fmt(getattr(m, "stride_time_s", None), digits=3, suffix=" s"),
+                    "Step time",
+                    _fmt(getattr(m, "step_time_s", None), digits=3, suffix=" s"),
                 ],
                 [
                     "Stance duration",
                     _fmt(getattr(m, "average_stance_duration_s", None), digits=3, suffix=" s"),
                 ],
-                [
-                    "Double support %",
-                    _fmt(getattr(m, "double_support_pct", None), digits=1, suffix=" %"),
-                ],
             ]
         )
-    ba = ctx.biomechanical
     if ba is not None and ba.gait_metrics is not None:
         gm = ba.gait_metrics
         if gm.step_length and gm.step_length.value is not None:
-            gait_rows.append(["Step length", _fmt(gm.step_length.value, digits=3, suffix=" m")])
+            cad_rows.append(["Step length", _fmt(gm.step_length.value, digits=3, suffix=" m")])
         if gm.stride_length and gm.stride_length.value is not None:
-            gait_rows.append(["Stride length", _fmt(gm.stride_length.value, digits=3, suffix=" m")])
-    story.append(_table(gait_rows, col_widths=[70 * mm, 105 * mm]))
-
-    story.append(Paragraph("Biomechanics Metrics", styles["SWHeading"]))
-    bio_rows = [
-        ["Metric", "Value"],
-        ["Stability", _field_value(ctx.summary, "stability_margin")],
-        ["Centre of mass", _field_value(ctx.summary, "center_of_mass")],
-        ["Joint ROM summary", _field_value(ctx.summary, "joint_rom_summary")],
-    ]
-    if ba is not None and ba.stability_margin is not None:
-        sm = ba.stability_margin
-        bio_rows.extend(
-            [
-                ["Stability score (stable %)", _fmt(sm.stable_pct, digits=1, suffix=" %")],
-                ["Mean stability margin", _fmt(sm.mean_margin_m, digits=3, suffix=" m")],
-            ]
-        )
-    if ctx.estimated_vgrf is not None and ctx.estimated_vgrf.available:
-        bio_rows.append(
-            [
-                "Peak virtual GRF",
-                _fmt(ctx.estimated_vgrf.metrics.peak_force_bw, digits=2, suffix=" BW"),
-            ]
-        )
-    story.append(_table(bio_rows, col_widths=[70 * mm, 105 * mm]))
-
-    stab_score = "—"
-    if ba is not None and ba.stability_margin is not None and ba.stability_margin.stable_pct is not None:
-        stab_score = f"{ba.stability_margin.stable_pct:.0f} / 100 (stable-frame %)"
-    story.append(Paragraph("Stability Score", styles["SWHeading"]))
-    story.append(
-        Paragraph(
-            f"<b>{stab_score}</b> — pose-derived COM–base-of-support proxy "
-            "(High / Moderate / Low category also reported in gait summary).",
-            styles["SWBody"],
-        )
-    )
+            cad_rows.append(["Stride length", _fmt(gm.stride_length.value, digits=3, suffix=" m")])
+    story.append(_table(cad_rows, col_widths=[55 * mm, 120 * mm]))
     story.append(PageBreak())
 
-    story.append(Paragraph("Joint ROM Table", styles["SWHeading"]))
+    story.append(Paragraph("7. Range of Motion (ROM)", styles["SWHeading"]))
     rom_rows = [["Joint", "Side", "Min (°)", "Max (°)", "ROM (°)", "Confidence"]]
     if ba is not None and ba.joint_rom is not None and ba.joint_rom.joints:
         for j in ba.joint_rom.joints:
@@ -869,30 +1180,87 @@ def export_session_pdf_report(
             )
     else:
         rom_rows.append(["—", "—", "—", "—", "—", "Unavailable"])
-    story.append(_table(rom_rows, col_widths=[28 * mm, 25 * mm, 28 * mm, 28 * mm, 28 * mm, 33 * mm]))
-
-    story.append(Paragraph("Selected Joint(s)", styles["SWHeading"]))
-    story.append(
-        Paragraph(
-            ", ".join(ctx.selected_joints)
-            if ctx.selected_joints
-            else "No joint selection recorded — knee flexion shown as default kinematics.",
-            styles["SWBody"],
+        story.append(
+            Paragraph(_field_value(ctx.summary, "joint_rom_summary"), styles["SWBody"])
         )
+    story.append(
+        _table(rom_rows, col_widths=[28 * mm, 25 * mm, 28 * mm, 28 * mm, 28 * mm, 33 * mm])
     )
     if knee_path is not None:
         story.append(Spacer(1, 2 * mm))
         story.append(_img(knee_path, width=170 * mm))
-    story.append(PageBreak())
 
-    story.append(Paragraph("Graphs &amp; 3D Trajectory", styles["SWHeading"]))
+    story.append(Paragraph("8. Center of Mass (COM)", styles["SWHeading"]))
+    story.append(Paragraph(_field_value(ctx.summary, "center_of_mass"), styles["SWBody"]))
+    if ba is not None and ba.center_of_mass is not None:
+        pos = ba.center_of_mass.positions
+        if pos is not None:
+            arr = np.asarray(pos, dtype=float)
+            if arr.ndim == 2 and arr.shape[0] >= 2:
+                y = arr[:, 1]
+                story.append(
+                    Paragraph(
+                        f"Vertical COM range (stature-scaled estimate): "
+                        f"{_fmt(float(np.nanmax(y) - np.nanmin(y)) * config.DEFAULT_SUBJECT_HEIGHT_M * 100, digits=1, suffix=' cm')}. "
+                        f"Samples: {arr.shape[0]}.",
+                        styles["SWBody"],
+                    )
+                )
     if com_fig is not None:
+        story.append(Spacer(1, 2 * mm))
         story.append(_img(com_fig, width=170 * mm))
-        story.append(Spacer(1, 3 * mm))
-    story.append(_img(traj_path, width=140 * mm, height=110 * mm))
+    if traj_path is not None:
+        story.append(Spacer(1, 2 * mm))
+        story.append(_img(traj_path, width=130 * mm, height=100 * mm))
+
+    story.append(Paragraph("9. Symmetry", styles["SWHeading"]))
+    sym_rows = [
+        ["Metric", "Value"],
+        ["Overall symmetry", _field_value(ctx.summary, "symmetry")],
+    ]
+    if ba is not None and ba.symmetry is not None:
+        sym = ba.symmetry
+        overall = getattr(sym, "overall_symmetry_pct", None)
+        if overall is not None and getattr(overall, "value", None) is not None:
+            sym_rows.append(
+                ["Overall symmetry %", _fmt(overall.value, digits=1, suffix=" %")]
+            )
+        for attr, label in (
+            ("stance_symmetry", "Stance symmetry"),
+            ("swing_symmetry", "Swing symmetry"),
+            ("step_length_symmetry", "Step-length symmetry"),
+            ("stride_length_symmetry", "Stride-length symmetry"),
+            ("cadence_consistency", "Cadence consistency"),
+        ):
+            fld = getattr(sym, attr, None)
+            if fld is not None and getattr(fld, "value", None) is not None:
+                unit = getattr(fld, "unit", "") or ""
+                sym_rows.append([label, _fmt(fld.value, digits=3, suffix=f" {unit}".rstrip())])
+    story.append(_table(sym_rows, col_widths=[55 * mm, 120 * mm]))
     story.append(PageBreak())
 
-    story.append(Paragraph("Foot Contact Analysis", styles["SWHeading"]))
+    # ── 10. Heel strikes ────────────────────────────────────────────────
+    story.append(Paragraph("10. Heel Strikes", styles["SWHeading"]))
+    hs_rows = [["Event", "Status / detail"]]
+    if ctx.summary is not None and ctx.summary.gait_events:
+        for ev in ctx.summary.gait_events:
+            mark = "Detected" if ev.detected else "Not detected"
+            hs_rows.append([ev.name, f"{mark} — {ev.detail}"])
+    elif ctx.cycles is not None and getattr(ctx.cycles, "events", None):
+        counts: dict[str, int] = {}
+        for e in ctx.cycles.events:
+            counts[e.event_type] = counts.get(e.event_type, 0) + 1
+        for name, n in sorted(counts.items()):
+            hs_rows.append([name.replace("_", " ").title(), f"Count: {n}"])
+    else:
+        hs_rows.append(["Heel strike", "Unavailable for this session"])
+    story.append(_table(hs_rows, col_widths=[55 * mm, 120 * mm]))
+    if hs_path is not None:
+        story.append(Spacer(1, 2 * mm))
+        story.append(_img(hs_path, width=170 * mm))
+
+    # ── 11. Contact timing ──────────────────────────────────────────────
+    story.append(Paragraph("11. Contact Timing", styles["SWHeading"]))
     contact = ctx.foot_contact
     if contact is not None:
         cm = contact.metrics
@@ -909,49 +1277,185 @@ def export_session_pdf_report(
                 _fmt(getattr(cm, "average_stance_duration_s", None), digits=3, suffix=" s"),
             ],
             [
+                "Contact confidence",
+                _fmt(getattr(cm, "contact_confidence", None), digits=2),
+            ],
+            [
                 "Valid gait cycles (contact)",
                 _fmt(getattr(cm, "valid_gait_cycle_count", None), digits=0),
             ],
             ["Frames analyzed", _fmt(n_frames_contact, digits=0)],
+            ["Estimated virtual GRF", _field_value(ctx.summary, "estimated_virtual_grf")],
         ]
+        if ctx.estimated_vgrf is not None and ctx.estimated_vgrf.available:
+            contact_rows.append(
+                [
+                    "Peak virtual GRF",
+                    _fmt(ctx.estimated_vgrf.metrics.peak_force_bw, digits=2, suffix=" BW"),
+                ]
+            )
+        if ctx.cycles is not None:
+            m = ctx.cycles.metrics
+            contact_rows.extend(
+                [
+                    [
+                        "Double support % (cycles)",
+                        _fmt(getattr(m, "double_support_pct", None), digits=1, suffix=" %"),
+                    ],
+                    [
+                        "Single support % (ipsilateral)",
+                        _fmt(getattr(m, "single_support_pct", None), digits=1, suffix=" %"),
+                    ],
+                ]
+            )
         story.append(_table(contact_rows, col_widths=[70 * mm, 105 * mm]))
         if contact_path is not None:
-            story.append(Spacer(1, 3 * mm))
+            story.append(Spacer(1, 2 * mm))
             story.append(_img(contact_path, width=170 * mm))
+        if vgrf_path is not None:
+            story.append(Spacer(1, 2 * mm))
+            story.append(_img(vgrf_path, width=170 * mm))
     else:
         story.append(
-            Paragraph("Foot contact analysis was not available for this session.", styles["SWBody"])
+            Paragraph(
+                "Foot contact analysis was not available for this session.",
+                styles["SWBody"],
+            )
         )
     story.append(PageBreak())
 
-    story.append(Paragraph("COM Analysis", styles["SWHeading"]))
-    story.append(Paragraph(_field_value(ctx.summary, "center_of_mass"), styles["SWBody"]))
-    if ba is not None and ba.center_of_mass is not None:
-        pos = ba.center_of_mass.positions
-        if pos is not None:
-            arr = np.asarray(pos, dtype=float)
-            if arr.ndim == 2 and arr.shape[0] >= 2:
-                y = arr[:, 1]
-                story.append(
-                    Paragraph(
-                        f"Vertical COM range: "
-                        f"{_fmt(float(np.nanmax(y) - np.nanmin(y)) * 100, digits=1, suffix=' cm')}. "
-                        f"Samples: {arr.shape[0]}.",
-                        styles["SWBody"],
-                    )
-                )
-    if com_fig is not None:
+    # ── 12. Graph snapshots ─────────────────────────────────────────────
+    story.append(Paragraph("12. Graph Snapshots", styles["SWHeading"]))
+    story.append(
+        Paragraph(
+            "Publication figures generated from the analyzed session "
+            "(pose-estimated series; monocular scale approximate).",
+            styles["SWBody"],
+        )
+    )
+    fig_blocks = [
+        ("Knee flexion", knee_path),
+        ("COM trajectory", com_fig),
+        ("3D COM path", traj_path),
+        ("Stability margin", margin_path),
+        ("Contact timing", contact_path),
+        ("Heel strikes", hs_path),
+        ("Estimated vGRF", vgrf_path),
+    ]
+    any_fig = False
+    for title, path in fig_blocks:
+        if path is None:
+            continue
+        any_fig = True
+        story.append(Paragraph(f"<b>{title}</b>", styles["SWMeta"]))
+        story.append(_img(path, width=160 * mm))
         story.append(Spacer(1, 2 * mm))
-        story.append(_img(com_fig, width=170 * mm))
+    if not any_fig:
+        story.append(Paragraph("No graph snapshots were available.", styles["SWBody"]))
+    story.append(PageBreak())
 
-    story.append(Paragraph("Automatic Conclusion", styles["SWHeading"]))
-    story.append(Paragraph((ctx.conclusion or "—").replace("\n", "<br/>"), styles["SWBody"]))
+    # ── 13. Comparison summary ──────────────────────────────────────────
+    story.append(Paragraph("13. Comparison Summary", styles["SWHeading"]))
+    if ctx.comparison_summary.strip():
+        story.append(
+            Paragraph(
+                _escape(ctx.comparison_summary).replace("\n", "<br/>"),
+                styles["SWBody"],
+            )
+        )
+        story.append(
+            Paragraph(
+                "Δ convention: Session B − Session A (pose-estimated). "
+                "Color/tone in the GUI is directional only — not statistical significance.",
+                styles["SWMeta"],
+            )
+        )
+    else:
+        story.append(
+            Paragraph(
+                "No dual-session comparison was available at export time. "
+                "Open the Compare tab, assign Session A and Session B, then re-export "
+                "to include a laboratory comparison summary.",
+                styles["SWBody"],
+            )
+        )
+
+    # ── 14. Clinical interpretation ─────────────────────────────────────
+    story.append(Paragraph("14. Clinical-Style Interpretation", styles["SWHeading"]))
+    story.append(
+        Paragraph(
+            "<i>Auto-generated research language — not a medical diagnosis or "
+            "clinical certification.</i>",
+            styles["SWMeta"],
+        )
+    )
+    interp = (
+        ctx.clinical_interpretation.strip()
+        or (ctx.summary.scientific_interpretation.strip() if ctx.summary and ctx.summary.scientific_interpretation else "")
+        or ctx.conclusion
+        or "Interpretation unavailable for this session."
+    )
+    story.append(Paragraph(_escape(interp).replace("\n", "<br/>"), styles["SWBody"]))
+    story.append(Paragraph("Laboratory conclusion", styles["SWHeading"]))
+    story.append(
+        Paragraph(_escape(ctx.conclusion or "—").replace("\n", "<br/>"), styles["SWBody"])
+    )
+    story.append(Paragraph("Recommendations", styles["SWHeading"]))
+    story.append(
+        Paragraph(
+            _escape(ctx.recommendations or "—").replace("\n", "<br/>"),
+            styles["SWBody"],
+        )
+    )
+
+    # ── 15. Confidence ──────────────────────────────────────────────────
+    story.append(Paragraph("15. Confidence", styles["SWHeading"]))
+    conf_rows = [
+        ["Confidence metric", "Value"],
+        ["Video quality", _field_value(ctx.summary, "video_quality")],
+        ["Tracking confidence", _field_value(ctx.summary, "tracking_confidence")],
+        ["Pipeline confidence", _field_value(ctx.summary, "pipeline_confidence")],
+        ["Analysis confidence", _field_value(ctx.summary, "analysis_confidence")],
+    ]
+    if ctx.cycles is not None:
+        conf_rows.append(
+            [
+                "Contact confidence (cycles)",
+                _fmt(getattr(ctx.cycles.metrics, "contact_confidence", None), digits=2),
+            ]
+        )
+    if ba is not None and ba.stability_margin is not None:
+        conf_rows.append(
+            ["Stability margin confidence", _fmt(ba.stability_margin.confidence, digits=2)]
+        )
+    if ba is not None and ba.gait_quality is not None:
+        conf_rows.append(
+            ["Gait quality confidence", _fmt(ba.gait_quality.confidence, digits=2)]
+        )
+    story.append(_table(conf_rows, col_widths=[70 * mm, 105 * mm]))
+    story.append(PageBreak())
+
+    # ── 16. Processing information ──────────────────────────────────────
+    story.append(Paragraph("16. Processing Information", styles["SWHeading"]))
+    proc_lines = ctx.processing_lines or [
+        f"StableWalk version: {ctx.app_version or '—'}",
+        f"Pose backend: {ctx.pose_backend or '—'}",
+        f"Report schema: {REPORT_SCHEMA_VERSION}",
+        f"Generated (UTC): {ctx.generated_at}",
+    ]
+    story.append(
+        Paragraph(
+            "<br/>".join(f"• {_escape(line)}" for line in proc_lines),
+            styles["SWBody"],
+        )
+    )
+
     story.append(Paragraph("Metric Validation Warnings", styles["SWHeading"]))
     validation_warnings = build_validation_warnings(ctx)
     if validation_warnings:
         story.append(
             Paragraph(
-                "<br/>".join(f"• {warning}" for warning in validation_warnings),
+                "<br/>".join(f"• {_escape(warning)}" for warning in validation_warnings),
                 styles["SWBody"],
             )
         )
@@ -962,14 +1466,13 @@ def export_session_pdf_report(
                 styles["SWBody"],
             )
         )
-    story.append(Paragraph("Recommendations", styles["SWHeading"]))
-    story.append(
-        Paragraph((ctx.recommendations or "—").replace("\n", "<br/>"), styles["SWBody"])
-    )
+
     story.append(Spacer(1, 8 * mm))
     story.append(
         Paragraph(
-            f"Timestamp: {ctx.generated_at} · StableWalk PDF Report v{REPORT_SCHEMA_VERSION}",
+            f"Timestamp: {ctx.generated_at} · StableWalk {ctx.app_version or ''} "
+            f"· Research Report v{REPORT_SCHEMA_VERSION}"
+            f"{(' · backend ' + ctx.pose_backend) if ctx.pose_backend else ''}",
             styles["SWSmall"],
         )
     )
@@ -982,7 +1485,7 @@ def export_session_pdf_report(
         canvas.drawCentredString(
             A4[0] / 2.0,
             10 * mm,
-            f"StableWalk Biomechanics Report  ·  page {doc.page}  ·  {DISCLAIMER[:70]}…",
+            f"StableWalk Research Report  ·  page {doc.page}  ·  {DISCLAIMER[:70]}…",
         )
         canvas.restoreState()
 
@@ -993,8 +1496,9 @@ def export_session_pdf_report(
         rightMargin=14 * mm,
         topMargin=14 * mm,
         bottomMargin=16 * mm,
-        title="StableWalk Gait Analysis Report",
+        title=REPORT_TITLE,
         author="StableWalk",
+        subject="Pose-estimated gait biomechanics research report",
     )
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
 
@@ -1002,8 +1506,14 @@ def export_session_pdf_report(
         if p == logo:
             continue
         try:
-            if p.is_file() and tmp in p.parents:
+            if p.is_file() and (tmp in p.parents or "stablewalk_pdf_shots_" in str(p)):
                 p.unlink(missing_ok=True)
+                parent = p.parent
+                if parent != tmp and parent.name.startswith("stablewalk_pdf_shots_"):
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        pass
         except OSError:
             pass
     try:
@@ -1011,7 +1521,7 @@ def export_session_pdf_report(
     except OSError:
         pass
 
-    logger.info("Session PDF report written: %s", out)
+    logger.info("Research PDF report written: %s", out)
     return out
 
 
@@ -1024,6 +1534,8 @@ def export_session_pdf_report_from_gui(gui: Any, output_path: str | Path) -> Pat
 
 
 __all__ = [
+    "REPORT_SCHEMA_VERSION",
+    "REPORT_TITLE",
     "SessionPdfReportContext",
     "build_automatic_conclusion",
     "build_recommendations",

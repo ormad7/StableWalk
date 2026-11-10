@@ -253,7 +253,10 @@ def assess_gait_evidence(
         )
         if kind == "complete":
             complete_indices.append(cycle.cycle_index)
-            usable_indices.append(cycle.cycle_index)
+            # Keep a single complete cycle as evidence; drop "usable" only when
+            # two+ cycles were segmented but then withheld as untrustworthy.
+            if not getattr(m, "session_metrics_withheld", False):
+                usable_indices.append(cycle.cycle_index)
         else:
             partial_indices.append(cycle.cycle_index)
 

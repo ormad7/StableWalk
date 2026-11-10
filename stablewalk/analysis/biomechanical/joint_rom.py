@@ -61,7 +61,7 @@ def _to_flexion_series(
     interiors: list[float | None],
     *,
     joint: str,
-) -> list[float | None]:
+) -> tuple[list[float | None], int]:
     """Map pose angles to a consistent flexion series for ROM.
 
     Knee/hip: ``flexion = 180 − interior`` (0° = extension), matching
@@ -80,7 +80,15 @@ def _to_flexion_series(
             out.append(flex)
         else:
             out.append(None)
-    return out
+    from stablewalk.analysis.angle_filter import despike_angle_series
+
+    arr = np.array(
+        [np.nan if v is None else float(v) for v in out],
+        dtype=float,
+    )
+    cleaned, n_spikes = despike_angle_series(arr, return_n=True)
+    series = [None if not np.isfinite(v) else float(v) for v in cleaned]
+    return series, int(n_spikes)
 
 
 def _robust_span(values: list[float]) -> tuple[float, float, float]:
@@ -259,7 +267,13 @@ def analyze_joint_rom(
     for joint_name, left_field, right_field in angle_fields:
         for side, field in (("left", left_field), ("right", right_field)):
             interiors = _angle_series(sequence, recording, field)
-            flexion = _to_flexion_series(interiors, joint=joint_name)
+            flexion, n_spikes = _to_flexion_series(interiors, joint=joint_name)
+            if n_spikes:
+                warnings.append(
+                    f"{side.title()} {joint_name}: {n_spikes} isolated tracking "
+                    "jump(s) interpolated (>40° one-frame spike); sustained "
+                    "changes were kept."
+                )
             grouped = (
                 _cycle_angle_values(flexion, cycles, frame_indices)
                 if reliable_cycles and cycles is not None

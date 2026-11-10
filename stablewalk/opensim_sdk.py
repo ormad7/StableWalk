@@ -63,6 +63,12 @@ def check_opensim_available() -> tuple[bool, Any]:
 
         osim = _osim
         OPENSIM_AVAILABLE = True
+        try:
+            from stablewalk.opensim_geometry import register_geometry_search_paths
+
+            register_geometry_search_paths(_osim)
+        except Exception:
+            pass
         return True, _osim
     except ImportError as exc:
         osim = None  # type: ignore
@@ -353,6 +359,9 @@ def load_opensim_model(model_path: str | Path) -> ModelInfo:
         )
 
     try:  # pragma: no cover - requires the SDK
+        from stablewalk.opensim_geometry import prepare_opensim_geometry
+
+        prepare_opensim_geometry(osim, model_path)
         logger.info("Loading OpenSim model...")
         logger.info("  Path: %s", model_path)
         model = osim.Model(str(model_path.resolve()))  # type: ignore[union-attr]
@@ -788,17 +797,13 @@ def run_inverse_kinematics_if_available(
     if resolved_model is None or not resolved_model.is_file():
         return IkResult(ran=False, output_motion_path=None, message=SELECT_MODEL_MESSAGE)
 
+    from stablewalk.opensim_geometry import prepare_opensim_geometry
+
+    prepare_opensim_geometry(osim, resolved_model)
     readiness = check_ik_readiness(resolved_model, marker_file)
     if not readiness.can_run:
         logger.error("OpenSim IK blocked — marker/model mismatch:\n%s", readiness.message)
         return IkResult(ran=False, output_motion_path=None, message=readiness.message)
-
-    model_info = validate_opensim_model(resolved_model)
-    if not model_info.valid:
-        return IkResult(
-            ran=False, output_motion_path=None,
-            message=f"Model not usable for IK: {model_info.message}",
-        )
 
     tr = time_range or _read_trc_time_range(marker_file)
     if output_mot is None:
@@ -1095,6 +1100,13 @@ def run_opensim_demo_ik(
             ),
         )
 
+    from stablewalk.opensim_geometry import prepare_opensim_geometry
+
+    model_for_geometry = pipeline_dir / "subject01_simbody.osim"
+    prepare_opensim_geometry(
+        osim,
+        model_for_geometry if model_for_geometry.is_file() else None,
+    )
     logger.info("Running OpenSim Demo IK...")
     logger.info("Demo IK working directory: %s", pipeline_dir)
     logger.info("Demo IK setup XML: %s", setup_path.name)

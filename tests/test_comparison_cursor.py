@@ -32,7 +32,7 @@ def test_comparison_cursor_label() -> None:
     assert "Comparison cursor" in cursor.summary_line()
     assert "L HS" in cursor.summary_line()
     assert "25%" in cursor.summary_line()
-    assert "F10" in format_video_cursor_badge(cursor)
+    assert "F11" in format_video_cursor_badge(cursor)
     assert "L HS" in format_video_cursor_badge(cursor)
 
 
@@ -90,7 +90,8 @@ def test_snapshot_from_gui() -> None:
     assert cursor.time_s == 0.7
     assert "left_heel_strike" in cursor.active_gait_events
     ph = cursor.to_playhead_state()
-    assert ph.frame_index == 7
+    assert ph.frame_index == 4
+    assert ph.list_pos == 3
     assert ph.time_s == 0.7
 
 

@@ -621,6 +621,9 @@ def run_inverse_kinematics(
         )
 
     # pragma: no cover - requires the OpenSim runtime
+    from stablewalk.opensim_geometry import prepare_opensim_geometry
+
+    prepare_opensim_geometry(osim, model_path)
     model = osim.Model(str(model_path))  # type: ignore[union-attr]
     ik_tool = osim.InverseKinematicsTool()  # type: ignore[union-attr]
     ik_tool.setModel(model)

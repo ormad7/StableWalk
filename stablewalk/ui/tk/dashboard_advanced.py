@@ -15,25 +15,39 @@ from stablewalk.monitoring.pipeline_status import (
     STATUS_PARTIAL,
     STATUS_UNAVAILABLE,
 )
+from stablewalk.opensim_ik_status import (
+    IK_COMPLETE,
+    IK_FAILED,
+    IK_PARTIAL,
+    IK_RUNNING,
+    PIPELINE_COMPLETE,
+    ik_mot_unavailable_reason,
+    resolve_opensim_ik_status_from_gui,
+    resolve_opensim_pipeline_status_from_gui,
+    resolve_opensim_status_pair_from_gui,
+)
 from stablewalk.ui.scientific_labels import (
     LABEL_VIRTUAL_GRF_PANEL,
     LABEL_VIRTUAL_GRF_UNAVAILABLE_MSG,
 )
 from stablewalk.ui.theme import (
     BORDER,
-    DASHBOARD_CARD_PAD,
     ELEVATED,
     FONT_SUMMARY_METRIC_TITLE,
     FONT_UI_SM,
     FONT_UI_XS,
+    DANGER,
     INFO,
     MUTED,
-    PAD_MD,
+    SUCCESS,
     PAD_SM,
     PANEL,
     TEXT,
     WARNING,
     create_tooltip,
+    GLYPH_COLLAPSE,
+    GLYPH_EXPAND,
+    create_elevated_card,
 )
 from stablewalk.ui.tk.dashboard_pipeline_visual import (
     PIPELINE_STATUS_FG,
@@ -63,6 +77,19 @@ ENGINEERING_STATUS_LABEL = {
 
 ENGINEERING_STATUS_FG = PIPELINE_STATUS_FG
 ENGINEERING_STATUS_STRIP = PIPELINE_STATUS_STRIP
+
+_OPENSIM_IK_ROW_FG = {
+    "Complete": SUCCESS,
+    "Running": INFO,
+    "Partial": WARNING,
+    "Failed": DANGER,
+}
+
+
+def _opensim_row_fg(row: "OpensimStatusRow") -> str:
+    if row.key == "ik":
+        return _OPENSIM_IK_ROW_FG.get(row.value, ENGINEERING_STATUS_FG.get(row.status, MUTED))
+    return ENGINEERING_STATUS_FG.get(row.status, MUTED)
 
 
 @dataclass(frozen=True)
@@ -101,7 +128,7 @@ def _toggle_engineering_expanded(gui, key: str) -> None:
         else:
             detail_extra.grid_remove()
     if toggle is not None:
-        toggle.configure(text="\u25bc" if expanded else "\u25b6")
+        toggle.configure(text=GLYPH_COLLAPSE if expanded else GLYPH_EXPAND)
 
 
 def _build_engineering_card(
@@ -116,13 +143,7 @@ def _build_engineering_card(
     status_attr: str,
 ) -> tk.Frame:
     """One elevated engineering stage card with status badge and detail line."""
-    card = tk.Frame(
-        parent,
-        bg=ELEVATED,
-        highlightthickness=1,
-        highlightbackground=BORDER,
-        highlightcolor=BORDER,
-    )
+    card = create_elevated_card(parent)
     card.grid(
         row=row,
         column=column,
@@ -138,7 +159,7 @@ def _build_engineering_card(
     strip.grid_propagate(False)
 
     body = tk.Frame(card, bg=ELEVATED, highlightthickness=0)
-    body.grid(row=0, column=1, sticky="nsew", padx=PAD_MD, pady=PAD_MD)
+    body.grid(row=0, column=1, sticky="nsew", padx=PAD_SM, pady=PAD_SM)
     body.columnconfigure(0, weight=1)
 
     header = tk.Frame(body, bg=ELEVATED, highlightthickness=0)
@@ -147,13 +168,13 @@ def _build_engineering_card(
 
     toggle = tk.Label(
         header,
-        text="\u25b6",
+        text=GLYPH_EXPAND,
         bg=ELEVATED,
         fg=MUTED,
         font=FONT_UI_XS,
         cursor="hand2",
     )
-    toggle.grid(row=0, column=0, sticky="w", padx=(0, 6))
+    toggle.grid(row=0, column=0, sticky="w", padx=(0, PAD_SM))
 
     tk.Label(
         header,
@@ -177,7 +198,7 @@ def _build_engineering_card(
 
     detail_lbl = tk.Label(
         body,
-        text="—",
+        text="Not computed yet",
         bg=ELEVATED,
         fg=MUTED,
         font=FONT_UI_SM,
@@ -189,20 +210,27 @@ def _build_engineering_card(
     setattr(gui, detail_attr, detail_lbl)
 
     def _sync_wrap(_event: object | None = None) -> None:
+        if getattr(card, "_wrap_syncing", False):
+            return
+        from stablewalk.ui.theme import set_wraplength_safe
+
+        setattr(card, "_wrap_syncing", True)
         try:
             width = max(120, int(card.winfo_width()) - 48)
-            detail_lbl.configure(wraplength=width)
+            set_wraplength_safe(detail_lbl, width)
         except tk.TclError:
             pass
+        finally:
+            setattr(card, "_wrap_syncing", False)
 
     card.bind("<Configure>", _sync_wrap, add="+")
-    body.bind("<Configure>", _sync_wrap, add="+")
 
     spec = resolve_stage_ui_spec(key)
     detail_extra = tk.Frame(body, bg=ELEVATED)
     detail_extra.grid(row=3, column=0, sticky="ew", pady=(8, 0))
     detail_extra.columnconfigure(0, weight=1)
 
+    extra_labels: list[tk.Label] = []
     for idx, (label, text) in enumerate(
         (
             ("Purpose", spec.purpose),
@@ -211,7 +239,7 @@ def _build_engineering_card(
             ("Algorithms", spec.algorithms),
         )
     ):
-        tk.Label(
+        extra_label = tk.Label(
             detail_extra,
             text=f"{label}: {text}",
             bg=ELEVATED,
@@ -220,7 +248,9 @@ def _build_engineering_card(
             anchor="w",
             justify=tk.LEFT,
             wraplength=320,
-        ).grid(row=idx, column=0, sticky="ew", pady=(0, 2))
+        )
+        extra_label.grid(row=idx, column=0, sticky="ew", pady=(0, 2))
+        extra_labels.append(extra_label)
 
     detail_extra.grid_remove()
 
@@ -237,26 +267,23 @@ def _build_engineering_card(
         "detail": detail_lbl,
         "toggle": toggle,
         "detail_extra": detail_extra,
+        "extra_labels": extra_labels,
         "expanded": False,
     }
     create_tooltip(
         card,
-        f"{title}\n\nClick for full stage details · ▶ expands summary",
+        f"{title}\n\nClick for full stage details · {GLYPH_EXPAND} expands summary",
     )
     bind_pipeline_stage_click(card, gui, key, skip_widgets=(toggle,))
     return card
 
 
-def build_engineering_dashboard(gui, parent: tk.Misc) -> ttk.LabelFrame:
+def build_engineering_dashboard(gui, parent: tk.Misc) -> ttk.Frame:
     """Install the engineering pipeline card grid on the Advanced tab."""
     from stablewalk.ui.tk.dashboard_pipeline_flow import build_pipeline_flow_diagram
 
-    section = ttk.LabelFrame(
-        parent,
-        text="  Real-to-Sim Pipeline  ",
-        style="Card.TLabelframe",
-        padding=DASHBOARD_CARD_PAD,
-    )
+    # The parent category already supplies the Real-to-Sim title/collapse chrome.
+    section = ttk.Frame(parent)
     section.columnconfigure(0, weight=1)
 
     flow_host = build_pipeline_flow_diagram(gui, section)
@@ -290,7 +317,7 @@ def build_engineering_dashboard(gui, parent: tk.Misc) -> ttk.LabelFrame:
 
     gui.lbl_rts_summary = tk.Label(
         section,
-        text="Run Real-to-Sim Pipeline below to export motion for Isaac Lab.",
+        text="Run Real-to-Sim Pipeline to export motion for Isaac Lab.",
         bg=PANEL,
         fg=INFO,
         font=FONT_UI_XS,
@@ -299,6 +326,42 @@ def build_engineering_dashboard(gui, parent: tk.Misc) -> ttk.LabelFrame:
         justify=tk.LEFT,
     )
     gui.lbl_rts_summary.grid(row=2, column=0, sticky="ew", pady=(PAD_SM, 0))
+
+    def _reflow_engineering(event: object | None = None) -> None:
+        try:
+            width = int(
+                getattr(event, "width", 0)
+                or section.winfo_width()
+                or section.winfo_reqwidth()
+                or 0
+            )
+        except (tk.TclError, TypeError, ValueError):
+            return
+        if width < 80:
+            return
+        columns = 1 if width < 680 else 2
+        try:
+            for column in range(2):
+                grid_host.columnconfigure(
+                    column,
+                    weight=1 if column < columns else 0,
+                    minsize=0,
+                    uniform="eng_card" if column < columns else "",
+                )
+            for index, entry in enumerate(gui._adv_engineering_cards.values()):
+                row, column = divmod(index, columns)
+                entry["card"].grid_configure(row=row, column=column)
+                wrap = max(160, width // columns - 56)
+                entry["detail"].configure(wraplength=wrap)
+                for label in entry.get("extra_labels", ()):
+                    label.configure(wraplength=wrap)
+            gui.lbl_rts_summary.configure(wraplength=max(220, width - 24))
+        except tk.TclError:
+            pass
+        gui._adv_engineering_columns = columns
+
+    section.bind("<Configure>", _reflow_engineering, add="+")
+    gui._sync_engineering_dashboard_wrap = _reflow_engineering
 
     gui._section_engineering_dashboard = section
     gui._section_real_to_sim = section
@@ -391,8 +454,31 @@ def _collect_engineering_stages(gui) -> dict[str, EngineeringStageView]:
         else:
             bio_status = STATUS_PARTIAL
         parts: list[str] = []
-        if ba.gait_quality is not None:
-            parts.append(f"gait quality {ba.gait_quality.score:.0f}/100")
+        quality_ok = False
+        try:
+            from stablewalk.analysis.result_validity import (
+                build_result_validity,
+                withhold_gait_quality_heuristic,
+            )
+
+            quality_ok = not withhold_gait_quality_heuristic(
+                build_result_validity(
+                    biomechanical=ba,
+                    contact=getattr(ba, "contact", None),
+                    cycles=getattr(ba, "cycles", None),
+                )
+            )
+        except Exception:
+            quality_ok = False
+        if (
+            quality_ok
+            and ba.gait_quality is not None
+            and getattr(ba.gait_quality, "available", True)
+            and ba.gait_quality.score is not None
+        ):
+            parts.append(
+                f"unvalidated heuristic {ba.gait_quality.score:.0f}/100"
+            )
         if ba.contact and ba.contact.per_frame:
             hs = sum(
                 1
@@ -492,45 +578,248 @@ def _collect_engineering_stages(gui) -> dict[str, EngineeringStageView]:
             "Export amp_reference_motion.npz for reinforcement-learning pipelines.",
         )
 
-    # OpenSim
+    # OpenSim card: pipeline status is independent of IK.
     sdk = bool(getattr(gui, "_opensim_sdk_available", False))
     presentation = bool(getattr(gui, "_presentation_mode", False))
     has_session = bool(getattr(gui, "sequence", None) or getattr(gui, "gait_motion", None))
     export_complete = bool(getattr(gui, "_opensim_export_completed", False))
-    model_valid = bool(getattr(gui, "_opensim_model_valid", False))
+    pair = resolve_opensim_status_pair_from_gui(gui)
+    pipeline = pair.pipeline
+    ik = pair.ik
 
     if presentation:
         os_status: PipelineStageState = STATUS_PARTIAL
         os_detail = "Presentation demo mode — synthetic workflow"
-    elif sdk and model_valid and export_complete:
+    elif pipeline.key == PIPELINE_COMPLETE and ik.key == IK_COMPLETE:
         os_status = STATUS_COMPLETED
-        os_detail = "SDK ready · model loaded · session exported"
-    elif sdk and (model_valid or export_complete):
+        os_detail = pair.short_label
+    elif pipeline.key == PIPELINE_COMPLETE:
         os_status = STATUS_PARTIAL
-        os_detail = "SDK ready · " + ("model loaded" if model_valid else "model not loaded")
-        if export_complete:
-            os_detail += " · export complete"
-        else:
-            os_detail += " · export pending"
-    elif sdk:
+        os_detail = pair.short_label
+    elif ik.key in (IK_RUNNING, IK_FAILED, IK_PARTIAL) or sdk or export_complete or has_session:
         os_status = STATUS_PARTIAL
-        os_detail = "SDK installed — load model and export session files"
-    elif export_complete or has_session:
-        os_status = STATUS_PARTIAL
-        os_detail = "Export-only mode — OpenSim SDK not installed"
+        os_detail = pair.short_label
     else:
         os_status = STATUS_UNAVAILABLE
-        os_detail = "OpenSim not configured for this session"
+        os_detail = pair.short_label if pair.short_label else "OpenSim not configured for this session"
 
     stages["opensim"] = EngineeringStageView(
         "opensim",
         "OpenSim",
         os_status,
         os_detail,
-        "OpenSim SDK, model loading, and motion export status.",
+        pair.tooltip,
     )
 
     return stages
+
+
+@dataclass(frozen=True)
+class OpensimStatusRow:
+    """One compact OpenSim readout (pipeline snapshot only)."""
+
+    key: str
+    title: str
+    value: str
+    status: PipelineStageState
+    tooltip: str = ""
+
+
+def _ik_mot_row_value(ik, files: dict) -> str:
+    reason = ik_mot_unavailable_reason(
+        ik, ik_output_on_disk=bool((files or {}).get("IK_MOT"))
+    )
+    return reason or "Unavailable — Inverse Kinematics has not completed"
+
+
+def _ik_mot_row_tooltip(ik, files: dict) -> str:
+    reason = _ik_mot_row_value(ik, files)
+    return (
+        f"{reason}\n\nExport completion is not IK success. "
+        "Open the diagnostic log from Advanced / OpenSim details."
+    )
+
+
+def collect_opensim_status_rows(gui) -> tuple[OpensimStatusRow, ...]:
+    """SDK / model / TRC / MOT / IK from the current pipeline report."""
+    report = getattr(gui, "_pipeline_status_report_cache", None)
+    assess = getattr(gui, "_assess_pipeline_status_report", None)
+    if report is None and callable(assess):
+        try:
+            report = assess(force=False)
+        except Exception:
+            report = None
+    items = {it.key: it for it in report.all_items()} if report is not None else {}
+
+    sdk_on = bool(getattr(gui, "_opensim_sdk_available", False))
+    sdk_ver = getattr(gui, "_opensim_sdk_version", None)
+    if sdk_on:
+        sdk_value = f"Installed{f' · {sdk_ver}' if sdk_ver else ''}"
+        sdk_status: PipelineStageState = STATUS_COMPLETED
+        sdk_tip = "OpenSim Python SDK is available."
+    else:
+        sdk_value = "Not installed"
+        sdk_status = STATUS_UNAVAILABLE
+        sdk_tip = "OpenSim SDK is not available in this environment."
+
+    model_item = items.get("osim_model")
+    model_name = str(getattr(gui, "_opensim_model_name", None) or "").strip()
+    if model_item is not None:
+        model_status = model_item.status
+        model_value = model_name or model_item.detail or "Not assessed"
+        model_tip = model_item.tooltip or model_item.detail
+    elif model_name:
+        model_status = (
+            STATUS_COMPLETED
+            if getattr(gui, "_opensim_model_valid", False)
+            else STATUS_PARTIAL
+        )
+        model_value = model_name
+        model_tip = "Configured OpenSim musculoskeletal model."
+    else:
+        model_status = STATUS_UNAVAILABLE
+        model_value = "No model loaded"
+        model_tip = "No OpenSim .osim model is loaded."
+
+    def _artifact(key: str, fallback: str) -> tuple[str, PipelineStageState, str]:
+        item = items.get(key)
+        if item is None:
+            return fallback, STATUS_UNAVAILABLE, fallback
+        return (
+            ENGINEERING_STATUS_LABEL.get(item.status, item.display_line()),
+            item.status,
+            item.detail or item.tooltip or item.display_line(),
+        )
+
+    trc_value, trc_status, trc_tip = _artifact("osim_trc", "Unavailable")
+    mot_value, mot_status, mot_tip = _artifact("osim_mot", "Unavailable")
+    pipeline = resolve_opensim_pipeline_status_from_gui(gui)
+    pair = resolve_opensim_status_pair_from_gui(gui)
+    ik = pair.ik
+    files = {}
+    getter = getattr(gui, "_opensim_export_files_on_disk", None)
+    if callable(getter):
+        try:
+            files = dict(getter() or {})
+        except Exception:
+            files = {}
+    if not files:
+        cached = getattr(gui, "_opensim_export_files", None)
+        if isinstance(cached, dict):
+            files = cached
+
+    mapped_ready = bool(files.get("MAPPED"))
+    ik_complete = ik.key == "complete"
+
+    return (
+        OpensimStatusRow(
+            "pipeline",
+            "Pipeline",
+            pipeline.label,
+            pipeline.pipeline_status,
+            pipeline.tooltip,
+        ),
+        OpensimStatusRow("sdk", "SDK", sdk_value, sdk_status, sdk_tip),
+        OpensimStatusRow("model", "Model", model_value, model_status, model_tip),
+        OpensimStatusRow("trc", "TRC", trc_value, trc_status, trc_tip),
+        OpensimStatusRow("mot", "MOT", mot_value, mot_status, mot_tip),
+        OpensimStatusRow(
+            "mapped",
+            "Mapped TRC",
+            "Complete" if mapped_ready else "Unavailable",
+            STATUS_COMPLETED if mapped_ready else STATUS_UNAVAILABLE,
+            "Mapped marker TRC ready for experimental IK."
+            if mapped_ready
+            else "Mapped TRC has not been exported.",
+        ),
+        OpensimStatusRow(
+            "ik_output",
+            "IK .mot",
+            "Complete" if ik_complete else _ik_mot_row_value(ik, files),
+            STATUS_COMPLETED if ik_complete else STATUS_UNAVAILABLE,
+            "IK motion file from a successful run in this session."
+            if ik_complete
+            else _ik_mot_row_tooltip(ik, files),
+        ),
+        OpensimStatusRow(
+            "ik",
+            "IK",
+            ik.label,
+            ik.pipeline_status,
+            pair.tooltip,
+        ),
+    )
+
+
+def build_opensim_status_panel(gui, parent: tk.Misc) -> tk.Frame:
+    """Compact OpenSim readout for the Advanced tab (no extra compute)."""
+    host = tk.Frame(parent, bg=PANEL, highlightthickness=0)
+    host.columnconfigure(1, weight=1)
+    tk.Label(
+        host,
+        text="OpenSim status",
+        bg=PANEL,
+        fg=MUTED,
+        font=FONT_UI_XS,
+        anchor="w",
+    ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 2))
+
+    widgets: dict[str, tk.Label] = {}
+    for index, row in enumerate(collect_opensim_status_rows(gui), start=1):
+        tk.Label(
+            host,
+            text=row.title,
+            bg=PANEL,
+            fg=MUTED,
+            font=FONT_UI_XS,
+            anchor="w",
+            width=9,
+        ).grid(row=index, column=0, sticky="w", padx=(0, PAD_SM))
+        value = tk.Label(
+            host,
+            text=row.value,
+            bg=PANEL,
+            fg=_opensim_row_fg(row),
+            font=FONT_UI_XS,
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=280,
+        )
+        value.grid(row=index, column=1, sticky="ew")
+        widgets[row.key] = value
+        if row.tooltip:
+            create_tooltip(value, row.tooltip, wraplength=360)
+    log_btn = ttk.Button(
+        host,
+        text="View diagnostic log",
+        style="Compact.TButton",
+        command=lambda: getattr(gui, "_show_opensim_log", lambda: None)(),
+    )
+    log_btn.grid(row=len(widgets) + 1, column=0, columnspan=2, sticky="ew", pady=(PAD_SM, 0))
+    gui.btn_adv_opensim_view_log = log_btn
+    gui._adv_opensim_status_values = widgets
+    gui._adv_opensim_status_host = host
+    return host
+
+
+def update_opensim_status_panel(gui) -> None:
+    """Refresh the Advanced OpenSim status rows from the pipeline snapshot."""
+    widgets = getattr(gui, "_adv_opensim_status_values", None)
+    if not widgets:
+        return
+    for row in collect_opensim_status_rows(gui):
+        lbl = widgets.get(row.key)
+        if lbl is None:
+            continue
+        try:
+            lbl.configure(
+                text=row.value,
+                fg=_opensim_row_fg(row),
+            )
+        except tk.TclError:
+            continue
+        if row.tooltip:
+            create_tooltip(lbl, row.tooltip, wraplength=360)
 
 
 def _apply_stage_view(gui, view: EngineeringStageView) -> None:
@@ -570,6 +859,7 @@ def update_engineering_dashboard(gui) -> None:
     stages = _collect_engineering_stages(gui)
     for view in stages.values():
         _apply_stage_view(gui, view)
+    update_opensim_status_panel(gui)
 
     bio_detail = stages.get("biomechanics")
     if bio_detail is not None:
@@ -588,6 +878,10 @@ __all__ = [
     "ENGINEERING_STATUS_LABEL",
     "ENGINEERING_STATUS_SYMBOL",
     "EngineeringStageView",
+    "OpensimStatusRow",
     "build_engineering_dashboard",
+    "build_opensim_status_panel",
+    "collect_opensim_status_rows",
     "update_engineering_dashboard",
+    "update_opensim_status_panel",
 ]

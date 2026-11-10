@@ -6,11 +6,11 @@ Research-oriented demo protocol (v1). **Do not install a video solely because a 
 
 | UI category | Internal key | Target file | Primary dataset |
 |-------------|--------------|-------------|-----------------|
-| Abnormal | `abnormal` | `abnormal_gait.mp4` | [GAVD](https://github.com/Rahmyyy/GAVD) |
-| Normal | `normal` | `normal_gait.mp4` | [Health&Gait](https://zenodo.org/records/14039922) UGS |
-| Performance | `athletic` | `athletic_walking.mp4` | Health&Gait FGS |
+| Abnormal Gait | `abnormal` | `abnormal_gait_v2.mp4` | [GAVD](https://github.com/Rahmyyy/GAVD) |
+| Normal Gait | `normal` | `normal_gait_v2.mp4` | [GAVD](https://github.com/Rahmyyy/GAVD) `gait_pat=normal` |
+| Fast Walking | `athletic` | `fast_walking_v2.mp4` | [Twente RGB](https://zenodo.org/records/6644593) Subj04 `walk_54` (5.4 km/h) |
 
-The internal key `athletic` is retained for backward compatibility. The UI label is **Performance**.
+The internal key `athletic` is retained for backward compatibility. The UI label is **Fast Walking**.
 
 ---
 
@@ -77,7 +77,7 @@ Candidates must satisfy:
 | Status | **REJECT** — superseded by GAVD protocol |
 | Known limitations | Walker-assisted gait; foot/walker occlusion; 0 usable gait cycles; external support stabilizes pelvis |
 
-**Replacement status:** Pending GAVD candidate validation.
+**Replacement status:** GAVD Parkinson RGB candidates were retrieved and validated on 2026-10-29. Both failed the existing pipeline (`gavd_parkinsons_B5hrxKe2nP8_cljan9b4p0.mp4` REJECT: 0% pose-valid / 0 cycles; `gavd_parkinsons_bmi1hYOnTHs_cljw65m080.mp4` REJECT: 20.3% pose-valid). The Utah walker clip remains installed. Parkinson’s was **not** labeled as dementia.
 
 ---
 
@@ -109,43 +109,65 @@ The full ~26.8 GB Zenodo archive provides silhouettes, pose JSON, optical flow, 
 - moderate gait speed (Velocity_UGS near cohort median when full CSV available)
 - stable camera, no meaningful occlusion
 
-### Current installed file (legacy — **REJECTED**)
+### Current installed file (2026-10-29)
+
+Health&Gait UGS remains the preferred *protocol* label, but the public release has no RGB. The installed clip is a GAVD sequence whose **documented** label is `gait_pat=normal`.
 
 | Field | Value |
 |-------|-------|
 | Category | Normal |
-| Dataset | Pexels stock footage (deprecated) |
-| Status | **REJECT** |
-| Known limitations | Subject extremely small/distant; poor foot landmark pixels; ~26% analysis completeness; 0 usable gait cycles |
+| Dataset | GAVD |
+| Sequence ID | `cljo3b2dy002l3n6l270vpzp8` |
+| YouTube ID / URL | `3KnFt8bH3tE` / https://www.youtube.com/watch?v=3KnFt8bH3tE |
+| Original label | `gait_pat=normal` |
+| Camera view | sagittal (pipeline: SAGITTAL_LEFT) |
+| Duration / FPS | 19.12 s / 29.97 |
+| Pose valid frame % | 92.1 |
+| Usable gait cycles | 12 (detected 12); heel strikes L 14 / R 5 |
+| Reason selected | Full-body sagittal walk; validator ACCEPT; comparable side view |
+| Known limitations | GAVD `dataset` column is `Abnormal Gait` (compilation source file); sequence-level label is `normal`. Left/right heel-strike counts are unequal. Not a Health&Gait UGS trial. |
+| Validator verdict | ACCEPT |
+| Validated on | 2026-10-29 |
 
-**Replacement status:** Pending Health&Gait UGS trial + validated MP4.
+Legacy Pexels `normal_gait.mp4` was backed up under `data/demo_videos/backups/examples_20261029_150528/`.
 
 ---
 
-## 3. Performance — Health&Gait (FGS)
+## 3. Fast Walking — Twente wearable-system validation RGB
 
 ### Dataset
 
-- **Dataset:** Health&Gait — fast gait speed (FGS)
-- **Source URL:** https://zenodo.org/records/14039922
-- **UI label:** Performance (not “Athletic” unless explicit athletic ground truth exists)
+- **Dataset:** RGB data [front and side views] of the wearable system validation study
+- **Source URL:** https://zenodo.org/records/6644593
+- **DOI:** [10.5281/zenodo.6644593](https://doi.org/10.5281/zenodo.6644593)
+- **License:** CC BY 4.0 (anonymized RGB)
+- **Companion paper:** Wang, Basu, Durandau & Sartori, *Wearable Technologies* 2023 — [10.1017/wtc.2023.7](https://doi.org/10.1017/wtc.2023.7)
+- **UI label:** Fast Walking (internal key `athletic`)
 
-### Selection criteria (FGS = fast gait speed)
+Health&Gait FGS RGB is still not in the public release and was not used. The Kuopio dataset described in PMC11385067 (Zenodo 10559504) was inspected first: public files are mocap/IMU/OpenPose JSON only — the paper states no video data are released.
 
-- same visibility/evidence gates as Normal
-- select using **Velocity_FGS** / cadence metadata — controlled higher-speed locomotion
-- not stock footage of a person who visually appears athletic
+### Selection criteria
 
-### Current installed file (legacy — **REJECTED**)
+- documented walking (not running) speed condition
+- full body and feet visible
+- preferably a fixed side camera
+- original FPS and timing preserved (no speed-up, loop, or interpolation)
+- `athletic_walking.mp4` is never used as a substitute
+
+### Current installed file (2026-11-01)
 
 | Field | Value |
 |-------|-------|
-| Category | Performance (`athletic` key) |
-| Dataset | Pexels stock footage (deprecated) |
-| Status | **REJECT** |
-| Known limitations | No scientific athletic label; side-view geometry differs from other demos; ~2.38 s duration; ~1 usable gait cycle; not comparable across demos |
-
-**Replacement status:** Pending Health&Gait FGS trial + validated MP4.
+| Category | Fast Walking (`athletic` key) |
+| Dataset | Twente wearable-system validation RGB |
+| Trial ID | Subj04 / `walk_54_side_anonymized.avi` |
+| Documented speed | treadmill walking 5.4 km/h (`walk_54`); running starts at 6.3 km/h |
+| Camera view | fixed left-side camera |
+| Duration / FPS | 68.52 s / 33.000 (2261 frames; stream-copied AVI→MP4) |
+| SHA-256 | `122779bb974ec17aa579af5b860797b34d800f4dcc32aa9c2cd138b75fd621d4` |
+| License | CC BY 4.0 |
+| Known limitations | Treadmill (not overground). Face/body anonymized as released. Analysis uses up to `DEMO_MAX_FRAMES` (900). |
+| Status | Installed as `fast_walking_v2.mp4` |
 
 ---
 

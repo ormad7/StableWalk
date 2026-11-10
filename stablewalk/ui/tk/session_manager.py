@@ -147,12 +147,12 @@ def capture_workspace_state(gui: Any) -> dict[str, Any]:
     from stablewalk.ui.tk.dashboard_overview_view_mode import current_overview_view_mode
 
     overlays = {
-        "direction": _bool_var(gui, "var_overlay_direction", True),
-        "contact": _bool_var(gui, "var_overlay_contact", True),
-        "com": _bool_var(gui, "var_overlay_com", True),
-        "bos": _bool_var(gui, "var_overlay_bos", True),
+        "direction": _bool_var(gui, "var_overlay_direction", False),
+        "contact": _bool_var(gui, "var_overlay_contact", False),
+        "com": _bool_var(gui, "var_overlay_com", False),
+        "bos": _bool_var(gui, "var_overlay_bos", False),
         "com_velocity": _bool_var(gui, "var_overlay_com_velocity", False),
-        "ground": _bool_var(gui, "var_overlay_ground", True),
+        "ground": _bool_var(gui, "var_overlay_ground", False),
     }
     graphs = {
         "knee_chart_axis": _str_var(gui, "var_knee_chart_axis", "Video Time"),

@@ -7,8 +7,8 @@ import tkinter as tk
 from stablewalk.ui.theme import BORDER, ELEVATED, FONT_UI_SM, FONT_UI_XS, MUTED, PANEL, TEXT
 
 
-def add_metric_help_icon(parent: tk.Misc, title: str, body: str) -> tk.Label:
-    """Small ? icon; click opens a plain-English help popup."""
+def add_metric_help_icon(parent: tk.Misc, title: str, body: str, *, metric_key: str | None = None) -> tk.Label:
+    """Small ? icon; click opens Metric Details when known, else a plain help popup."""
     icon = tk.Label(
         parent,
         text="?",
@@ -30,6 +30,12 @@ def add_metric_help_icon(parent: tk.Misc, title: str, body: str) -> tk.Label:
 
     def _open(_event=None) -> None:
         nonlocal popup
+        from stablewalk.ui.metric_details import get_metric_details
+        from stablewalk.ui.tk.metric_details_dialog import show_metric_details_dialog
+
+        if metric_key and get_metric_details(metric_key) is not None:
+            show_metric_details_dialog(parent, metric_key, title=title)
+            return
         _close()
         popup = tk.Toplevel(parent)
         popup.title(title)

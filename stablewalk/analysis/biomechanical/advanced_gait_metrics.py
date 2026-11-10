@@ -112,13 +112,12 @@ def analyze_advanced_gait_metrics(
     m = cycles.metrics if cycles else None
     nf = features.features if features else None
     result = AdvancedGaitMetrics()
-    reliable = bool(m and m.metrics_reliable)
     unavailable_reason = (
         m.reliability_reason
         if m is not None
         else "No gait-cycle analysis was available."
     )
-    if not reliable:
+    if m is None:
         note = f"N/A — {unavailable_reason}"
         for key, unit in (
             ("cadence", "steps/min"),
@@ -140,13 +139,24 @@ def analyze_advanced_gait_metrics(
             setattr(result, key, _m(None, unit=unit, confidence=0.0, note=note))
         return result
 
-    assert m is not None
     conf = m.contact_confidence
+    from stablewalk.analysis.gait_cycle_analysis import cadence_is_exploratory
+
+    cadence_note = f"Alternating heel-strike intervals; {m.reliability_reason}"
+    cadence_value = m.cadence_steps_per_min
+    if cadence_value is None:
+        cadence_note = f"N/A — {unavailable_reason}"
+    elif cadence_is_exploratory(m, cycles):
+        cadence_note = (
+            "Exploratory — withheld from summary (low-confidence or "
+            f"single-channel cadence). {m.reliability_reason}"
+        )
+        cadence_value = None
     result.cadence = _m(
-        m.cadence_steps_per_min,
+        cadence_value,
         unit="steps/min",
-        confidence=conf,
-        note=f"Alternating heel-strike intervals; {m.reliability_reason}",
+        confidence=conf if cadence_value is not None else 0.0,
+        note=cadence_note,
     )
     result.stride_time = _m(
         m.stride_time_s,

@@ -119,11 +119,16 @@ def test_export_session_pdf_report_writes_pdf(tmp_path: Path) -> None:
         biomechanical=ba,
         sequence=seq,
         pipeline_status=summary.pipeline_status,
+        app_version="0.1.0",
+        pose_backend="mediapipe",
+        clinical_interpretation=summary.scientific_interpretation,
+        comparison_summary="No dual-session comparison in unit test.",
+        processing_lines=["StableWalk version: 0.1.0", "Pose backend: mediapipe"],
     )
     ctx.conclusion = build_automatic_conclusion(ctx)
     ctx.recommendations = build_recommendations(ctx)
 
-    out = tmp_path / "session_report_test.pdf"
+    out = tmp_path / "research_report_test.pdf"
     written = export_session_pdf_report(ctx, out, logo_path=tmp_path / "logo.png")
     assert written.is_file()
     data = written.read_bytes()

@@ -166,12 +166,33 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print manual download instructions and exit",
     )
+    parser.add_argument(
+        "--geometry",
+        action="store_true",
+        help="Download Gait2392 bone meshes (.vtp) into models/opensim/Geometry",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     ensure_models_dir()
+
+    if args.geometry:
+        from stablewalk.opensim_geometry import (
+            GAIT2392_MESH_FILES,
+            GEOMETRY_DIR,
+            missing_geometry_files,
+            prepare_opensim_geometry,
+        )
+
+        dirs = prepare_opensim_geometry(None, download=True)
+        missing = missing_geometry_files(GAIT2392_MESH_FILES, dirs)
+        if missing:
+            logger.error("Geometry still missing: %s", ", ".join(missing))
+            return 1
+        logger.info("OpenSim Geometry ready in %s", GEOMETRY_DIR)
+        return 0
 
     if args.manual:
         print_manual_instructions(args.model)

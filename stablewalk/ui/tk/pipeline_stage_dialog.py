@@ -68,7 +68,7 @@ _STAGE_UI_SPECS: dict[str, PipelineStageUiSpec] = {
     ),
     "pose_estimation": PipelineStageUiSpec(
         key="pose_estimation",
-        title="Pose Estimation",
+        title="Pose Detection",
         purpose="Extract 2D/3D body pose from video using MediaPipe, SMPL, or ROMP providers.",
         input_desc="Walking video or pre-recorded pose sequence.",
         output_desc="Landmark poses, optional SMPL mesh motion, and pose backend report.",
@@ -76,6 +76,17 @@ _STAGE_UI_SPECS: dict[str, PipelineStageUiSpec] = {
         item_keys=("pose_mediapipe", "pose_smpl", "pose_romp"),
         rts_stage_ids=("1_perception",),
         artifact_names=("*_poses.json", "smpl_motion.npz"),
+    ),
+    "filtering": PipelineStageUiSpec(
+        key="filtering",
+        title="Filtering",
+        purpose="Smooth and clean pose landmarks before 3D reconstruction and biomechanics.",
+        input_desc="Raw detected pose landmarks across the clip.",
+        output_desc="Temporally smoothed skeleton trajectories used by downstream stages.",
+        algorithms="Temporal landmark smoothing · outlier rejection · display filter continuity",
+        item_keys=("pose_mediapipe", "motion_skeleton"),
+        rts_stage_ids=("1_perception",),
+        artifact_names=("*_poses.json", "stablewalk_motion.npz"),
     ),
     "perception": PipelineStageUiSpec(
         key="perception",
@@ -121,7 +132,7 @@ _STAGE_UI_SPECS: dict[str, PipelineStageUiSpec] = {
     ),
     "opensim": PipelineStageUiSpec(
         key="opensim",
-        title="OpenSim",
+        title="OpenSim IK",
         purpose="Map landmarks to OpenSim markers, run inverse kinematics, and export musculoskeletal motion.",
         input_desc="Pose TRC, OpenSim .osim model, and marker mapping configuration.",
         output_desc="Mapped .trc, inverse kinematics .mot, and coverage report.",
@@ -212,6 +223,32 @@ _STAGE_UI_SPECS: dict[str, PipelineStageUiSpec] = {
         item_keys=("isaac_env_ready", "isaac_export_only", "isaac_training_running", "isaac_training_complete"),
         artifact_names=("amp_reference_motion.npz",),
     ),
+    "metrics": PipelineStageUiSpec(
+        key="metrics",
+        title="Metrics",
+        purpose="Summarize gait quality, cadence, symmetry, stability, and confidence for the session.",
+        input_desc="Biomechanical analysis and gait-cycle metrics.",
+        output_desc="Session KPI fields used on Overview and Results.",
+        algorithms="Derived gait metrics · confidence aggregation",
+        item_keys=(
+            "bio_cadence",
+            "bio_com",
+            "bio_bos",
+            "bio_heel_strike",
+            "bio_toe_off",
+        ),
+        artifact_names=("biomechanical_report.json", "analysis_summary.json"),
+    ),
+    "report": PipelineStageUiSpec(
+        key="report",
+        title="Final Report",
+        purpose="Produce a concise analysis interpretation and exportable summary artifacts.",
+        input_desc="Completed metrics and biomechanical findings.",
+        output_desc="Scientific interpretation text and JSON/text report exports.",
+        algorithms="Rule-based scientific interpretation · summary export",
+        item_keys=(),
+        artifact_names=("analysis_summary.json", "*_report.txt"),
+    ),
 }
 
 # Aliases from flow / engineering cards to canonical specs.
@@ -225,10 +262,14 @@ _STAGE_ALIASES: dict[str, str] = {
     "amp_dataset": "amp_dataset",
     "export": "export",
     "pose_estimation": "pose_estimation",
+    "filtering": "filtering",
     "reconstruction_3d": "reconstruction_3d",
     "isaac_lab": "isaac_lab",
+    "metrics": "metrics",
+    "report": "report",
     "perception": "perception",
     "amp_export": "amp_export",
+    "opensim_ik": "opensim",
 }
 
 
@@ -249,6 +290,8 @@ class PipelineStageDialogContent:
     confidence: str
     execution_summary: str
     duration_text: str = "—"
+    quality: str = "Not assessed"
+    warnings: str = "None recorded for this stage."
 
 
 def resolve_stage_ui_spec(stage_key: str) -> PipelineStageUiSpec:
@@ -299,11 +342,37 @@ def _aggregate_status(items: list[PipelineStageItem]) -> tuple[PipelineStageStat
 def _format_items_evidence(items: list[PipelineStageItem]) -> str:
     if not items:
         return "No monitored sub-steps matched this stage."
-    lines = [
-        f"{item.label} — {item.detail}"
-        for item in items
-    ]
+    lines = []
+    for item in items:
+        line = f"{item.label} — {item.detail}"
+        if item.validation_note:
+            line += f"\n    Validation: {item.validation_note}"
+        if item.quality != "not_assessed":
+            line += f" [{item.quality_label()}]"
+        lines.append(line)
     return "\n".join(lines)
+
+
+def _format_items_warnings(items: list[PipelineStageItem]) -> str:
+    warnings: list[str] = []
+    for item in items:
+        for w in item.warnings:
+            tagged = f"{item.label}: {w}"
+            if tagged not in warnings:
+                warnings.append(tagged)
+    if not warnings:
+        return "None recorded for this stage (no validating artifact or no warnings raised)."
+    return "\n".join(f"• {w}" for w in warnings[:12])
+
+
+def _format_items_quality(items: list[PipelineStageItem]) -> str:
+    assessed = [item for item in items if item.quality != "not_assessed"]
+    if not assessed:
+        return "Not assessed — no independent validation artifact for this stage."
+    order = ("insufficient_data", "poor", "limited", "acceptable")
+    worst = min(assessed, key=lambda it: order.index(it.quality) if it.quality in order else 0)
+    parts = [f"{item.label}: {item.quality_label()}" for item in assessed[:6]]
+    return f"{worst.quality_label()} — " + "; ".join(parts)
 
 
 def _session_run_name(gui: Any, report: PipelineStatusReport | None) -> str:
@@ -345,6 +414,14 @@ def _find_artifacts(run_name: str, patterns: tuple[str, ...]) -> list[str]:
 
 
 def _confidence_for_stage(stage_key: str, gui: Any, items: list[PipelineStageItem]) -> str:
+    # Prefer explicit per-item validation confidence from available artifacts.
+    confs = [item.confidence for item in items if item.confidence is not None]
+    notes = [item.validation_note for item in items if item.validation_note]
+    if confs:
+        mean_c = sum(confs) / len(confs)
+        note = notes[0] if notes else "Stage validation confidence"
+        return f"{note} ({mean_c:.0%})"
+
     if gui is None:
         return "—"
 
@@ -353,14 +430,29 @@ def _confidence_for_stage(stage_key: str, gui: Any, items: list[PipelineStageIte
     sequence = getattr(gui, "sequence", None)
     pose_indices = getattr(gui, "pose_indices", None) or []
 
-    if stage_key in ("video", "pose_estimation", "perception", "smpl"):
+    if stage_key in ("video", "pose_estimation", "filtering", "perception", "smpl"):
         if sequence and pose_indices:
             detected = sum(1 for i in pose_indices if sequence.frames[i].detected)
             total = len(pose_indices)
             if total:
                 pct = 100.0 * detected / total
-                return f"Pose detection coverage: {detected}/{total} frames ({pct:.0f}%)"
+                label = (
+                    "Filtered pose coverage"
+                    if stage_key == "filtering"
+                    else "Pose detection coverage"
+                )
+                return f"{label}: {detected}/{total} frames ({pct:.0f}%)"
         return "No pose session loaded"
+
+    if stage_key == "metrics":
+        summary = getattr(gui, "_analysis_summary_cache", None)
+        conf_field = getattr(summary, "analysis_confidence", None) if summary else None
+        if conf_field is None or not getattr(conf_field, "available", False):
+            conf_field = getattr(summary, "pipeline_confidence", None) if summary else None
+        if conf_field is not None and getattr(conf_field, "available", False):
+            value = getattr(conf_field, "value", None)
+            if value is not None and str(value).strip() not in ("", "—", "-"):
+                return str(value).strip()
 
     if stage_key in ("biomechanics", "virtual_grf") and contact is not None:
         conf = contact.metrics.contact_confidence
@@ -381,6 +473,10 @@ def _confidence_for_stage(stage_key: str, gui: Any, items: list[PipelineStageIte
                 ctx = None
         if ctx is not None and ctx.opensim_coverage_percent is not None:
             return f"OpenSim marker coverage: {ctx.opensim_coverage_percent:.0f}%"
+        report = getattr(gui, "_pipeline_status_report_cache", None)
+        val = getattr(report, "validation", None) if report is not None else None
+        if val is not None and val.ik_marker_errors is not None:
+            return f"{val.ik_marker_errors.summary_line()} (residual proxy)"
 
     if items:
         completed = sum(1 for item in items if item.status == STATUS_COMPLETED)
@@ -493,6 +589,8 @@ def build_pipeline_stage_dialog_content(
         confidence=_confidence_for_stage(stage_key, gui, matched),
         execution_summary=_rts_execution_summary(gui, spec.rts_stage_ids),
         duration_text=duration_text,
+        quality=_format_items_quality(matched),
+        warnings=_format_items_warnings(matched),
     )
 
 
@@ -586,19 +684,34 @@ def show_pipeline_stage_dialog(parent: tk.Misc, content: PipelineStageDialogCont
         ("Generated files", content.generated_files, TEXT),
         ("Execution time", content.duration_text, TEXT),
         ("Evidence", content.evidence, MUTED),
+        ("Validation quality", content.quality, MUTED),
         ("Confidence", content.confidence, MUTED),
+        ("Warnings", content.warnings, MUTED),
         ("Execution summary", content.execution_summary, MUTED),
     ):
         row = _add_dialog_section(sections, row, label, text, fg=fg)
 
     btn_row = tk.Frame(outer, bg=PANEL)
     btn_row.grid(row=1, column=0, columnspan=2, sticky="e", pady=(8, 0))
-    ttk.Button(btn_row, text="Close", command=dlg.destroy).pack(side=tk.RIGHT)
 
-    dlg.bind("<Escape>", lambda _e: dlg.destroy())
-    dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
-    dlg.grab_set()
-    dlg.focus_force()
+    def _close() -> None:
+        try:
+            dlg.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            dlg.destroy()
+        except tk.TclError:
+            pass
+
+    ttk.Button(btn_row, text="Close", command=_close).pack(side=tk.RIGHT)
+    dlg.bind("<Escape>", lambda _e: _close())
+    dlg.protocol("WM_DELETE_WINDOW", _close)
+    try:
+        dlg.grab_set()
+        dlg.focus_force()
+    except tk.TclError:
+        pass
 
 
 def bind_pipeline_stage_click(

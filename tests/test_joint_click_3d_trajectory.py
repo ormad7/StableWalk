@@ -14,8 +14,11 @@ from stablewalk.ui.dof_selection import (
 from stablewalk.ui.tk.app import StableWalkGUI
 from stablewalk.ui.tk.dashboard_overview_panes import layout_panels_for_view_mode
 from stablewalk.ui.tk.dashboard_overview_view_mode import (
+    VIEW_MODE_OVERLAY,
+    VIEW_MODE_RECONSTRUCTION_FULL,
     VIEW_MODE_SIDE_BY_SIDE,
     VIEW_MODE_SKELETON_ONLY,
+    VIEW_MODE_VIDEO_ONLY,
 )
 
 
@@ -82,7 +85,194 @@ def test_side_by_side_places_3d_path_in_column_2() -> None:
     assert grids["skel"][-1]["column"] == 1
 
 
-def test_skeleton_only_places_3d_path_beside_skeleton() -> None:
+def test_three_panel_layout_grids_children_not_paned() -> None:
+    from stablewalk.ui.tk.dashboard_overview_panes import apply_overview_three_panel_layout
+
+    grids: dict = {}
+    gui = SimpleNamespace(
+        _section_visual=MagicMock(),
+        _primary_viz_content_row=0,
+        video_frame=_mock_panel("video", grids),
+        skel_frame=_mock_panel("skel", grids),
+        overview_traj_panel=_mock_panel("traj", grids),
+        sidebar=_mock_panel("sidebar", grids),
+        _overview_viz_split=None,
+    )
+    gui._section_visual.columnconfigure = MagicMock()
+    gui._section_visual.rowconfigure = MagicMock()
+
+    assert apply_overview_three_panel_layout(gui) is True
+    assert grids["video"][-1]["column"] == 0
+    assert grids["skel"][-1]["column"] == 1
+    assert grids["traj"][-1]["column"] == 2
+    assert grids["video"][-1]["sticky"] == "nsew"
+
+
+def test_three_panel_layout_does_not_regrid_when_already_mounted() -> None:
+    from stablewalk.ui.tk.dashboard_overview_panes import apply_overview_three_panel_layout
+
+    section = MagicMock()
+    grids: dict = {}
+    video = _mock_panel("video", grids)
+    skel = _mock_panel("skel", grids)
+    traj = _mock_panel("traj", grids)
+    for widget, col in ((video, 0), (skel, 1), (traj, 2)):
+        widget.winfo_manager = MagicMock(return_value="grid")
+        widget.grid_info = MagicMock(return_value={"column": col, "in": section})
+        widget.master = section
+    gui = SimpleNamespace(
+        _section_visual=section,
+        _primary_viz_content_row=0,
+        video_frame=video,
+        skel_frame=skel,
+        overview_traj_panel=traj,
+        playing=True,
+    )
+    assert apply_overview_three_panel_layout(gui) is True
+    video.grid.assert_not_called()
+    skel.grid.assert_not_called()
+    traj.grid.assert_not_called()
+
+
+def test_playback_layout_does_not_remount_mounted_panels() -> None:
+    from stablewalk.ui.tk.dashboard_overview_panes import layout_panels_for_view_mode
+
+    section = MagicMock()
+    grids: dict = {}
+    video = _mock_panel("video", grids)
+    skel = _mock_panel("skel", grids)
+    traj = _mock_panel("traj", grids)
+    for widget, col in ((video, 0), (skel, 1), (traj, 2)):
+        widget.winfo_manager = MagicMock(return_value="grid")
+        widget.grid_info = MagicMock(return_value={"column": col, "in": section})
+        widget.master = section
+    gui = SimpleNamespace(
+        _section_visual=section,
+        _primary_viz_content_row=0,
+        video_frame=video,
+        skel_frame=skel,
+        overview_traj_panel=traj,
+        sidebar=_mock_panel("sidebar", grids),
+        playing=True,
+        _overview_focus_mode=VIEW_MODE_VIDEO_ONLY,
+        _refresh_overview_trajectory_dock=MagicMock(),
+        _schedule_overview_media_refit=MagicMock(),
+    )
+    layout_panels_for_view_mode(gui, VIEW_MODE_VIDEO_ONLY)
+    video.grid.assert_not_called()
+    gui._refresh_overview_trajectory_dock.assert_not_called()
+    gui._schedule_overview_media_refit.assert_not_called()
+
+
+def test_resize_reflow_does_not_relayout_panels_while_playing() -> None:
+    from stablewalk.ui.tk.overview_responsive import reflow_overview_viz_panels
+
+    gui = SimpleNamespace(playing=True, overview_traj_panel=MagicMock())
+    assert reflow_overview_viz_panels(gui, width=1600) == "three_col"
+    gui.overview_traj_panel.rowconfigure.assert_not_called()
+
+
+def test_focused_modes_hide_unused_viewers() -> None:
+    """Video / Overlay / Skeleton focus one viewer; Split keeps all three."""
+    for mode, shown, hidden in (
+        (VIEW_MODE_VIDEO_ONLY, "video", ("skel", "traj")),
+        (VIEW_MODE_OVERLAY, "video", ("skel", "traj")),
+        (VIEW_MODE_SKELETON_ONLY, "skel", ("video", "traj")),
+    ):
+        grids: dict = {}
+        gui = SimpleNamespace(
+            _section_visual=MagicMock(),
+            _primary_viz_content_row=0,
+            _overview_summary_row=1,
+            _overview_traj_dock_visible=True,
+            video_frame=_mock_panel("video", grids),
+            skel_frame=_mock_panel("skel", grids),
+            sidebar=_mock_panel("sidebar", grids),
+            overview_traj_panel=_mock_panel("traj", grids),
+            _overview_viz_split=None,
+            _schedule_overview_media_refit=None,
+            _refresh_overview_trajectory_dock=MagicMock(),
+        )
+        gui._section_visual.columnconfigure = MagicMock()
+        gui._section_visual.rowconfigure = MagicMock()
+
+        layout_panels_for_view_mode(gui, mode)
+
+        assert grids[shown][-1]["columnspan"] == 3
+        for name in hidden:
+            getattr(gui, {"skel": "skel_frame", "traj": "overview_traj_panel", "video": "video_frame"}[name]).grid_remove.assert_called()
+
+
+def test_reconstruction_full_keeps_path_in_holder() -> None:
+    """3D Full must map the path panel inside its build-time holder, not reparent it."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    from stablewalk.ui.tk.analysis_split import create_h_split, split_add
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover - headless CI without display
+        return
+    try:
+        root.geometry("900x500+40+40")
+        section = tk.Frame(root, width=900, height=500)
+        section.grid(row=0, column=0, sticky="nsew")
+        root.rowconfigure(0, weight=1)
+        root.columnconfigure(0, weight=1)
+        section.columnconfigure(0, weight=1)
+        section.rowconfigure(0, weight=1)
+        paned = create_h_split(section)
+        pane_v = tk.Frame(paned)
+        pane_s = tk.Frame(paned)
+        pane_t = tk.Frame(paned)
+        pane_t.rowconfigure(0, weight=1)
+        pane_t.columnconfigure(0, weight=1)
+        video = ttk.LabelFrame(pane_v, text="Video")
+        skel = ttk.LabelFrame(pane_s, text="Skeleton")
+        traj = ttk.LabelFrame(pane_t, text="3D Path")
+        video.grid(row=0, column=0, sticky="nsew")
+        skel.grid(row=0, column=0, sticky="nsew")
+        traj.grid(row=0, column=0, sticky="nsew")
+        split_add(paned, pane_v)
+        split_add(paned, pane_s)
+        split_add(paned, pane_t)
+        paned.grid(row=0, column=0, columnspan=3, sticky="nsew")
+        gui = SimpleNamespace(
+            root=None,
+            _section_visual=section,
+            _primary_viz_content_row=0,
+            video_frame=video,
+            skel_frame=skel,
+            sidebar=None,
+            overview_traj_panel=traj,
+            _overview_viz_split=paned,
+            _overview_pane_path=pane_t,
+            _overview_pane_video=pane_v,
+            _overview_pane_skeleton=pane_s,
+            _overview_phase_strip=None,
+            _foot_clearance_detail_host=None,
+            playing=False,
+            _refresh_overview_trajectory_dock=MagicMock(),
+            _schedule_overview_media_refit=MagicMock(),
+        )
+        root.update()
+        layout_panels_for_view_mode(gui, VIEW_MODE_RECONSTRUCTION_FULL)
+        root.update()
+        assert gui._overview_traj_dock_visible is True
+        assert str(traj.winfo_manager()) == "grid"
+        assert str(traj.winfo_parent()) == str(pane_t)
+        assert len(paned.panes()) == 1
+        assert str(paned.winfo_manager()) == "grid"
+        assert bool(traj.winfo_ismapped())
+        assert not bool(video.winfo_ismapped())
+        assert not bool(skel.winfo_ismapped())
+        gui._refresh_overview_trajectory_dock.assert_called()
+    finally:
+        root.destroy()
+
+
+def test_side_by_side_keeps_all_three_panels() -> None:
     grids: dict = {}
     gui = SimpleNamespace(
         _section_visual=MagicMock(),
@@ -93,16 +283,18 @@ def test_skeleton_only_places_3d_path_beside_skeleton() -> None:
         skel_frame=_mock_panel("skel", grids),
         sidebar=_mock_panel("sidebar", grids),
         overview_traj_panel=_mock_panel("traj", grids),
+        _overview_viz_split=None,
         _schedule_overview_media_refit=None,
         _refresh_overview_trajectory_dock=MagicMock(),
     )
     gui._section_visual.columnconfigure = MagicMock()
     gui._section_visual.rowconfigure = MagicMock()
 
-    layout_panels_for_view_mode(gui, VIEW_MODE_SKELETON_ONLY)
+    layout_panels_for_view_mode(gui, VIEW_MODE_SIDE_BY_SIDE)
 
-    assert grids["skel"][-1]["column"] == 0
-    assert grids["traj"][-1]["column"] == 1
+    assert grids["video"][-1]["column"] == 0
+    assert grids["skel"][-1]["column"] == 1
+    assert grids["traj"][-1]["column"] == 2
 
 
 def test_restore_playback_position_does_not_trip_slider_pause() -> None:
@@ -151,7 +343,7 @@ def test_restore_playback_position_does_not_trip_slider_pause() -> None:
 
 
 def test_focus_while_playing_skips_heavy_panel_remount(monkeypatch) -> None:
-    """Playing + path already visible: light sync only — do not remount Overview."""
+    """Playing + Side-by-Side: refresh path, but do not remount Overview layout."""
     app = MagicMock()
     app.selection = DofSelectionState()
     app.selection.select_only("right_hip")
@@ -162,6 +354,7 @@ def test_focus_while_playing_skips_heavy_panel_remount(monkeypatch) -> None:
     app._ensure_playback_continues_after_pick = MagicMock()
     app._expand_overview_joint_dof_analysis = MagicMock()
     app._update_overview_playback_hud = MagicMock()
+    app._refresh_overview_joint_information = MagicMock()
     app._overview_traj_dock_visible = True
     app._apply_overview_joint_motion_expanded = MagicMock()
     app.skeleton_player = SimpleNamespace(state=SimpleNamespace(frame_float=12.0))
@@ -185,8 +378,9 @@ def test_focus_while_playing_skips_heavy_panel_remount(monkeypatch) -> None:
     StableWalkGUI._focus_joint_trajectory_from_skeleton(app, "right_knee")
     assert app.selection.selected == {"right_knee"}
     app._notify_dof_selection_changed.assert_called_with(lightweight=True)
-    app.show_joint_3d_panel.assert_not_called()
-    app.update_joint_3d_graph.assert_not_called()
+    # Path stays visible and refreshes; heavy view-mode remount is skipped.
+    app.show_joint_3d_panel.assert_called_once()
+    app.update_joint_3d_graph.assert_called_with("right_knee")
     apply_mode.assert_not_called()
     app._ensure_playback_continues_after_pick.assert_called_with(was_playing=True)
 
@@ -333,7 +527,7 @@ def test_focus_switches_joint_updates_graph(monkeypatch) -> None:
     title = StableWalkGUI._overview_joint_inspect_title(
         SimpleNamespace(
             selection=app.selection,
-            _active_demo_gait=SimpleNamespace(button_label="Normal"),
+            _active_demo_gait=SimpleNamespace(display_name="Normal", button_label="Normal"),
         )
     )
     assert "Right Knee" in title
@@ -381,7 +575,7 @@ def test_normal_gait_right_hip_has_xyz_trajectory() -> None:
 def test_overview_title_contains_right_hip_after_select() -> None:
     app = SimpleNamespace(
         selection=DofSelectionState(),
-        _active_demo_gait=SimpleNamespace(button_label="Normal"),
+        _active_demo_gait=SimpleNamespace(display_name="Normal", button_label="Normal"),
     )
     app.selection.select_only("right_hip")
     title = StableWalkGUI._overview_joint_inspect_title(app)

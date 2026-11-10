@@ -121,17 +121,22 @@ def _load_thumbnail(snap: AnalyzedSessionSnapshot | None, progress: float = 0.35
             import cv2
 
             cap = cv2.VideoCapture(str(snap.video_path))
-            if not cap.isOpened():
-                return None
-            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            frame_i = int(round(progress * max(total - 1, 0)))
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_i)
-            ok, bgr = cap.read()
-            cap.release()
-            if not ok or bgr is None:
-                return None
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            return Image.fromarray(rgb)
+            try:
+                if not cap.isOpened():
+                    return None
+                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                frame_i = int(round(progress * max(total - 1, 0)))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_i)
+                ok, bgr = cap.read()
+                if not ok or bgr is None:
+                    return None
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                return Image.fromarray(rgb)
+            finally:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
         except Exception:
             return None
     return None

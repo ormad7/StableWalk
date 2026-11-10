@@ -8,6 +8,7 @@ import numpy as np
 from matplotlib.axes import Axes
 
 from stablewalk.ui.colors import BORDER, MUTED, PANEL, SIDE_LEFT, SIDE_RIGHT, TEXT
+from stablewalk.ui.viewers.chart_style import mark_secondary_annotation
 
 # Semantic reference colors (not L/R limb colors).
 REF_NORMAL = "#2ec99a"
@@ -20,12 +21,18 @@ EVENT_TO = "#ffc857"
 # These do not alter analysis — they annotate charts for lab readability.
 KNEE_FLEXION_NORMAL_DEG = (0.0, 70.0)
 KNEE_FLEXION_ABNORMAL_ABOVE_DEG = 90.0
-# Hip-centered COM height typically oscillates near 0 (mid-hip origin).
-# Floor-absolute stature bands (~0.55 BH) do not apply in this frame.
-COM_HEIGHT_NORMAL_BH = (-0.03, 0.03)
-COM_HEIGHT_ABNORMAL_BELOW_BH = -0.06
-COM_HEIGHT_ABNORMAL_ABOVE_BH = 0.06
-# Stability margin chart/storage use metres after stature scaling.
+# Illustrative display scale for segment-weighted COM Y relative to the pelvis.
+# This is not a population-derived clinical normal range, and floor-absolute
+# COM-height references (~0.55–0.60 BH) do not apply to this coordinate frame.
+COM_VERTICAL_PELVIS_RELATIVE_ILLUSTRATIVE_BH = (-0.03, 0.03)
+COM_VERTICAL_PELVIS_RELATIVE_OUTER_BH = (-0.06, 0.06)
+# Back-compatible names; callers must not describe these as clinical norms.
+COM_HEIGHT_NORMAL_BH = COM_VERTICAL_PELVIS_RELATIVE_ILLUSTRATIVE_BH
+COM_HEIGHT_ABNORMAL_BELOW_BH = COM_VERTICAL_PELVIS_RELATIVE_OUTER_BH[0]
+COM_HEIGHT_ABNORMAL_ABOVE_BH = COM_VERTICAL_PELVIS_RELATIVE_OUTER_BH[1]
+# Historical display band only. It is NOT a documented Hof, Winter, or
+# clinical-normative range for monocular COM–BoS signed distance.
+# Do not draw it as "Normal" / "Stable" for that method.
 STABILITY_MARGIN_NORMAL_M = (0.04, 0.25)
 STABILITY_MARGIN_NORMAL_BH = STABILITY_MARGIN_NORMAL_M  # back-compat alias
 CONTACT_ASYMMETRY_NORMAL = (0.0, 0.35)
@@ -39,6 +46,7 @@ def draw_reference_y_bands(
     abnormal_below: float | None = None,
     abnormal_above: float | None = None,
     label_normal: bool = True,
+    normal_label: str = "Normal",
 ) -> None:
     """Green normal band and red abnormal zones (Visual3D / Qualisys style)."""
     y0, y1 = ax.get_ylim()
@@ -49,44 +57,57 @@ def draw_reference_y_bands(
         lo = float(y0)
         hi = min(float(abnormal_below), float(y1))
         if hi > lo:
-            ax.axhspan(
-                lo,
-                hi,
-                facecolor=REF_ABNORMAL,
-                edgecolor="none",
-                alpha=0.10,
-                zorder=0.2,
-                label="_nolegend_",
+            mark_secondary_annotation(
+                ax.axhspan(
+                    lo,
+                    hi,
+                    facecolor=REF_ABNORMAL,
+                    edgecolor="none",
+                    alpha=0.08,
+                    zorder=0.2,
+                    label="_nolegend_",
+                )
             )
     if abnormal_above is not None:
         lo = max(float(abnormal_above), float(y0))
         hi = float(y1)
         if hi > lo:
-            ax.axhspan(
-                lo,
-                hi,
-                facecolor=REF_ABNORMAL,
-                edgecolor="none",
-                alpha=0.10,
-                zorder=0.2,
-                label="_nolegend_",
+            mark_secondary_annotation(
+                ax.axhspan(
+                    lo,
+                    hi,
+                    facecolor=REF_ABNORMAL,
+                    edgecolor="none",
+                    alpha=0.08,
+                    zorder=0.2,
+                    label="_nolegend_",
+                )
             )
     if normal is not None:
         n0, n1 = float(normal[0]), float(normal[1])
         lo = max(n0, float(y0))
         hi = min(n1, float(y1))
         if hi > lo:
+            # Keep the primary normal band visible when zoomed out (scale context).
             ax.axhspan(
                 lo,
                 hi,
                 facecolor=REF_NORMAL,
                 edgecolor="none",
-                alpha=0.16,
+                alpha=0.12,
                 zorder=0.3,
-                label="Normal" if label_normal else "_nolegend_",
+                label=normal_label if label_normal else "_nolegend_",
             )
-            ax.axhline(n0, color=REF_NORMAL, linewidth=0.7, alpha=0.35, linestyle=":", zorder=0.4)
-            ax.axhline(n1, color=REF_NORMAL, linewidth=0.7, alpha=0.35, linestyle=":", zorder=0.4)
+            mark_secondary_annotation(
+                ax.axhline(
+                    n0, color=REF_NORMAL, linewidth=0.7, alpha=0.30, linestyle=":", zorder=0.4
+                )
+            )
+            mark_secondary_annotation(
+                ax.axhline(
+                    n1, color=REF_NORMAL, linewidth=0.7, alpha=0.30, linestyle=":", zorder=0.4
+                )
+            )
 
 
 def draw_confidence_overlay(
@@ -115,25 +136,29 @@ def draw_confidence_overlay(
             if t1 < t0:
                 t0, t1 = t1, t0
             pad = max((float(t[-1]) - float(t[0])) * 0.002, 1e-4)
-            ax.axvspan(
-                t0 - pad,
-                t1 + pad,
-                facecolor=REF_CONFIDENCE,
-                edgecolor="none",
-                alpha=0.12,
-                zorder=0.5,
-                label="_nolegend_",
+            mark_secondary_annotation(
+                ax.axvspan(
+                    t0 - pad,
+                    t1 + pad,
+                    facecolor=REF_CONFIDENCE,
+                    edgecolor="none",
+                    alpha=0.10,
+                    zorder=0.5,
+                    label="_nolegend_",
+                )
             )
             start = None
     if start is not None:
-        ax.axvspan(
-            float(t[start]),
-            float(t[-1]),
-            facecolor=REF_CONFIDENCE,
-            edgecolor="none",
-            alpha=0.12,
-            zorder=0.5,
-            label="_nolegend_",
+        mark_secondary_annotation(
+            ax.axvspan(
+                float(t[start]),
+                float(t[-1]),
+                facecolor=REF_CONFIDENCE,
+                edgecolor="none",
+                alpha=0.10,
+                zorder=0.5,
+                label="_nolegend_",
+            )
         )
 
 
@@ -146,9 +171,9 @@ def draw_gait_event_markers(
     right_hs: Sequence[float] | None = None,
     left_to: Sequence[float] | None = None,
     right_to: Sequence[float] | None = None,
-    show_legend: bool = True,
+    show_legend: bool = False,
 ) -> None:
-    """OpenSim / Vicon-style heel-strike and toe-off markers."""
+    """OpenSim / Vicon-style heel-strike and toe-off markers (zoom-in detail)."""
     y0, y1 = ax.get_ylim()
     if not np.isfinite(y0) or not np.isfinite(y1):
         return
@@ -170,25 +195,29 @@ def draw_gait_event_markers(
         if not xs:
             return
         for x in xs:
-            ax.axvline(
-                x,
-                color=color,
-                linewidth=0.85,
-                alpha=0.35,
-                linestyle=(0, (3, 2)),
-                zorder=2.5,
+            mark_secondary_annotation(
+                ax.axvline(
+                    x,
+                    color=color,
+                    linewidth=0.85,
+                    alpha=0.30,
+                    linestyle=(0, (3, 2)),
+                    zorder=2.5,
+                )
             )
-        ax.scatter(
-            xs,
-            [y] * len(xs),
-            marker=marker,
-            s=28,
-            color=color,
-            edgecolors=PANEL,
-            linewidths=0.45,
-            zorder=6,
-            label=label if (show_legend and label) else "_nolegend_",
-            clip_on=False,
+        mark_secondary_annotation(
+            ax.scatter(
+                xs,
+                [y] * len(xs),
+                marker=marker,
+                s=26,
+                color=color,
+                edgecolors=PANEL,
+                linewidths=0.45,
+                zorder=6,
+                label=label if (show_legend and label) else "_nolegend_",
+                clip_on=False,
+            )
         )
 
     # Bilateral / unlabeled
@@ -218,24 +247,26 @@ def annotate_playhead_value(
     x0, x1 = ax.get_xlim()
     xr = x1 - x0 if x1 > x0 else 1.0
     text = f"{value:.2f}{unit}"
-    ax.text(
-        x + xr * 0.008,
-        min(max(value, y0 + yr * 0.06), y1 - yr * 0.08),
-        text,
-        color=color,
-        fontsize=8.0,
-        fontweight="semibold",
-        va="center",
-        ha="left",
-        zorder=zorder,
-        clip_on=False,
-        bbox={
-            "boxstyle": "round,pad=0.22",
-            "facecolor": PANEL,
-            "edgecolor": BORDER,
-            "alpha": 0.92,
-            "linewidth": 0.6,
-        },
+    mark_secondary_annotation(
+        ax.text(
+            x + xr * 0.008,
+            min(max(value, y0 + yr * 0.06), y1 - yr * 0.08),
+            text,
+            color=color,
+            fontsize=11.0,
+            fontweight="semibold",
+            va="center",
+            ha="left",
+            zorder=zorder,
+            clip_on=False,
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "facecolor": PANEL,
+                "edgecolor": BORDER,
+                "alpha": 0.94,
+                "linewidth": 0.7,
+            },
+        )
     )
 
 
@@ -243,6 +274,8 @@ __all__ = [
     "COM_HEIGHT_ABNORMAL_ABOVE_BH",
     "COM_HEIGHT_ABNORMAL_BELOW_BH",
     "COM_HEIGHT_NORMAL_BH",
+    "COM_VERTICAL_PELVIS_RELATIVE_ILLUSTRATIVE_BH",
+    "COM_VERTICAL_PELVIS_RELATIVE_OUTER_BH",
     "CONTACT_ASYMMETRY_NORMAL",
     "EVENT_HS",
     "EVENT_TO",

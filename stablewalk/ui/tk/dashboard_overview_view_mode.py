@@ -9,9 +9,7 @@ from typing import Any
 
 from stablewalk import config
 from stablewalk.ui.theme import (
-    BORDER,
-    FONT_UI_XS,
-    MUTED,
+    INLINE_GAP,
     PAD_SM,
     PAD_XS,
     PANEL,
@@ -25,11 +23,21 @@ VIEW_MODE_OVERLAY = "overlay"
 VIEW_MODE_RECONSTRUCTION_FULL = "reconstruction_full"
 
 VIEW_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
-    (VIEW_MODE_VIDEO_ONLY, "Video Only"),
-    (VIEW_MODE_SKELETON_ONLY, "Skeleton Only"),
-    (VIEW_MODE_SIDE_BY_SIDE, "Side-by-Side"),
+    (VIEW_MODE_VIDEO_ONLY, "Video"),
     (VIEW_MODE_OVERLAY, "Overlay"),
+    (VIEW_MODE_SKELETON_ONLY, "Skeleton"),
+    (VIEW_MODE_SIDE_BY_SIDE, "Split"),
     (VIEW_MODE_RECONSTRUCTION_FULL, "Full 3D Reconstruction"),
+)
+
+# Primary Overview toggle. Split is the presentation default so Video,
+# Skeleton, and 3D Path stay on screen together.
+VIEW_MODE_TOGGLE_OPTIONS: tuple[tuple[str, str], ...] = (
+    (VIEW_MODE_SIDE_BY_SIDE, "Split"),
+    (VIEW_MODE_OVERLAY, "Overlay"),
+    (VIEW_MODE_VIDEO_ONLY, "Video"),
+    (VIEW_MODE_SKELETON_ONLY, "Skeleton"),
+    (VIEW_MODE_RECONSTRUCTION_FULL, "3D Full"),
 )
 
 VIEW_MODE_IDS = frozenset(mode_id for mode_id, _label in VIEW_MODE_OPTIONS)
@@ -89,7 +97,14 @@ def current_overview_view_mode(gui: Any) -> str:
 
 
 def _content_row(gui: Any) -> int:
-    return int(getattr(gui, "_primary_viz_content_row", 1))
+    return int(
+        getattr(
+            gui,
+            "_primary_viz_content_row",
+            getattr(gui, "_primary_viz_content_row", 0),
+        )
+        or 0
+    )
 
 
 def _hide(widget: tk.Misc | None) -> None:
@@ -218,13 +233,29 @@ def _fit_visuals(gui: Any) -> None:
     fit_skel = getattr(gui, "_fit_skeleton_canvas", None)
     if fit_skel is not None:
         try:
-            fit_skel()
+            fit_skel(force=True)
+        except TypeError:
+            try:
+                fit_skel()
+            except Exception:
+                pass
         except Exception:
             pass
     refit = getattr(gui, "_on_video_label_resize", None)
     if refit is not None:
         try:
             refit()
+        except Exception:
+            pass
+    traj = getattr(gui, "_render_overview_traj_canvas", None)
+    if traj is not None:
+        try:
+            traj(force=True)
+        except TypeError:
+            try:
+                traj()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -259,8 +290,8 @@ def _set_metrics_visible(gui: Any, visible: bool) -> None:
         if visible:
             from stablewalk.ui.theme import OVERVIEW_ROW_GAP
 
-            # tab_overview: row0 toolbar, row1 section1, row2 joint motion, row3 metrics
-            metrics.grid(row=3, column=0, sticky="nsew", pady=(OVERVIEW_ROW_GAP, 0))
+            # tab_overview: header, view toggle, viz, clinical, live strip, graphs, metrics
+            metrics.grid(row=6, column=0, sticky="nsew", pady=(OVERVIEW_ROW_GAP, 0))
         else:
             metrics.grid_remove()
     except tk.TclError:
@@ -278,31 +309,10 @@ def _set_sidebar_visible(
     row: int,
     padx: tuple[int, int],
 ) -> None:
-    """Show summary dock below the primary visual row (trajectory uses a column)."""
-    from stablewalk.ui.theme import PAD_XS
-
+    """Legacy summary dock stays hidden — clinical summary strip owns the KPIs."""
     sidebar = getattr(gui, "sidebar", None)
-    traj = getattr(gui, "overview_traj_panel", None)
-    traj_visible = bool(getattr(gui, "_overview_traj_dock_visible", False))
-    summary_row = int(getattr(gui, "_overview_summary_row", max(row, 1)))
-    if traj_visible and traj is not None:
-        # Trajectory visibility is owned by layout_panels_for_view_mode.
-        _hide(sidebar)
-        if not visible:
-            _hide(traj)
-        return
-    if visible:
-        _show_grid(
-            sidebar,
-            row=summary_row,
-            column=0,
-            columnspan=3,
-            sticky="ew",
-            padx=0,
-            pady=(PAD_XS, 0),
-        )
-    else:
-        _hide(sidebar)
+    _hide(sidebar)
+    # Trajectory stays in the viz row; view-mode must not unmap it.
 
 
 def _panel_title(label: str) -> str:
@@ -321,7 +331,11 @@ def apply_overview_view_mode(
     if mode not in VIEW_MODE_IDS:
         mode = DEFAULT_VIEW_MODE
 
-    host = getattr(gui, "_primary_viz_host", None)
+    host = (
+        getattr(gui, "_primary_viz_host", None)
+        or getattr(gui, "_section_visual", None)
+        or getattr(gui, "_primary_viz_host", None)
+    )
     video = getattr(gui, "video_frame", None)
     skel = getattr(gui, "skel_frame", None)
     tab_overview = getattr(gui, "_tab_overview", None) or getattr(gui, "_dashboard_body", None)
@@ -347,93 +361,105 @@ def apply_overview_view_mode(
             save_overview_view_mode(mode)
         return
 
-    # Visual panels fill the host; the view-mode toolbar lives on tab_overview.
+    playing = bool(getattr(gui, "playing", False))
+    from stablewalk.ui.tk.dashboard_overview_panes import overview_viz_panels_mounted
+
+    skip_geometry = playing and overview_viz_panels_mounted(gui)
+
+    # Visual panels fill the host; the view-mode toolbar lives on the page header.
     content_row = 0
     gui._primary_viz_content_row = content_row
     gui._viz_tabs_active = False
-    try:
-        from stablewalk.ui.tk.dashboard_sections import (
-            SEC1_TRAJ_VIZ_ROW_MINSIZE,
-            SEC1_VIZ_ROW_MINSIZE,
-        )
+    viz_host = host
+    from stablewalk.ui.tk.dashboard_sections import (
+        OVERVIEW_HOST_VIZ_ROW,
+        apply_overview_host_row_weights,
+        apply_overview_joint_motion_row_weight,
+        apply_overview_viz_grid_weights,
+    )
 
-        traj_open = bool(getattr(gui, "_overview_traj_dock_visible", False))
-        viz_minsize = SEC1_TRAJ_VIZ_ROW_MINSIZE if traj_open else SEC1_VIZ_ROW_MINSIZE
-        host.columnconfigure(0, weight=1)
-        host.rowconfigure(0, weight=1, minsize=viz_minsize)
-    except tk.TclError:
-        pass
-    except Exception:
-        try:
-            host.columnconfigure(0, weight=1)
-            host.rowconfigure(0, weight=1, minsize=520)
-        except tk.TclError:
-            pass
+    if not skip_geometry:
+        apply_overview_viz_grid_weights(viz_host, content_row=content_row)
 
-    if tab_overview is not None:
-        try:
-            from stablewalk.ui.tk.dashboard_sections import (
-                SEC1_METRICS_ROW_WEIGHT,
-                SEC1_VIZ_ROW_WEIGHT,
-                apply_overview_joint_motion_row_weight,
-            )
-
-            tab_overview.rowconfigure(0, weight=0)  # view mode toolbar
-            tab_overview.rowconfigure(1, weight=SEC1_VIZ_ROW_WEIGHT)  # visuals
-            apply_overview_joint_motion_row_weight(
-                tab_overview,
-                expanded=bool(getattr(gui, "_overview_joint_motion_expanded", False)),
-                row=2,
-            )
-            # Gait info: respect its own collapsed/expanded state.
-            metrics_expanded = bool(getattr(gui, "_overview_metrics_expanded", False))
-            if metrics_expanded:
-                tab_overview.rowconfigure(3, weight=SEC1_METRICS_ROW_WEIGHT)
-            else:
-                tab_overview.rowconfigure(3, weight=0)
-        except tk.TclError:
-            pass
-
-    toolbar = getattr(gui, "_overview_view_mode_bar", None)
-    if toolbar is not None and tab_overview is not None:
-        _show_grid(toolbar, row=0, column=0, sticky="ew", pady=(0, PAD_XS))
+        if tab_overview is not None:
+            try:
+                host = (
+                    getattr(gui, "_overview_layout_host", None)
+                    or getattr(gui, "_overview_content", None)
+                    or tab_overview
+                )
+                apply_overview_host_row_weights(host, viz_row=OVERVIEW_HOST_VIZ_ROW)
+                apply_overview_joint_motion_row_weight(
+                    host,
+                    expanded=bool(getattr(gui, "_overview_joint_motion_expanded", False)),
+                    row=5,
+                )
+            except tk.TclError:
+                pass
 
     # Hide legacy video/3D radioboxes — superseded by View Mode.
     legacy_tabs = getattr(gui, "_viz_tab_bar", None)
     _hide(legacy_tabs)
 
     from stablewalk.ui.tk.dashboard_overview_panes import layout_panels_for_view_mode
+    from stablewalk.ui.tk.overview_responsive import WIDTH_VIZ_THREE_COL
+
+    try:
+        win_w = int(gui.root.winfo_width())
+    except Exception:
+        win_w = WIDTH_VIZ_THREE_COL
+    gui._overview_viz_stack_requested = False
 
     if mode == VIEW_MODE_VIDEO_ONLY:
         _set_overlay_mode_ui(gui, enabled=False)
         layout_panels_for_view_mode(gui, mode)
-        video.configure(text=_panel_title("Original Video"))
+        video.configure(text=_panel_title("Video"))
 
     elif mode == VIEW_MODE_SKELETON_ONLY:
         _set_overlay_mode_ui(gui, enabled=False)
         layout_panels_for_view_mode(gui, mode)
-        skel.configure(text=_panel_title("3D Gait Reconstruction"))
+        video.configure(text=_panel_title("Video"))
+        skel.configure(text=_panel_title("Skeleton"))
 
     elif mode == VIEW_MODE_OVERLAY:
         _set_overlay_mode_ui(gui, enabled=True)
         layout_panels_for_view_mode(gui, mode)
-        video.configure(text=_panel_title("Overlay · Video + Skeleton"))
+        video.configure(text=_panel_title("Overlay"))
+        # Keep skeleton drawing on by default for Overlay (landmarks + bones).
+        skel_var = getattr(gui, "var_video_overlay_skeleton", None)
+        if skel_var is not None:
+            try:
+                skel_var.set(True)
+            except tk.TclError:
+                pass
 
     elif mode == VIEW_MODE_RECONSTRUCTION_FULL:
         _set_overlay_mode_ui(gui, enabled=False)
         layout_panels_for_view_mode(gui, mode)
-        skel.configure(text=_panel_title("Full 3D Reconstruction"))
+        skel.configure(text=_panel_title("Skeleton"))
 
-    else:  # side_by_side (default professional layout)
+    else:  # side_by_side split layout
         _set_overlay_mode_ui(gui, enabled=False)
         layout_panels_for_view_mode(gui, VIEW_MODE_SIDE_BY_SIDE)
-        video.configure(text=_panel_title("Original Video"))
-        skel.configure(text=_panel_title("3D Gait Reconstruction"))
+        video.configure(text=_panel_title("Video"))
+        skel.configure(text=_panel_title("Skeleton"))
 
     _set_metrics_visible_for_mode(gui, mode)
     _restore_playback_position(gui, playback_pos)
-    _fit_visuals(gui)
-    _refresh_synced_overlays(gui)
+    playing = bool(getattr(gui, "playing", False))
+    if not playing:
+        _fit_visuals(gui)
+        _refresh_synced_overlays(gui)
+    else:
+        # Do not refit canvases mid-play — it stalls the clock. Paint live surfaces only.
+        lite = getattr(gui, "_sync_overview_playback_lite", None)
+        if lite is not None:
+            try:
+                lite(force_draw=False)
+            except Exception:
+                _refresh_synced_overlays(gui)
+        else:
+            _refresh_synced_overlays(gui)
 
     if persist:
         save_overview_view_mode(mode)
@@ -454,6 +480,8 @@ def _primary_panel_id_for_mode(_gui: Any, mode: str) -> str:
     """Which visualization panel should Overview Full Screen maximize."""
     if mode in (VIEW_MODE_VIDEO_ONLY, VIEW_MODE_OVERLAY):
         return "video"
+    if mode == VIEW_MODE_RECONSTRUCTION_FULL:
+        return "path_3d"
     return "skeleton"
 
 
@@ -485,12 +513,21 @@ def _animate_mode_transition(gui: Any, host: tk.Misc) -> None:
 
 
 def build_overview_view_mode_selector(gui: Any, parent: tk.Misc) -> tk.Frame:
-    """Compact View Mode toolbar — dropdown + Full Screen (lab-software chrome)."""
+    """Compact Overlay / Video / Skeleton / Split toggle plus a View menu."""
     from tkinter import ttk
 
-    from stablewalk.ui.theme import create_tooltip
+    from stablewalk.ui.tk.dashboard_panel_maximize import current_maximized_panel_id
+    from stablewalk.ui.theme import (
+        ACCENT,
+        ACCENT_FG,
+        FONT_BUTTON_SM,
+        TEXT,
+        create_tooltip,
+    )
 
     initial = load_overview_view_mode()
+    if initial not in VIEW_MODE_IDS:
+        initial = DEFAULT_VIEW_MODE
     gui._overview_view_mode = initial
     gui._overview_view_mode_var = tk.StringVar(value=initial)
     gui._overview_view_mode_active = True
@@ -499,70 +536,164 @@ def build_overview_view_mode_selector(gui: Any, parent: tk.Misc) -> tk.Frame:
     bar.columnconfigure(1, weight=1)
     gui._overview_view_mode_bar = bar
 
-    tk.Label(
-        bar,
-        text="View",
-        bg=PANEL,
-        fg=MUTED,
-        font=FONT_UI_XS,
-        anchor="w",
-    ).grid(row=0, column=0, sticky="w", padx=(0, PAD_SM))
+    segment = tk.Frame(bar, bg=PANEL, highlightthickness=0)
+    segment.grid(row=0, column=0, sticky="w")
+    gui._overview_view_mode_segment = segment
 
-    label_by_id = {mode_id: label for mode_id, label in VIEW_MODE_OPTIONS}
-    id_by_label = {label: mode_id for mode_id, label in VIEW_MODE_OPTIONS}
-    mode_labels = [label for _mid, label in VIEW_MODE_OPTIONS]
-    gui._overview_view_mode_combo_var = tk.StringVar(
-        value=label_by_id.get(initial, mode_labels[0])
-    )
+    buttons: dict[str, tk.Label] = {}
 
-    def _on_mode_selected(_event: object = None) -> None:
-        label = str(gui._overview_view_mode_combo_var.get() or "")
-        mode_id = id_by_label.get(label, initial)
+    def _style_buttons(active_mode: str) -> None:
+        for mode_id, btn in buttons.items():
+            selected = mode_id == active_mode
+            try:
+                btn.configure(
+                    bg=ACCENT if selected else PANEL,
+                    fg=ACCENT_FG if selected else TEXT,
+                )
+            except tk.TclError:
+                pass
+
+    def _select_mode(mode_id: str, *, persist: bool = True, animate: bool = True) -> None:
+        if mode_id not in VIEW_MODE_IDS:
+            return
         gui._overview_view_mode_var.set(mode_id)
-        apply_overview_view_mode(gui, mode_id, animate=True, persist=True)
+        _style_buttons(mode_id)
+        apply_overview_view_mode(
+            gui,
+            mode_id,
+            animate=animate and not bool(getattr(gui, "playing", False)),
+            persist=persist,
+        )
 
-    mode_combo = ttk.Combobox(
-        bar,
-        textvariable=gui._overview_view_mode_combo_var,
-        values=mode_labels,
-        state="readonly",
-        width=18,
-        takefocus=False,
-    )
-    mode_combo.grid(row=0, column=1, sticky="w")
-    mode_combo.bind("<<ComboboxSelected>>", _on_mode_selected)
-    create_tooltip(
-        mode_combo,
-        "Workspace layout: Video · Skeleton · Side-by-Side · Overlay · Full 3D",
-        wraplength=340,
-    )
-    gui._overview_view_mode_combo = mode_combo
+    for col, (mode_id, label) in enumerate(VIEW_MODE_TOGGLE_OPTIONS):
+        btn = tk.Label(
+            segment,
+            text=label,
+            bg=PANEL,
+            fg=TEXT,
+            font=FONT_BUTTON_SM,
+            cursor="hand2",
+            padx=10,
+            pady=4,
+        )
+        btn.grid(
+            row=0,
+            column=col,
+            sticky="nsew",
+            padx=(0 if col == 0 else INLINE_GAP, 0),
+        )
+        btn.bind("<Button-1>", lambda _e, mid=mode_id: _select_mode(mid))
+        create_tooltip(
+            btn,
+            {
+                VIEW_MODE_VIDEO_ONLY: "Video only — current frame, aspect preserved.",
+                VIEW_MODE_OVERLAY: (
+                    "Landmarks and bones drawn on the video. Playback stays on this frame."
+                ),
+                VIEW_MODE_SKELETON_ONLY: (
+                    "Full-height 3D skeleton, fitted and centered."
+                ),
+                VIEW_MODE_SIDE_BY_SIDE: (
+                    "Video 40% | Skeleton 30% | 3D Path 30%, resizable. "
+                    "At narrow widths the 3D plot moves below."
+                ),
+                VIEW_MODE_RECONSTRUCTION_FULL: (
+                    "3D Full — joint path and Coordinate Inspector fill the Overview."
+                ),
+            }.get(mode_id, label),
+            wraplength=320,
+        )
+        buttons[mode_id] = btn
+    gui._overview_view_mode_buttons = buttons
 
-    # Keep the StringVar in sync when apply_overview_view_mode sets it elsewhere.
-    def _sync_combo_from_var(*_args: object) -> None:
+    # Keep segment highlight in sync when mode is applied elsewhere.
+    def _sync_from_var(*_args: object) -> None:
         mode_id = str(gui._overview_view_mode_var.get() or "")
-        label = label_by_id.get(mode_id)
-        if label and gui._overview_view_mode_combo_var.get() != label:
-            gui._overview_view_mode_combo_var.set(label)
+        _style_buttons(mode_id if mode_id in buttons else "")
 
     try:
-        gui._overview_view_mode_var.trace_add("write", _sync_combo_from_var)
+        gui._overview_view_mode_var.trace_add("write", _sync_from_var)
     except Exception:
         pass
+    _style_buttons(initial if initial in buttons else "")
 
     actions = tk.Frame(bar, bg=PANEL, highlightthickness=0)
-    actions.grid(row=0, column=2, sticky="e")
+    actions.grid(row=0, column=1, sticky="e", padx=(PAD_SM, 0))
 
+    def _toggle_graphs() -> None:
+        getattr(gui, "_toggle_overview_joint_motion", lambda: None)()
+
+    def _toggle_signal_spectral() -> None:
+        getattr(gui, "_toggle_overview_signal_spectral", lambda: None)()
+
+    def _on_reset_layout() -> None:
+        from stablewalk.ui.tk.dashboard_overview_panes import reset_overview_layout
+
+        _select_mode(VIEW_MODE_SIDE_BY_SIDE, persist=True, animate=False)
+        reset_overview_layout(gui)
+
+    view_mb = ttk.Menubutton(
+        actions,
+        text="View",
+        takefocus=False,
+    )
+    view_menu = tk.Menu(view_mb, tearoff=0)
+    view_mb["menu"] = view_menu
+    view_mb.pack(side=tk.LEFT, padx=(PAD_XS, 0))
+    create_tooltip(view_mb, "Graphs, full screen, and 3D reconstruction")
+    gui._overview_view_menu_btn = view_mb
+
+    def _refresh_view_menu() -> None:
+        try:
+            view_menu.delete(0, "end")
+        except tk.TclError:
+            return
+        graphs_expanded = bool(getattr(gui, "_overview_joint_motion_expanded", False))
+        spectral_expanded = bool(
+            getattr(gui, "_overview_signal_spectral_expanded", False)
+        )
+        view_menu.add_command(
+            label="Hide graphs" if graphs_expanded else "Graphs",
+            command=_toggle_graphs,
+        )
+        view_menu.add_command(
+            label=(
+                "Hide Signal & Spectral"
+                if spectral_expanded
+                else "Signal & Spectral"
+            ),
+            command=_toggle_signal_spectral,
+        )
+        try:
+            maximized = current_maximized_panel_id(gui) is not None
+        except Exception:
+            maximized = False
+        view_menu.add_command(
+            label="Restore" if maximized else "Full screen",
+            command=lambda: toggle_overview_full_screen(gui),
+        )
+        view_menu.add_separator()
+        view_menu.add_command(
+            label="Reset Layout",
+            command=_on_reset_layout,
+        )
+        view_menu.add_command(
+            label="Full 3D Reconstruction",
+            command=lambda: _select_mode(VIEW_MODE_RECONSTRUCTION_FULL),
+        )
+
+    view_menu.configure(postcommand=_refresh_view_menu)
+    _refresh_view_menu()
+
+    # Compatibility widgets (not packed). Callers still update labels/commands.
     graphs_btn = ttk.Button(
         actions,
         text="Graphs",
         style="Compact.TButton",
         width=7,
-        command=lambda: getattr(gui, "_toggle_overview_joint_motion", lambda: None)(),
+        command=_toggle_graphs,
         takefocus=False,
     )
-    graphs_btn.pack(side=tk.LEFT, padx=(0, PAD_SM))
-    create_tooltip(graphs_btn, "Show / hide joint motion graphs")
     gui._overview_graphs_btn = graphs_btn
 
     fullscreen_btn = ttk.Button(
@@ -572,25 +703,30 @@ def build_overview_view_mode_selector(gui: Any, parent: tk.Misc) -> tk.Frame:
         width=3,
         command=lambda: toggle_overview_full_screen(gui),
     )
-    fullscreen_btn.pack(side=tk.LEFT, padx=(0, PAD_SM))
     gui._overview_fullscreen_btn = fullscreen_btn
-    create_tooltip(fullscreen_btn, "Maximize the active visualization (Esc to restore)")
-
-    def _on_reset_layout() -> None:
-        var = gui._overview_view_mode_var
-        if str(var.get()) != VIEW_MODE_SIDE_BY_SIDE:
-            var.set(VIEW_MODE_SIDE_BY_SIDE)
-        apply_overview_view_mode(gui, VIEW_MODE_SIDE_BY_SIDE, animate=False, persist=True)
 
     reset_btn = ttk.Button(
         actions,
-        text="Reset",
+        text="Reset Layout",
         style="Compact.TButton",
-        width=6,
         command=_on_reset_layout,
+        takefocus=False,
     )
-    reset_btn.pack(side=tk.LEFT)
-    create_tooltip(reset_btn, "Return to the Side-by-Side workspace")
+    reset_btn.pack(side=tk.LEFT, padx=(PAD_XS, 0))
+    create_tooltip(
+        reset_btn,
+        "Restore Video 40% | Skeleton 30% | 3D 30%. "
+        "Does not reload the video or rerun analysis.",
+        wraplength=320,
+    )
+    gui._overview_split_btn = reset_btn
+    gui._overview_reset_layout_btn = reset_btn
+
+    # Legacy combo attrs kept for session restore / tests that may set them.
+    gui._overview_view_mode_combo_var = tk.StringVar(
+        value=next((lbl for mid, lbl in VIEW_MODE_OPTIONS if mid == initial), "Split")
+    )
+    gui._overview_view_mode_combo = None
 
     return bar
 
@@ -603,6 +739,7 @@ __all__ = [
     "VIEW_MODE_RECONSTRUCTION_FULL",
     "VIEW_MODE_SIDE_BY_SIDE",
     "VIEW_MODE_SKELETON_ONLY",
+    "VIEW_MODE_TOGGLE_OPTIONS",
     "VIEW_MODE_VIDEO_ONLY",
     "apply_overview_view_mode",
     "build_overview_view_mode_selector",

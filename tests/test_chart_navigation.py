@@ -11,9 +11,14 @@ from stablewalk.ui.viewers.chart_navigation import (
     ChartNavState,
     apply_chart_xlim,
     capture_chart_home_xlim,
+    finalize_chart_view,
+    is_chart_zoomed_out,
     reset_chart_navigation,
+    update_secondary_annotation_visibility,
+    zoom_span_fraction,
     zoom_xlim_at,
 )
+from stablewalk.ui.viewers.chart_style import mark_secondary_annotation
 
 
 def test_zoom_xlim_at_centers_on_cursor() -> None:
@@ -48,3 +53,20 @@ def test_reset_chart_navigation_clears_saved_view() -> None:
     state = getattr(fig, "_chart_nav_state")
     assert state.view_xlim is None
     assert state.home_xlim is None
+
+
+def test_secondary_annotations_hide_when_zoomed_out() -> None:
+    fig = Figure(figsize=(5, 3))
+    ax = fig.add_subplot(111)
+    ax.plot([0.0, 10.0], [0.0, 1.0])
+    marker = mark_secondary_annotation(ax.axvline(5.0, color="white", alpha=0.5))
+    capture_chart_home_xlim(fig)
+    finalize_chart_view(fig)
+    assert is_chart_zoomed_out(fig)
+    assert zoom_span_fraction(fig) >= 0.9
+    assert marker.get_visible() is False
+
+    apply_chart_xlim(fig, (3.0, 6.0))
+    assert is_chart_zoomed_out(fig) is False
+    update_secondary_annotation_visibility(fig)
+    assert marker.get_visible() is True

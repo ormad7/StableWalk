@@ -18,9 +18,27 @@ from stablewalk.models.gait_motion import GaitMotionRecording, SkeletonSnapshot
 
 logger = logging.getLogger(__name__)
 
+# Hysteresis binary contact is tuned for HS/TO timing and under-counts brief
+# double support. For BoS geometry, admit the contralateral foot when its
+# contact probability is still elevated while the other foot is firmly down.
+_SOFT_CONTRALATERAL_PROB = 0.50
+
+
+def _support_flags(cf) -> tuple[bool, bool]:
+    """Binary contact, plus soft contralateral overlap for support polygons."""
+    left_bin = bool(cf.left_contact_binary)
+    right_bin = bool(cf.right_contact_binary)
+    left_on = left_bin or (
+        float(cf.left_contact_probability) >= _SOFT_CONTRALATERAL_PROB and right_bin
+    )
+    right_on = right_bin or (
+        float(cf.right_contact_probability) >= _SOFT_CONTRALATERAL_PROB and left_bin
+    )
+    return left_on, right_on
+
 
 def _foot_points(snap: SkeletonSnapshot, side: str) -> list[tuple[float, float]]:
-    """Horizontal-plane (x, z) foot contact points."""
+    """Horizontal-plane (x, z) foot contact points in world / hip-centered coords."""
     pts: list[tuple[float, float]] = []
     for jid in (f"{side}_heel", f"{side}_ankle", f"{side}_toe", f"{side}_foot"):
         j = snap.joints.get(jid)
@@ -32,6 +50,27 @@ def _foot_points(snap: SkeletonSnapshot, side: str) -> list[tuple[float, float]]
         if not any(abs(p[0] - u[0]) < 1e-4 and abs(p[1] - u[1]) < 1e-4 for u in unique):
             unique.append(p)
     return unique
+
+
+def _align_feet_to_support_plane(
+    foot_groups: list[list[tuple[float, float]]],
+    com_z: float,
+) -> list[tuple[float, float]]:
+    """
+    Place each contact foot on the COM support plane.
+
+    Inter-foot step length is not BoS depth; keeping it in the convex hull
+    creates diagonal edges that clip a mid-line COM and force Reduced/Unstable
+    even when the COM sits between the feet in X. Within-foot heel–toe offsets
+    are preserved.
+    """
+    out: list[tuple[float, float]] = []
+    for pts in foot_groups:
+        if not pts:
+            continue
+        mean_z = sum(p[1] for p in pts) / float(len(pts))
+        out.extend((p[0], p[1] - mean_z + com_z) for p in pts)
+    return out
 
 
 def _convex_hull_2d(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -102,14 +141,17 @@ def analyze_base_of_support(
     """Build per-frame support polygons from contact masks."""
     fps = max(contact.fps, recording.fps, 1e-6)
     per_frame: list[BiomechanicalFrameBoS] = []
+    prev_polygon: list[tuple[float, float]] = []
+    prev_left: list[tuple[float, float]] = []
+    prev_right: list[tuple[float, float]] = []
+    prev_conf = 0.0
 
     for cf in contact.per_frame:
         snap = recording.snapshot_at(cf.frame_index)
         if snap is None:
             continue
 
-        left_on = bool(cf.left_contact_binary)
-        right_on = bool(cf.right_contact_binary)
+        left_on, right_on = _support_flags(cf)
 
         if left_on and right_on:
             support_type = "double_support"
@@ -120,27 +162,61 @@ def analyze_base_of_support(
         else:
             support_type = "swing"
 
-        polygon: list[tuple[float, float]] = []
+        left_xy: list[tuple[float, float]] = []
+        right_xy: list[tuple[float, float]] = []
         conf = 0.0
+        polygon_source = "contact"
 
         if left_on:
-            polygon.extend(_foot_points(snap, "left"))
+            left_xy = _foot_points(snap, "left")
             conf += cf.left_confidence
+            if not bool(cf.left_contact_binary):
+                conf *= 0.85
+                polygon_source = "soft_contralateral"
         if right_on:
-            polygon.extend(_foot_points(snap, "right"))
+            right_xy = _foot_points(snap, "right")
             conf += cf.right_confidence
+            if not bool(cf.right_contact_binary):
+                conf *= 0.85
+                polygon_source = "soft_contralateral"
+
+        polygon = list(left_xy) + list(right_xy)
 
         if support_type == "swing":
-            # Use trailing stance foot if available from previous frame
-            polygon = []
-            conf = max(cf.left_confidence, cf.right_confidence) * 0.3
+            # Contact miss / brief aerial: keep the last stance-foot polygon for
+            # overlay continuity. Stability margin treats carried polygons as
+            # Unavailable (not measured ground contact).
+            if prev_polygon:
+                polygon = list(prev_polygon)
+                left_xy = list(prev_left)
+                right_xy = list(prev_right)
+                conf = prev_conf * 0.8
+                polygon_source = "carried_stance"
+            else:
+                polygon = []
+                left_xy = []
+                right_xy = []
+                conf = max(cf.left_confidence, cf.right_confidence) * 0.3
         elif len(polygon) >= 3:
             polygon = _convex_hull_2d(polygon)
             conf = conf / (2.0 if support_type == "double_support" else 1.0)
+            prev_polygon = list(polygon)
+            prev_left = list(left_xy)
+            prev_right = list(right_xy)
+            prev_conf = conf
         elif len(polygon) == 2:
             conf *= 0.7
+            prev_polygon = list(polygon)
+            prev_left = list(left_xy)
+            prev_right = list(right_xy)
+            prev_conf = conf
         else:
             conf *= 0.4
+            if polygon:
+                prev_polygon = list(polygon)
+                prev_left = list(left_xy)
+                prev_right = list(right_xy)
+                prev_conf = conf
 
         conf = min(1.0, max(0.0, conf))
         centroid = _polygon_centroid(polygon)
@@ -155,10 +231,17 @@ def analyze_base_of_support(
                 centroid=centroid,
                 area_m2=area,
                 confidence=conf,
+                polygon_source=polygon_source,
+                left_xy=left_xy,
+                right_xy=right_xy,
             )
         )
 
     return BaseOfSupportAnalysis(per_frame=per_frame, fps=fps)
 
 
-__all__ = ["BaseOfSupportAnalysis", "analyze_base_of_support"]
+__all__ = [
+    "BaseOfSupportAnalysis",
+    "analyze_base_of_support",
+    "_align_feet_to_support_plane",
+]

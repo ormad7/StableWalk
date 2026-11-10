@@ -7,9 +7,7 @@ from __future__ import annotations
 import logging
 
 import cv2
-from mediapipe import Image, ImageFormat
 
-from stablewalk.pose.estimation import PoseEstimator
 from stablewalk.pose.validation import has_full_body_pose
 
 logger = logging.getLogger(__name__)
@@ -28,7 +26,10 @@ def validate_video_source(
     Returns:
         (passed, valid_ratio, message)
     """
+    from mediapipe import Image, ImageFormat
+
     from stablewalk.core.pipeline_reset import register_capture, release_all_captures
+    from stablewalk.pose.estimation import PoseEstimator
 
     release_all_captures()
     cap = cv2.VideoCapture(source)

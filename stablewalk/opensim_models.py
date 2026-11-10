@@ -93,6 +93,9 @@ def _probe_model_marker_count(path: Path) -> int | None:
             return None
         import opensim as osim  # type: ignore[import-untyped]
 
+        from stablewalk.opensim_geometry import prepare_opensim_geometry
+
+        prepare_opensim_geometry(osim, path)
         model = osim.Model(str(path.resolve()))
         model.initSystem()
         return int(model.getMarkerSet().getSize())

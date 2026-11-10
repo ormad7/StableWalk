@@ -1,0 +1,27 @@
+{
+  "filename": "normal_gait.mp4",
+  "installed_on": "2026-11-01",
+  "replaces": "GAVD 3KnFt8bH3tE (backed up under data/demo_videos/backups/examples_20261101_before_download/)",
+  "source": "GAVD",
+  "source_url": "https://github.com/Rahmyyy/GAVD",
+  "youtube_id": "eCCYhDSDlDc",
+  "youtube_url": "https://www.youtube.com/watch?v=eCCYhDSDlDc",
+  "youtube_title": "How to walk properly (Without pain)",
+  "seq": "cljwtgpsm000y3n6lgbj91b5h",
+  "gait_pat": "normal",
+  "gavd_dataset_column": "Normal Gait",
+  "cam_view": "right side",
+  "annotated_frames": [379, 678],
+  "installed_probe": {
+    "fps": 29.970,
+    "frames": 300,
+    "duration_s": 10.01,
+    "width": 360,
+    "height": 640
+  },
+  "sha256": "77601a1932af4e34646f19316cb431d8c70926b076ef3187931df003a4e77868",
+  "not_labels": ["fast walking", "Health&Gait UGS", "Health&Gait FGS", "athletic"],
+  "timing": "original 29.970 FPS; not looped, slowed, or interpolated",
+  "duration_note": "10.01 s — shorter than the 15–30 s target; this was the longest unused GAVD Normal Gait clip that decoded after trim",
+  "download_method": "yt-dlp of the GAVD-listed YouTube URL, then ffmpeg trim to annotated frames"
+}

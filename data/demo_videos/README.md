@@ -2,11 +2,11 @@
 
 Research-oriented demo protocol — see **`DEMO_VIDEO_SOURCES.md`** in this folder.
 
-| File | UI category | Internal key | Target source |
-|------|-------------|--------------|---------------|
-| `abnormal_gait.mp4` | Abnormal | `abnormal` | GAVD (YouTube URL from annotations) |
-| `normal_gait.mp4` | Normal | `normal` | Health&Gait UGS |
-| `athletic_walking.mp4` | Performance | `athletic` | Health&Gait FGS |
+| File | UI category | Internal key | Installed source |
+|------|-------------|----------------|------------------|
+| `abnormal_gait_v2.mp4` | Abnormal Gait | `abnormal` | GAVD `gait_pat=parkinsons`, YouTube `M-_cogKwXK4` |
+| `normal_gait_v2.mp4` | Normal Gait | `normal` | GAVD `gait_pat=normal`, YouTube `eCCYhDSDlDc` |
+| `fast_walking_v2.mp4` | Fast Walking | `athletic` | Twente RGB Zenodo 6644593, Subj04 `walk_54_side_anonymized.avi`, 5.4 km/h treadmill walking |
 
 **Do not install videos without running:**
 

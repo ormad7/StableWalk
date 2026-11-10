@@ -6,9 +6,9 @@
 
 | UI label | Internal key | File | Source |
 |----------|--------------|------|--------|
-| Abnormal | `abnormal` | `abnormal_gait.mp4` | [GAVD](https://github.com/Rahmyyy/GAVD) |
-| Normal | `normal` | `normal_gait.mp4` | [Health&Gait](https://zenodo.org/records/14039922) UGS |
-| Performance | `athletic` | `athletic_walking.mp4` | Health&Gait FGS |
+| Abnormal Gait | `abnormal` | `abnormal_gait_v2.mp4` | [GAVD](https://github.com/Rahmyyy/GAVD) `gait_pat=parkinsons`, YouTube `M-_cogKwXK4` |
+| Normal Gait | `normal` | `normal_gait_v2.mp4` | [GAVD](https://github.com/Rahmyyy/GAVD) `gait_pat=normal`, YouTube `eCCYhDSDlDc` |
+| Fast Walking | `athletic` | `fast_walking_v2.mp4` | [Twente RGB](https://zenodo.org/records/6644593) Subj04 `walk_54` side, 5.4 km/h treadmill walking |
 
 Legacy Pexels and Utah walker-assisted clips are **deprecated** and fail the new validator.
 

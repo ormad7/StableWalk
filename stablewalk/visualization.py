@@ -6,9 +6,7 @@ Shows video frames with skeleton overlay. Only navigates frames with detected po
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import fields
 from pathlib import Path
 
 import cv2
@@ -17,7 +15,12 @@ import numpy as np
 from matplotlib.widgets import Button, Slider
 
 from stablewalk.gait_dof import GAIT_ANGLE_FIELDS, GAIT_DOF_LANDMARKS
-from stablewalk.models.pose_data import JointAngles, Keypoint, PoseFrame, PoseSequence
+from stablewalk.io.pose_loader import (
+    detected_frame_indices,
+    load_pose_sequence,
+    playback_frame_indices,
+)
+from stablewalk.models.pose_data import Keypoint, PoseSequence
 from stablewalk.pose_estimation import LANDMARK_NAMES, PoseLandmarksConnections
 
 logger = logging.getLogger(__name__)
@@ -25,117 +28,8 @@ logger = logging.getLogger(__name__)
 MIN_VISIBILITY = 0.5
 DISPLAY_MAX_WIDTH = 1280
 
-def _parse_keypoints(raw: object) -> list[Keypoint]:
-    if isinstance(raw, dict):
-        keypoints: list[Keypoint] = []
-        for name, vals in raw.items():
-            if isinstance(vals, list) and len(vals) >= 2:
-                keypoints.append(
-                    Keypoint(
-                        name=name,
-                        x=float(vals[0]),
-                        y=float(vals[1]),
-                        z=float(vals[2]) if len(vals) > 2 else 0.0,
-                        visibility=1.0,
-                    )
-                )
-            elif isinstance(vals, dict) and "x" in vals:
-                keypoints.append(
-                    Keypoint(
-                        name=name,
-                        x=float(vals["x"]),
-                        y=float(vals["y"]),
-                        z=float(vals.get("z", 0.0)),
-                        visibility=float(vals.get("visibility", 1.0)),
-                    )
-                )
-        return keypoints
-    if isinstance(raw, list):
-        return [Keypoint(**kp) for kp in raw]
-    return []
-
-
-def _parse_velocities(fd: dict) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
-    """Return (scalar speed map, full vector map)."""
-    raw_scalar = fd.get("velocity") or {}
-    raw_vector = fd.get("velocity_vector") or fd.get("velocities") or {}
-
-    velocity_scalar: dict[str, float] = {}
-    velocities: dict[str, dict[str, float]] = {}
-
-    if raw_vector and isinstance(next(iter(raw_vector.values()), None), dict):
-        velocities = raw_vector
-        velocity_scalar = {
-            k: float(v.get("speed", 0.0)) for k, v in velocities.items()
-        }
-    elif raw_scalar:
-        sample = next(iter(raw_scalar.values()), None)
-        if isinstance(sample, dict):
-            velocities = raw_scalar
-            velocity_scalar = {k: float(v.get("speed", 0.0)) for k, v in velocities.items()}
-        else:
-            velocity_scalar = {k: float(v) for k, v in raw_scalar.items()}
-
-    return velocity_scalar, velocities
-
-
-def load_pose_sequence(path: str | Path) -> PoseSequence:
-    path = Path(path)
-    with path.open(encoding="utf-8") as f:
-        data = json.load(f)
-
-    fps = float(data.get("fps", 30.0))
-    frames: list[PoseFrame] = []
-    for fd in data.get("frames", []):
-        frame_index = fd.get("frame", fd.get("frame_index", 0))
-        ts_s = float(fd.get("timestamp_s", frame_index / max(fps, 1e-6)))
-        if ts_s <= 1e-9 and int(frame_index) > 0:
-            ts_s = int(frame_index) / max(fps, 1e-6)
-        ts_ms = int(fd.get("timestamp_ms", round(ts_s * 1000)))
-        keypoints = _parse_keypoints(fd.get("keypoints", []))
-        angles_raw = fd.get("angles") or fd.get("joint_angles")
-        if angles_raw and isinstance(angles_raw, dict):
-            joint_angles = JointAngles(
-                **{f.name: angles_raw.get(f.name) for f in fields(JointAngles)}
-            )
-        else:
-            joint_angles = None
-        velocity_scalar, velocities = _parse_velocities(fd)
-        positions = fd.get("positions") or {}
-        if not positions and keypoints:
-            positions = {kp.name: {"x": kp.x, "y": kp.y} for kp in keypoints}
-
-        frames.append(
-            PoseFrame(
-                frame_index=int(frame_index),
-                image_path=fd.get("image_path", ""),
-                timestamp_s=ts_s,
-                timestamp_ms=ts_ms,
-                keypoints=keypoints,
-                joint_angles=joint_angles,
-                velocities=velocities,
-                velocity_scalar=velocity_scalar,
-                positions=positions,
-                positions_xy=fd.get("keypoints") if isinstance(fd.get("keypoints"), dict) else {},
-                positions_normalized=fd.get("positions_normalized") or {},
-                skeleton_3d=fd.get("skeleton_3d") or {},
-                gait_phase=fd.get("gait_phase") or {},
-                gait_events=fd.get("gait_events") or [],
-                detected=fd.get("detected", False),
-                skipped=fd.get("skipped", False),
-            )
-        )
-
-    return PoseSequence(
-        source_video=data.get("source_video", ""),
-        fps=fps,
-        frames=frames,
-        gait_events_timeline=data.get("gait_events_timeline") or [],
-    )
-
-
-def detected_frame_indices(sequence: PoseSequence) -> list[int]:
-    return [i for i, f in enumerate(sequence.frames) if f.detected and f.keypoints]
+# load_pose_sequence / detected_frame_indices live in ``stablewalk.io.pose_loader``
+# so importing the GUI analysis stack does not pull this Matplotlib viewer.
 
 
 def _clamp01(value: float) -> float:
@@ -148,7 +42,7 @@ class SkeletonVisualizer:
     def __init__(self, sequence: PoseSequence) -> None:
         self.sequence = sequence
         self.fps = max(sequence.fps, 1.0)
-        self.pose_indices = detected_frame_indices(sequence)
+        self.pose_indices = playback_frame_indices(sequence)
 
         if not self.pose_indices:
             raise ValueError(

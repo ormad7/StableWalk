@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from stablewalk.pose.video_overlay_compose import VideoOverlayLayers
 from stablewalk.ui.theme import (
     BORDER,
     ELEVATED,
     FONT_UI_XS,
     MUTED,
+    OVERVIEW_VIZ_TOOLBAR_PADY,
     PAD_SM,
     PAD_XS,
     PANEL,
@@ -19,12 +19,16 @@ from stablewalk.ui.theme import (
     create_tooltip,
 )
 
+if TYPE_CHECKING:
+    from stablewalk.pose.video_overlay_compose import VideoOverlayLayers
+
 _LAYER_SPECS: tuple[tuple[str, str, str, bool, str], ...] = (
     ("✦", "Skeleton", "var_video_overlay_skeleton", True, "Reconstructed skeleton on video"),
     ("Aa", "Joint Labels", "var_video_overlay_labels", False, "Short joint name labels"),
     ("●", "COM", "var_video_overlay_com", True, "com"),
-    ("↑", "Ground Reaction", "var_video_overlay_grf", True, "grf"),
-    ("∿", "Joint Trajectory", "var_video_overlay_traj", True, "joint_movement_3d"),
+    ("▁", "Estimated ground", "var_video_overlay_ground", True, "foot_clearance"),
+    ("↑", "Ground Reaction", "var_video_overlay_grf", False, "grf"),
+    ("∿", "Joint Trajectory", "var_video_overlay_traj", False, "joint_movement_3d"),
 )
 
 
@@ -38,6 +42,8 @@ def ensure_overlay_mode_vars(gui: Any) -> None:
 
 
 def overlay_layers_from_gui(gui: Any) -> VideoOverlayLayers:
+    from stablewalk.pose.video_overlay_compose import VideoOverlayLayers
+
     ensure_overlay_mode_vars(gui)
 
     def _on(attr: str, default: bool = True) -> bool:
@@ -55,6 +61,7 @@ def overlay_layers_from_gui(gui: Any) -> VideoOverlayLayers:
         com=_on("var_video_overlay_com", True),
         ground_reaction=_on("var_video_overlay_grf", True),
         joint_trajectory=_on("var_video_overlay_traj", True),
+        ground_plane=_on("var_video_overlay_ground", True),
     )
 
 
@@ -106,7 +113,7 @@ def build_overlay_mode_controls(
         highlightbackground=BORDER,
         highlightcolor=BORDER,
     )
-    bar.grid(row=row, column=0, sticky="ew", pady=(0, PAD_XS))
+    bar.grid(row=row, column=0, sticky="ew", pady=OVERVIEW_VIZ_TOOLBAR_PADY)
     bar.columnconfigure(2, weight=1)
     gui._video_overlay_controls = bar
 
@@ -117,7 +124,7 @@ def build_overlay_mode_controls(
         fg=MUTED,
         font=FONT_UI_XS,
         anchor="w",
-    ).grid(row=0, column=0, sticky="w", padx=(PAD_SM, PAD_SM), pady=PAD_XS)
+    ).grid(row=0, column=0, sticky="w", padx=(0, PAD_SM), pady=PAD_XS)
 
     opacity_row = tk.Frame(bar, bg=ELEVATED, highlightthickness=0)
     opacity_row.grid(row=0, column=1, sticky="w", padx=(0, PAD_SM), pady=PAD_XS)

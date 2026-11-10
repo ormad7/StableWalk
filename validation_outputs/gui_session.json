@@ -1,0 +1,7 @@
+{
+  "gui_available": true,
+  "examples": [],
+  "failures": [
+    "gui exception: invalid command name \".!frame2.!frame.!frame.!button\""
+  ]
+}

@@ -106,8 +106,8 @@ def test_interpretation_panel_plain_language():
     summary = build_knee_motion_summary(series, None, chart_mode="video_time")
     text = format_interpretation_panel(summary)
     assert "KNEE MOTION SUMMARY" in text
-    assert "Left ROM:" in text
-    assert "Right ROM:" in text
+    assert "Left full-session ROM:" in text
+    assert "Right full-session ROM:" in text
     assert summary.left_rom_deg == 55.0
     assert summary.right_rom_deg == 47.0
 

@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from stablewalk.ui.dof_selection import GUI_DOF_ITEM_IDS, GUI_DOF_LABELS, label_for_item
-from stablewalk.ui.theme import ELEVATED, PANEL, SELECTION_BG, TEXT
+from stablewalk.ui.theme import ELEVATED, PANEL, SELECTION_BG, TEXT, TREE_LOW_CONFIDENCE_BG
 
 # Per-joint hues within a strict left=green / right=red family so L/R is
 # instantly readable while multi-joint overlays remain distinguishable.
@@ -118,7 +118,7 @@ def configure_joint_tree_tags(tree: ttk.Treeview) -> None:
     tree.tag_configure("even", background=PANEL)
     tree.tag_configure("odd", background=ELEVATED)
     tree.tag_configure("selected", background=SELECTION_BG, foreground=TEXT)
-    tree.tag_configure("low_confidence", background="#3d1f28", foreground=TEXT)
+    tree.tag_configure("low_confidence", background=TREE_LOW_CONFIDENCE_BG, foreground=TEXT)
 
     for item_id in GUI_DOF_ITEM_IDS:
         color = joint_color(item_id)

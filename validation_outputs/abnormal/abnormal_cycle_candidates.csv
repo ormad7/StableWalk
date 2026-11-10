@@ -1,0 +1,11 @@
+candidate_index,side,start_frame,end_frame,start_time_s,end_time_s,duration_s,n_frames,n_known_contact,n_known_stance,n_known_swing,known_contact_coverage,n_valid_pose_frames,valid_pose_coverage,longest_internal_gap_s,accepted,acceptance_reason,source
+0,left,2,155,0.08341666666666667,6.464791666666666,6.381374999999999,153,66,66,0,0.43137254901960786,154,1.0,0.0,False,duration_above_max (6.381 s > 3.00 s),binary_contact_hs_hs
+1,left,155,261,6.464791666666666,10.885874999999999,4.421083333333333,106,16,16,0,0.1509433962264151,107,1.0,0.0,False,duration_above_max (4.421 s > 3.00 s),binary_contact_hs_hs
+2,left,261,354,10.885874999999999,14.76475,3.8788750000000007,93,3,3,0,0.03225806451612903,94,1.0,0.0,False,duration_above_max (3.879 s > 3.00 s),binary_contact_hs_hs
+3,right,1,83,0.04170833333333333,3.4617916666666666,3.4200833333333334,82,79,79,0,0.9634146341463414,83,1.0,0.0,False,duration_above_max (3.420 s > 3.00 s),binary_contact_hs_hs
+4,right,83,336,3.4617916666666666,14.014,10.552208333333333,253,202,202,0,0.7984189723320159,254,1.0,0.0,False,duration_above_max (10.552 s > 3.00 s),binary_contact_hs_hs
+5,right,336,370,14.014,15.432083333333333,1.4180833333333336,34,17,17,0,0.5,35,1.0,0.0,False,"no_known_swing — off bits were near-ground Unknown, not confirmed flight",binary_contact_hs_hs
+6,right,370,380,15.432083333333333,15.849166666666665,0.41708333333333236,10,4,4,0,0.4,11,1.0,0.0,False,"no_known_swing — off bits were near-ground Unknown, not confirmed flight",binary_contact_hs_hs
+7,right,380,487,15.849166666666665,20.311958333333333,4.462791666666668,107,100,100,0,0.9345794392523364,108,1.0,0.0,False,duration_above_max (4.463 s > 3.00 s),binary_contact_hs_hs
+8,right,487,573,20.311958333333333,23.898874999999997,3.5869166666666636,86,68,68,0,0.7906976744186046,87,1.0,0.0,False,duration_above_max (3.587 s > 3.00 s),binary_contact_hs_hs
+9,right,573,643,23.898874999999997,26.818458333333332,2.9195833333333354,70,21,21,0,0.3,71,1.0,0.0,False,"no_known_swing — off bits were near-ground Unknown, not confirmed flight",binary_contact_hs_hs

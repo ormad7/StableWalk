@@ -8,6 +8,7 @@ from stablewalk.ui.summary_metric_style import (
     format_status_line,
     interpret_gait_event,
     interpret_summary_metric,
+    kpi_status_label,
     metric_visual_style,
 )
 from stablewalk.ui.theme import DANGER, ORANGE, SUCCESS
@@ -35,7 +36,7 @@ def test_symmetry_and_stability_interpretation() -> None:
             "stability_margin",
             SummaryField("", "Reduced Stability (31% stable frames)", TIER_DERIVED, True),
         )
-        == "borderline"
+        == "abnormal"
     )
     assert (
         interpret_summary_metric(
@@ -107,8 +108,20 @@ def test_gait_event_detected_is_normal() -> None:
 
 def test_status_line_includes_tier() -> None:
     line = format_status_line("normal", TIER_DERIVED)
-    assert "Normal" in line
+    assert "Acceptable" in line
     assert "derived" in line
+    heuristic = format_status_line("normal", TIER_DERIVED, key="gait_quality")
+    assert "Unvalidated heuristic" in heuristic
+    assert "Acceptable" not in heuristic
+    assert "Borderline" not in heuristic
+
+
+def test_heuristic_kpis_are_not_labelled_acceptable() -> None:
+    assert kpi_status_label("normal", key="gait_quality") == "Unvalidated heuristic"
+    assert kpi_status_label("normal", key="symmetry") == "Unvalidated heuristic"
+    assert kpi_status_label("normal", key="video_quality") == "Not accuracy"
+    assert kpi_status_label("unavailable", key="gait_quality") == "N/A"
+    assert kpi_status_label("borderline", key="gait_quality") == "Unvalidated heuristic"
 
 
 def test_visual_style_uses_theme_colors() -> None:

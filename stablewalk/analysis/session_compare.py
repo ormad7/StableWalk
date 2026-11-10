@@ -7,18 +7,20 @@ Numeric values are derived from live analysis results — nothing is hardcoded.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from stablewalk.analysis.analysis_summary import AnalysisSummary
-from stablewalk.analysis.biomechanical.orchestrator import BiomechanicalAnalysisResult
-from stablewalk.analysis.biomechanical.walking_speed import is_reportable_walking_speed
-from stablewalk.analysis.estimated_vgrf_analysis import EstimatedVGRFResult
-from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult
 from stablewalk.models.pose_data import PoseSequence
 
+if TYPE_CHECKING:
+    from stablewalk.analysis.analysis_summary import AnalysisSummary
+    from stablewalk.analysis.biomechanical.orchestrator import BiomechanicalAnalysisResult
+    from stablewalk.analysis.estimated_vgrf_analysis import EstimatedVGRFResult
+    from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult
+
 Tone = Literal["better", "worse", "neutral", "na"]
+Directionality = Literal["higher_better", "lower_better", "none"]
 
 
 @dataclass
@@ -44,37 +46,46 @@ class CompareMetrics:
     virtual_grf_peak_bw: float | None = None
     usable_gait_cycles: int | None = None
     detected_gait_cycles: int | None = None
+    foot_clearance_m: float | None = None
 
     def display_map(self) -> dict[str, str]:
         return {
             "Gait Quality": (
-                f"{self.gait_quality:.0f}" if self.gait_quality is not None else "—"
+                f"{self.gait_quality:.0f}/100"
+                if self.gait_quality is not None
+                else "N/A"
             ),
             "Cadence": (
-                f"{self.cadence_spm:.0f} spm" if self.cadence_spm is not None else "—"
+                f"{self.cadence_spm:.0f} steps/min"
+                if self.cadence_spm is not None
+                else "N/A"
             ),
             "Speed": (
                 f"{self.walking_speed_m_s:.2f} m/s"
                 if self.walking_speed_m_s is not None
-                else "—"
+                else "N/A"
             ),
             "Step Length": (
                 f"{self.step_length_m * 100:.0f} cm"
                 if self.step_length_m is not None
-                else "—"
+                else "N/A"
             ),
             "Knee ROM": (
-                f"{self.knee_rom_deg:.0f}°" if self.knee_rom_deg is not None else "—"
+                f"{self.knee_rom_deg:.0f}°" if self.knee_rom_deg is not None else "N/A"
             ),
             "Symmetry": (
-                f"{self.symmetry_pct:.0f}%" if self.symmetry_pct is not None else "—"
+                f"{self.symmetry_pct:.0f}%" if self.symmetry_pct is not None else "N/A"
             ),
             "COM Excursion": (
-                f"{self.com_excursion_m * 100:.1f} cm"
+                f"{self.com_excursion_m:.3f} m"
                 if self.com_excursion_m is not None
-                else "—"
+                else "N/A"
             ),
-            "Stability": self.stability_label or "—",
+            "Mean COM–BoS Margin": (
+                f"{self.stability_margin_m:.3f} m"
+                if self.stability_margin_m is not None
+                else "N/A"
+            ),
         }
 
 
@@ -88,6 +99,8 @@ class MetricDiff:
     higher_is_better: bool
     tone_right: Tone
     display: str
+    directionality: Directionality = "none"
+    unavailable_reason: str = ""
 
 
 @dataclass
@@ -115,7 +128,17 @@ class SessionComparisonResult:
 
 
 def _stability_label(ba: BiomechanicalAnalysisResult | None) -> str:
-    if ba is None or ba.stability_margin is None or not ba.stability_margin.per_frame:
+    """Shared vocabulary: Acceptable / Borderline / Reduced (pose-derived heuristic)."""
+    from stablewalk.metrics.status import DisplayStatus, build_metric_status
+
+    if ba is None or ba.stability_margin is None:
+        return "—"
+    pct = ba.stability_margin.stable_pct
+    if pct is not None:
+        status = build_metric_status("stable_pct", value=float(pct), available=True)
+        return status.display_status.value
+    # Fall back to dominant per-frame engine state when session % unavailable.
+    if not ba.stability_margin.per_frame:
         return "—"
     counts: dict[str, int] = {}
     for f in ba.stability_margin.per_frame:
@@ -127,12 +150,12 @@ def _stability_label(ba: BiomechanicalAnalysisResult | None) -> str:
     dominant = max(counts, key=counts.get)
     key = str(dominant).lower()
     if key == "stable":
-        return "High"
+        return DisplayStatus.ACCEPTABLE.value
     if "reduced" in key:
-        return "Moderate"
+        return DisplayStatus.BORDERLINE.value
     if key == "unstable":
-        return "Low"
-    return str(dominant).title()
+        return DisplayStatus.REDUCED.value
+    return DisplayStatus.UNAVAILABLE.value
 
 
 def _com_excursion_m(ba: BiomechanicalAnalysisResult | None) -> float | None:
@@ -192,10 +215,19 @@ def extract_compare_metrics(
     duration_s: float | None = None,
 ) -> CompareMetrics:
     """Build compare-card metrics from an analyzed session bundle."""
+    from stablewalk.analysis.biomechanical.walking_speed import (
+        is_reportable_walking_speed,
+    )
+
     m = CompareMetrics(label=label, session_key=session_key)
     ba = biomechanical
 
-    if ba is not None and ba.gait_quality is not None:
+    if (
+        ba is not None
+        and ba.gait_quality is not None
+        and getattr(ba.gait_quality, "available", True)
+        and ba.gait_quality.score is not None
+    ):
         m.gait_quality = float(ba.gait_quality.score)
 
     if ba is not None and ba.gait_metrics is not None:
@@ -213,14 +245,26 @@ def extract_compare_metrics(
             if np.isfinite(st) and st > 0:
                 m.stride_length_m = st
 
-    if ba is not None and ba.symmetry is not None and ba.symmetry.overall_symmetry_pct:
-        v = ba.symmetry.overall_symmetry_pct.value
-        if v is not None:
+    # Use the same analyzed gait-cycle cadence source as Overview/Biomechanics
+    # when the biomechanical aggregate did not expose cadence.
+    if m.cadence_spm is None:
+        from stablewalk.metrics.session_view import _extract_cadence
+
+        cadence, _confidence = _extract_cadence(ba, cycles)
+        if cadence is not None and np.isfinite(cadence) and cadence > 0:
+            m.cadence_spm = float(cadence)
+
+    if ba is not None and ba.symmetry is not None:
+        symmetry = ba.symmetry.overall_symmetry_pct
+        v = getattr(symmetry, "value", None) if symmetry is not None else None
+        if v is not None and np.isfinite(float(v)):
             m.symmetry_pct = float(v)
 
     m.stability_label = _stability_label(ba)
     if ba is not None and ba.stability_margin is not None:
-        m.stability_margin_m = ba.stability_margin.mean_margin_m
+        margin = ba.stability_margin.mean_margin_m
+        if margin is not None and np.isfinite(float(margin)):
+            m.stability_margin_m = float(margin)
         if ba.stability_margin.stable_pct is not None:
             m.stable_pct = float(ba.stability_margin.stable_pct)
 
@@ -269,6 +313,25 @@ def extract_compare_metrics(
     elif cycles is not None:
         m.detected_gait_cycles = int(getattr(cycles.metrics, "detected_cycle_count", 0) or 0)
 
+    clearance_vals: list[float] = []
+    if cycles is not None:
+        for fr in getattr(cycles, "per_frame", []) or []:
+            for side_name in ("left", "right"):
+                side = getattr(fr, side_name, None)
+                raw = getattr(side, "foot_clearance_m", None) if side is not None else None
+                if raw is None:
+                    raw = getattr(fr, f"{side_name}_foot_clearance_m", None)
+                if raw is None:
+                    continue
+                try:
+                    val = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(val):
+                    clearance_vals.append(val)
+    if clearance_vals:
+        m.foot_clearance_m = float(sum(clearance_vals) / len(clearance_vals))
+
     # Fallback parse from summary strings when biomech bundle is incomplete.
     if summary is not None:
         if m.gait_quality is None and summary.overall_gait_quality and summary.overall_gait_quality.available:
@@ -277,6 +340,25 @@ def extract_compare_metrics(
                 m.gait_quality = float(raw)
             except ValueError:
                 pass
+        cadence_field = getattr(summary, "cadence", None)
+        if (
+            m.cadence_spm is None
+            and cadence_field is not None
+            and cadence_field.available
+        ):
+            import re
+
+            match = re.search(
+                r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)",
+                str(cadence_field.value),
+            )
+            if match is not None:
+                try:
+                    cadence = float(match.group(0))
+                    if np.isfinite(cadence) and cadence > 0:
+                        m.cadence_spm = cadence
+                except ValueError:
+                    pass
         if m.symmetry_pct is None and summary.symmetry and summary.symmetry.available:
             raw = summary.symmetry.value.replace("%", "").strip()
             try:
@@ -284,25 +366,42 @@ def extract_compare_metrics(
             except ValueError:
                 pass
         if m.stability_label == "—" and summary.stability_margin and summary.stability_margin.available:
+            from stablewalk.metrics.status import DisplayStatus
+
             val = summary.stability_margin.value
             low = val.lower()
-            if "high" in low or "stable" in low:
-                m.stability_label = "High"
-            elif "low" in low or "unstable" in low:
-                m.stability_label = "Low"
-            elif "mod" in low or "reduc" in low:
-                m.stability_label = "Moderate"
+            if "acceptable" in low or (
+                "stable" in low and "unstable" not in low and "reduced" not in low
+            ):
+                m.stability_label = DisplayStatus.ACCEPTABLE.value
+            elif "borderline" in low or "reduced stability" in low or "moderate" in low:
+                m.stability_label = DisplayStatus.BORDERLINE.value
+            elif "reduced" in low or "unstable" in low or "low" in low:
+                m.stability_label = DisplayStatus.REDUCED.value
+            elif "high" in low:
+                # Legacy summary wording → shared vocabulary
+                m.stability_label = DisplayStatus.ACCEPTABLE.value
             else:
                 m.stability_label = val.split()[0] if val else "—"
 
     return m
 
 
-def _tone(delta: float | None, *, higher_is_better: bool) -> Tone:
+def _tone(
+    delta: float | None,
+    *,
+    directionality: Directionality,
+) -> Tone:
+    """Label better/worse only when directionality is explicitly defined."""
     if delta is None or not np.isfinite(delta) or abs(delta) < 1e-9:
         return "neutral"
-    right_better = (delta > 0) if higher_is_better else (delta < 0)
-    return "better" if right_better else "worse"
+    if directionality == "none":
+        return "neutral"
+    if directionality == "higher_better":
+        return "better" if delta > 0 else "worse"
+    if directionality == "lower_better":
+        return "better" if delta < 0 else "worse"
+    return "neutral"
 
 
 def _diff(
@@ -311,15 +410,23 @@ def _diff(
     right: float | None,
     *,
     unit: str,
-    higher_is_better: bool,
+    directionality: Directionality = "none",
     fmt: str,
+    unavailable_reason: str = "",
+    # Backward-compatible alias — prefer directionality=.
+    higher_is_better: bool | None = None,
 ) -> MetricDiff:
+    if higher_is_better is not None and directionality == "none":
+        directionality = "higher_better" if higher_is_better else "lower_better"
+    # Δ = B − A
     delta = None if left is None or right is None else float(right) - float(left)
-    tone = _tone(delta, higher_is_better=higher_is_better)
+    tone = _tone(delta, directionality=directionality)
+    reason = unavailable_reason or f"{name} unavailable in one or both sessions."
     if left is None and right is None:
-        display = f"{name}: unavailable"
+        display = f"{name}: unavailable — {reason}"
     elif delta is None:
-        display = f"{name}: incomplete comparison"
+        missing = "Session A" if left is None else "Session B"
+        display = f"{name}: unavailable in {missing} — {reason}"
     else:
         sign = "+" if delta >= 0 else ""
         display = f"{name}: {sign}{fmt.format(delta)}{unit}"
@@ -329,19 +436,22 @@ def _diff(
         right_value=right,
         delta=delta,
         unit=unit,
-        higher_is_better=higher_is_better,
+        higher_is_better=directionality == "higher_better",
         tone_right=tone,
         display=display,
+        directionality=directionality,
+        unavailable_reason=reason if delta is None else "",
     )
 
 
 def _stability_rank(label: str) -> float | None:
     key = (label or "").strip().lower()
-    if key in ("high", "stable"):
+    # Prefer longer phrases before the bare "reduced" token.
+    if key in ("high", "stable", "acceptable"):
         return 3.0
-    if key in ("moderate", "mod", "reduced"):
+    if key in ("moderate", "mod", "borderline") or key == "reduced stability":
         return 2.0
-    if key in ("low", "unstable"):
+    if key in ("low", "unstable", "reduced"):
         return 1.0
     return None
 
@@ -364,116 +474,139 @@ def compare_session_metrics(
             left.cadence_spm,
             right.cadence_spm,
             unit=" steps/min",
-            higher_is_better=True,
+            directionality="higher_better",
             fmt="{:.0f}",
+            unavailable_reason="Insufficient heel-strike cycles for cadence.",
         ),
         _diff(
             "ROM difference",
             left.knee_rom_deg,
             right.knee_rom_deg,
             unit="°",
-            higher_is_better=True,
+            directionality="higher_better",
             fmt="{:.1f}",
+            unavailable_reason="Knee ROM not estimated.",
         ),
         _diff(
             "Hip ROM difference",
             left.hip_rom_deg,
             right.hip_rom_deg,
             unit="°",
-            higher_is_better=True,
+            directionality="none",
             fmt="{:.1f}",
+            unavailable_reason="Hip ROM not estimated.",
         ),
         _diff(
             "Ankle ROM difference",
             left.ankle_rom_deg,
             right.ankle_rom_deg,
             unit="°",
-            higher_is_better=True,
+            directionality="none",
             fmt="{:.1f}",
+            unavailable_reason="Ankle ROM not estimated.",
         ),
         _diff(
             "Step length difference",
             left.step_length_m,
             right.step_length_m,
             unit=" m",
-            higher_is_better=True,
+            directionality="none",
             fmt="{:.3f}",
+            unavailable_reason="Step length not computed.",
         ),
         _diff(
             "Joint angle difference",
             _mean_joint_rom(left),
             _mean_joint_rom(right),
             unit="° mean ROM",
-            higher_is_better=True,
+            directionality="none",
             fmt="{:.1f}",
+            unavailable_reason="Joint ROM not estimated.",
         ),
         _diff(
             "Stability difference",
             left.stability_margin_m,
             right.stability_margin_m,
             unit=" m",
-            higher_is_better=True,
+            directionality="higher_better",
             fmt="{:.3f}",
+            unavailable_reason="Stability margin unavailable (insufficient COM–BoS frames).",
         ),
         _diff(
             "Virtual GRF difference",
             left.virtual_grf_peak_bw,
             right.virtual_grf_peak_bw,
             unit=" BW",
-            higher_is_better=True,
+            directionality="none",
             fmt="{:.2f}",
+            unavailable_reason="Estimated GRF not available.",
         ),
         _diff(
             "Timeline difference",
             left.duration_s,
             right.duration_s,
             unit=" s",
-            higher_is_better=False,
+            directionality="none",
             fmt="{:.2f}",
+            unavailable_reason="Session duration unavailable.",
         ),
         _diff(
             "Walking speed",
             left.walking_speed_m_s,
             right.walking_speed_m_s,
             unit=" m/s",
-            higher_is_better=True,
+            directionality="higher_better",
             fmt="{:.2f}",
+            unavailable_reason="Walking speed unavailable — scale/view not reportable.",
         ),
         _diff(
             "Symmetry",
             left.symmetry_pct,
             right.symmetry_pct,
             unit="%",
-            higher_is_better=True,
+            directionality="higher_better",
             fmt="{:.0f}",
+            unavailable_reason="Symmetry not computed.",
         ),
         _diff(
             "COM excursion",
             left.com_excursion_m,
             right.com_excursion_m,
             unit=" m",
-            higher_is_better=False,
+            directionality="lower_better",
             fmt="{:.3f}",
+            unavailable_reason="COM path missing.",
+        ),
+        _diff(
+            "Foot clearance",
+            left.foot_clearance_m,
+            right.foot_clearance_m,
+            unit=" m",
+            directionality="none",
+            fmt="{:.3f}",
+            unavailable_reason="Foot clearance was not computed.",
         ),
         _diff(
             "Usable gait cycles",
             None if left.usable_gait_cycles is None else float(left.usable_gait_cycles),
             None if right.usable_gait_cycles is None else float(right.usable_gait_cycles),
             unit="",
-            higher_is_better=True,
+            directionality="higher_better",
             fmt="{:.0f}",
+            unavailable_reason="No usable gait cycles detected.",
         ),
         _diff(
             "Gait quality",
             left.gait_quality,
             right.gait_quality,
             unit="/100",
-            higher_is_better=True,
+            directionality="higher_better",
             fmt="{:.0f}",
+            unavailable_reason="Gait quality not scored.",
         ),
     ]
 
-    # Stability category as ordinal (High > Moderate > Low).
+    # Stability category as ordinal (Acceptable/Borderline/Reduced or legacy High/Low).
     lr = _stability_rank(left.stability_label)
     rr = _stability_rank(right.stability_label)
     stab = _diff(
@@ -481,8 +614,9 @@ def compare_session_metrics(
         lr,
         rr,
         unit="",
-        higher_is_better=True,
+        directionality="higher_better",
         fmt="{:.0f}",
+        unavailable_reason="Stability label unavailable.",
     )
     if lr is not None and rr is not None and stab.delta is not None:
         stab.display = (

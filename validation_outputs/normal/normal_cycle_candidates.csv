@@ -1,0 +1,6 @@
+candidate_index,side,start_frame,end_frame,start_time_s,end_time_s,duration_s,n_frames,n_known_contact,n_known_stance,n_known_swing,known_contact_coverage,n_valid_pose_frames,valid_pose_coverage,longest_internal_gap_s,accepted,acceptance_reason,source
+0,left,80,94,2.6693333333333333,3.1364666666666667,0.4671333333333334,14,7,7,0,0.5,15,1.0,0.0,False,"no_known_swing — off bits were near-ground Unknown, not confirmed flight",binary_contact_hs_hs
+1,left,94,125,3.1364666666666667,4.170833333333333,1.0343666666666667,31,12,3,9,0.3870967741935484,25,0.7096774193548383,0.23356666666666692,False,unsupported_pose_gap (longest internal gap 0.234 s; valid-pose coverage 71.0%; gaps are not interpolated),binary_contact_hs_hs
+2,left,125,184,4.170833333333333,6.139466666666666,1.968633333333333,59,38,37,1,0.6440677966101694,39,0.5084745762711862,0.23356666666666737,False,unsupported_pose_gap (longest internal gap 0.234 s; valid-pose coverage 50.8%; gaps are not interpolated),binary_contact_hs_hs
+3,left,184,193,6.139466666666666,6.439766666666666,0.3003,9,5,5,0,0.5555555555555556,10,1.0,0.0,False,duration_below_min (0.300 s < 0.35 s),binary_contact_hs_hs
+4,left,193,224,6.439766666666666,7.4741333333333335,1.034366666666667,31,3,3,0,0.0967741935483871,32,1.0,0.0,False,"no_known_swing — off bits were near-ground Unknown, not confirmed flight",binary_contact_hs_hs

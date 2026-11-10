@@ -362,21 +362,33 @@ def print_motion_widget_hierarchy(gui: Any) -> str:
 
 
 def assert_dashboard_widget_singletons(gui: Any) -> None:
-    """Runtime assertion: one instance per critical dashboard widget."""
-    targets = {
+    """Runtime assertion: at most one instance per critical dashboard widget.
+
+    Motion-tab Matplotlib canvases (``chart_canvas``, ``canvas_dof_traj``) are
+    created lazily on first visit, so ``0`` is valid until that tab is built.
+    """
+    required_one = {
         "video_label": _count_attr_singleton(gui, "video_label"),
+        "canvas_3d (3D reconstruction)": _count_figure_canvas_instances(gui, "canvas_3d"),
+        "playback frame": _count_playback_frames(gui),
+    }
+    # Lazy Motion Analysis charts: absent (0) or singleton (1).
+    lazy_at_most_one = {
         "chart_canvas (knee graph)": _count_figure_canvas_instances(gui, "chart_canvas"),
         "canvas_dof_traj (joint path)": _count_figure_canvas_instances(
             gui, "canvas_dof_traj"
         ),
-        "canvas_3d (3D reconstruction)": _count_figure_canvas_instances(gui, "canvas_3d"),
-        "playback frame": _count_playback_frames(gui),
     }
     failures = [
         f"{name}: expected 1, got {count}"
-        for name, count in targets.items()
+        for name, count in required_one.items()
         if count != 1
     ]
+    failures.extend(
+        f"{name}: expected 0 or 1, got {count}"
+        for name, count in lazy_at_most_one.items()
+        if count > 1
+    )
     if failures:
         raise AssertionError(
             "Dashboard widget singleton check failed:\n  " + "\n  ".join(failures)

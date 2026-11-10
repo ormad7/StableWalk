@@ -43,19 +43,19 @@ JOINT_INFO_FIELD_ORDER: tuple[str, ...] = (
 
 JOINT_INFO_TITLES: dict[str, str] = {
     "joint_name": "Joint",
-    "x": "X (cm)",
-    "y": "Y (cm)",
-    "z": "Z (cm)",
-    "angle": "Angle",
-    "angular_velocity": "ω (°/s)",
-    "angular_acceleration": "α (°/s²)",
-    "rom": "ROM",
+    "x": "X (cm, root-rel.)",
+    "y": "Y (cm, root-rel.)",
+    "z": "Z (cm, root-rel.)",
+    "angle": "Current angle (est., °)",
+    "angular_velocity": "ω (°/s, derived)",
+    "angular_acceleration": "α (°/s², derived)",
+    "rom": "Session ROM (°)",
     "frame": "Frame",
     "time": "Time",
-    "confidence": "Confidence",
-    "contact": "Contact",
-    "gait_phase": "Phase",
-    "foot_clearance": "Clearance",
+    "confidence": "Tracking confidence",
+    "contact": "Contact state",
+    "gait_phase": "Phase (derived)",
+    "foot_clearance": "Clearance (est., cm)",
 }
 
 
@@ -102,44 +102,56 @@ def empty_joint_information() -> JointInformationSnapshot:
     return JointInformationSnapshot()
 
 
-def _fmt_cm(value: float | None, *, scale: float = 1.0) -> str:
+def _fmt_deg_s(value: float | None) -> str:
+    from stablewalk.ui.value_provenance import format_na
+
     if value is None:
-        return _DASH
+        return format_na("angular velocity not available")
+    if abs(float(value)) > 400.0:
+        return format_na("angular velocity spike (|ω|>400 °/s)")
+    return f"{value:.1f} °/s"
+
+
+def _fmt_angle(value: float | None) -> str:
+    from stablewalk.ui.value_provenance import format_na
+
+    if value is None:
+        return format_na("joint/DOF angle not available")
+    return f"{value:.1f}°"
+
+
+def _fmt_cm(value: float | None, *, scale: float = 1.0) -> str:
+    from stablewalk.ui.value_provenance import format_na
+
+    if value is None:
+        return format_na("position not available")
     return f"{value * scale * 100.0:.1f} cm"
 
 
 def _fmt_m(value: float | None) -> str:
+    from stablewalk.ui.value_provenance import format_na
+
     if value is None:
-        return _DASH
+        return format_na("position not available")
     return f"{value:.3f} m"
 
 
-def _fmt_angle(value: float | None) -> str:
-    if value is None:
-        return _DASH
-    return f"{value:.1f}°"
-
-
 def _fmt_deg_s2(value: float | None) -> str:
+    from stablewalk.ui.value_provenance import format_na
+
     if value is None:
-        return _DASH
+        return format_na("angular acceleration not available")
     # Frame-to-frame Δω/Δt is noisy on monocular tracking; hide extreme spikes.
     if abs(float(value)) > 500.0:
-        return _DASH
+        return format_na("angular acceleration spike (|α|>500 °/s²)")
     return f"{value:.1f} °/s²"
 
 
-def _fmt_deg_s(value: float | None) -> str:
-    if value is None:
-        return _DASH
-    if abs(float(value)) > 400.0:
-        return _DASH
-    return f"{value:.1f} °/s"
-
-
 def _fmt_confidence(value: float | None) -> str:
+    from stablewalk.ui.value_provenance import format_na
+
     if value is None:
-        return _DASH
+        return format_na("keypoint visibility unavailable")
     pct = value * 100.0 if value <= 1.0 + 1e-9 else value
     return f"{pct:.0f}%"
 
@@ -183,8 +195,10 @@ def _rom_display(
     end_frame_float: float,
 ) -> str:
     """Prefer angular ROM (min–max) from joint or DoF angle history."""
+    from stablewalk.ui.value_provenance import format_na
+
     if recording is None or recording.frame_count <= 0:
-        return _DASH
+        return format_na("no recording for angle window")
 
     anchor = anchor_joint_for_item(item_id)
     if anchor:
@@ -195,15 +209,15 @@ def _rom_display(
 
     dof_id = _ITEM_DOF_ID.get(item_id)
     if not dof_id:
-        return _DASH
+        return format_na("no DOF angle series for item")
     ts = recording.build_time_series()
     series = ts.dof_angles.get(dof_id, [])
     if not series:
-        return _DASH
+        return format_na("empty DOF angle series")
     last_i = int(min(max(0, end_frame_float), len(series) - 1))
     window = [float(a) for a in series[: last_i + 1] if a is not None]
     if not window:
-        return _DASH
+        return format_na("insufficient angle samples in window")
     return f"{min(window):.1f}–{max(window):.1f}°"
 
 
@@ -215,6 +229,7 @@ def build_joint_information(
     sequence: PoseSequence | None = None,
     gait_phase: str | None = None,
     end_frame_float: float | None = None,
+    provenance_sink: dict | None = None,
 ) -> JointInformationSnapshot:
     """Build live Joint Information fields for the active joint and frame."""
     if not item_id or snapshot is None:
@@ -230,8 +245,9 @@ def build_joint_information(
     )
 
     prev_snapshot = None
-    if recording is not None and frame_index > 0:
-        prev_snapshot = recording.snapshot_at(frame_index - 1)
+    list_i = int(max(0.0, frame_f))
+    if recording is not None and list_i > 0:
+        prev_snapshot = recording.snapshot_at(list_i - 1)
 
     fps = float(getattr(recording, "fps", 0.0) or 0.0) if recording else 0.0
 
@@ -252,40 +268,90 @@ def build_joint_information(
     confidence = confidence_for_joint_at_frame(sequence, anchor, frame_index)
 
     clearance_raw, contact_raw = _foot_table_cells(item_id, snapshot, recording)
+    from stablewalk.ui.value_provenance import format_na
+
     if is_foot_analysis_point(item_id):
         foot_clearance = (
-            clearance_raw if clearance_raw and clearance_raw != NA_VALUE else _DASH
+            clearance_raw
+            if clearance_raw and clearance_raw != NA_VALUE
+            else format_na("foot clearance unavailable")
         )
-        contact = contact_raw if contact_raw and contact_raw != NA_VALUE else _DASH
+        contact = (
+            contact_raw
+            if contact_raw and contact_raw != NA_VALUE
+            else format_na("contact state unavailable")
+        )
     else:
-        foot_clearance = _DASH
-        contact = _DASH
+        foot_clearance = format_na("not a foot analysis point")
+        contact = format_na("not a foot analysis point")
 
-    phase = (gait_phase or "").strip() or _DASH
+    phase = (gait_phase or "").strip() or ""
     if phase in ("", "—", "-"):
-        phase = _DASH
+        phase = format_na("gait phase not available at this frame")
 
     name = label_for_item(item_id)
     if anchor:
         name = JOINT_DISPLAY_NAMES.get(anchor, name)
 
-    # Prefer the discrete snapshot frame — never round(frame_float), which
-    # drifts one frame ahead of the video HUD during playback.
-    display_frame = int(frame_index) + 1
+    # Prefer playback list position (end_frame_float) for display — never the
+    # raw source-video id alone, which can diverge after filtered poses.
+    if end_frame_float is not None:
+        display_frame = int(max(0, float(end_frame_float))) + 1
+        list_pos = int(max(0, float(end_frame_float)))
+    else:
+        display_frame = int(frame_index) + 1
+        list_pos = None
 
-    return JointInformationSnapshot(
+    x_disp = _fmt_cm(x, scale=pos_scale)
+    y_disp = _fmt_cm(y, scale=pos_scale)
+    z_disp = _fmt_cm(z, scale=pos_scale)
+    angle_disp = _fmt_angle(angle)
+    omega_disp = _fmt_deg_s(omega)
+    rom_disp = _rom_display(item_id, recording, frame_f)
+    conf_disp = _fmt_confidence(confidence)
+
+    info = JointInformationSnapshot(
         joint_name=name,
-        x=_fmt_cm(x, scale=pos_scale),
-        y=_fmt_cm(y, scale=pos_scale),
-        z=_fmt_cm(z, scale=pos_scale),
-        angle=_fmt_angle(angle),
-        angular_velocity=_fmt_deg_s(omega),
+        x=x_disp,
+        y=y_disp,
+        z=z_disp,
+        angle=angle_disp,
+        angular_velocity=omega_disp,
         angular_acceleration=_fmt_deg_s2(alpha),
-        rom=_rom_display(item_id, recording, frame_f),
+        rom=rom_disp,
         frame=str(display_frame),
         time=f"{float(snapshot.time_s):.2f} s",
-        confidence=_fmt_confidence(confidence),
+        confidence=conf_disp,
         contact=contact,
         gait_phase=phase,
         foot_clearance=foot_clearance,
     )
+
+    if provenance_sink is not None:
+        from stablewalk.ui.value_provenance import build_joint_info_provenance
+
+        provenance_sink.update(
+            build_joint_info_provenance(
+                item_id=item_id,
+                list_pos=list_pos,
+                source_video_frame=frame_index,
+                x_raw=x,
+                y_raw=y,
+                z_raw=z,
+                x_display=x_disp,
+                y_display=y_disp,
+                z_display=z_disp,
+                angle_raw=angle,
+                angle_display=angle_disp,
+                omega_raw=omega,
+                omega_display=omega_disp,
+                rom_display=rom_disp,
+                confidence=confidence,
+                confidence_display=conf_disp,
+                contact_display=contact,
+                phase_display=phase,
+                pos_scale=pos_scale,
+                anchor=anchor,
+            )
+        )
+    return info

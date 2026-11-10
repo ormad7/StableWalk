@@ -8,13 +8,19 @@ proxies. Values are **estimated** — not force-plate or OpenSim ID output.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from stablewalk.analysis.biomechanical.types import BiomechanicalFrameCOM
 from stablewalk.analysis.foot_contact_analysis import FootContactAnalysisResult
+from stablewalk.analysis.kinematic_derivatives import finite_diff
 from stablewalk.models.gait_motion import GaitMotionRecording, SkeletonSnapshot, Vec3
+
+# Detector/placeholder confidence: not a measured COM, even if XYZ is (0,0,0).
+_MISSING_COM_CONF = 0.05
+_MISSING_COM = (float("nan"), float("nan"), float("nan"))
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +92,7 @@ def estimate_frame_com(snap: SkeletonSnapshot) -> tuple[tuple[float, float, floa
             cy = (pelvis.y + rh.y) * 0.5
             cz = (pelvis.z + rh.z) * 0.5
             return (cx, cy, cz), 0.35
-        return (0.0, 0.0, 0.0), 0.0
+        return _MISSING_COM, 0.0
 
     total_m = sum(masses)
     cx = sum(p[0] * m for p, m in zip(positions, masses)) / total_m
@@ -96,23 +102,10 @@ def estimate_frame_com(snap: SkeletonSnapshot) -> tuple[tuple[float, float, floa
     return (cx, cy, cz), conf
 
 
-def _kinematics_1d(values: np.ndarray, times: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    n = len(values)
-    vel = np.zeros(n, dtype=np.float64)
-    acc = np.zeros(n, dtype=np.float64)
-    if n < 2:
-        return vel, acc
-    for i in range(1, n):
-        dt = times[i] - times[i - 1]
-        if dt <= 1e-9:
-            continue
-        vel[i] = (values[i] - values[i - 1]) / dt
-    for i in range(2, n):
-        dt = times[i] - times[i - 1]
-        if dt <= 1e-9:
-            continue
-        acc[i] = (vel[i] - vel[i - 1]) / dt
-    return vel, acc
+def _is_missing_com(position: tuple[float, float, float], confidence: float) -> bool:
+    if float(confidence) <= _MISSING_COM_CONF:
+        return True
+    return not all(math.isfinite(float(v)) for v in position)
 
 
 @dataclass
@@ -159,6 +152,8 @@ def analyze_center_of_mass(
             if snap is None:
                 continue
             pos, conf = estimate_frame_com(snap)
+            if _is_missing_com(pos, conf):
+                pos, conf = _MISSING_COM, 0.0
             frame_indices.append(cf.frame_index)
             times.append(cf.time_s)
             positions.append(pos)
@@ -169,6 +164,8 @@ def analyze_center_of_mass(
             if snap is None:
                 continue
             pos, conf = estimate_frame_com(snap)
+            if _is_missing_com(pos, conf):
+                pos, conf = _MISSING_COM, 0.0
             frame_indices.append(snap.frame_index)
             times.append(snap.time_s)
             positions.append(pos)
@@ -182,9 +179,12 @@ def analyze_center_of_mass(
     ys = np.array([p[1] for p in positions], dtype=np.float64)
     zs = np.array([p[2] for p in positions], dtype=np.float64)
 
-    vx, ax = _kinematics_1d(xs, t_arr)
-    vy, ay = _kinematics_1d(ys, t_arr)
-    vz, az = _kinematics_1d(zs, t_arr)
+    vx = finite_diff(xs, t_arr, fps=fps)
+    ax = finite_diff(vx, t_arr, fps=fps)
+    vy = finite_diff(ys, t_arr, fps=fps)
+    ay = finite_diff(vy, t_arr, fps=fps)
+    vz = finite_diff(zs, t_arr, fps=fps)
+    az = finite_diff(vz, t_arr, fps=fps)
 
     per_frame: list[BiomechanicalFrameCOM] = []
     for i, fi in enumerate(frame_indices):

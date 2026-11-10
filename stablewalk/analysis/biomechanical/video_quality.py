@@ -7,6 +7,12 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from stablewalk.analysis.gait_comparison_validation import FOOT_LANDMARKS
+from stablewalk.analysis.quality_layers import (
+    LANDMARK_NOT_TRACKING,
+    QualityEvidence,
+    landmark_confidence_evidence,
+    pose_coverage_evidence,
+)
 from stablewalk.models.pose_data import PoseFrame, PoseSequence
 
 QualityStatus = Literal["pass", "warn", "fail"]
@@ -30,6 +36,8 @@ class VideoQualityAssessment:
     items: list[VideoQualityItem] = field(default_factory=list)
     summary_explanation: str = ""
     kind: str = "derived"
+    pose_coverage: QualityEvidence | None = None
+    landmark_confidence: QualityEvidence | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,7 +47,14 @@ class VideoQualityAssessment:
             "items": [item.to_dict() for item in self.items],
             "summary_explanation": self.summary_explanation,
             "kind": self.kind,
-            "note": "Heuristic video/pose quality — not clinical motion-capture QA.",
+            "pose_coverage": None if self.pose_coverage is None else self.pose_coverage.to_dict(),
+            "landmark_confidence": (
+                None if self.landmark_confidence is None else self.landmark_confidence.to_dict()
+            ),
+            "note": (
+                "Heuristic pose/video checks — not clinical motion-capture QA. "
+                + LANDMARK_NOT_TRACKING
+            ),
         }
 
 
@@ -125,10 +140,10 @@ def _pose_confidence_score(frames: list[PoseFrame]) -> tuple[float, list[str], f
 
 def _lighting_score(mean_conf: float) -> tuple[float, str]:
     if mean_conf >= 0.65:
-        return 95.0, "Average landmark visibility is strong."
+        return 95.0, "Average detector visibility is high (not tracking accuracy)."
     if mean_conf >= 0.45:
-        return 75.0, "Moderate landmark visibility — acceptable for gait timing."
-    return max(30.0, mean_conf * 120.0), "Low landmark visibility suggests poor lighting or contrast."
+        return 75.0, "Moderate detector visibility — lighting/occlusion may limit kinematics."
+    return max(30.0, mean_conf * 120.0), "Low detector visibility suggests poor lighting, contrast, or occlusion."
 
 
 def _motion_blur_proxy(frames: list[PoseFrame]) -> tuple[bool, float, str]:
@@ -155,7 +170,17 @@ def assess_video_quality(sequence: PoseSequence) -> VideoQualityAssessment:
     """Evaluate input video quality for biomechanical analysis reliability."""
     frames = sequence.frames
     total = len(frames)
-    detected = sum(1 for f in frames if f.detected)
+    detected = 0
+    pose_ok = 0
+    for frame in frames:
+        if frame.detected:
+            pose_ok += 1
+            detected += 1
+        elif frame.identity_locked and frame.keypoints:
+            detected += 1
+    from stablewalk.pose.tracking_quality import audit_pose_sequence
+
+    usable = int(audit_pose_sequence(sequence).usable_gait_frames)
     fps = max(sequence.fps, 1e-6)
 
     warnings: list[str] = []
@@ -164,6 +189,9 @@ def assess_video_quality(sequence: PoseSequence) -> VideoQualityAssessment:
         "fps": round(fps, 2),
         "frame_count": total,
         "detected_frame_pct": round(100.0 * detected / max(total, 1), 2),
+        "usable_frame_pct": round(100.0 * usable / max(total, 1), 2),
+        "detected_frames": detected,
+        "usable_frames": usable,
     }
 
     score = 100.0
@@ -173,7 +201,7 @@ def assess_video_quality(sequence: PoseSequence) -> VideoQualityAssessment:
         score -= 15.0
         checks["low_fps"] = True
 
-    if detected / max(total, 1) < 0.5:
+    if pose_ok / max(total, 1) < 0.5:
         warnings.append("Fewer than 50% valid pose frames.")
         score -= 30.0
 
@@ -264,11 +292,31 @@ def assess_video_quality(sequence: PoseSequence) -> VideoQualityAssessment:
     checks["occlusion_risk"] = conf_score < 55.0
     overall = max(0.0, min(100.0, score))
 
+    duration_s = total / fps if fps > 0 else None
+    coverage = pose_coverage_evidence(
+        n_frames=total,
+        n_detected=detected,
+        usable_duration_s=duration_s,
+        n_usable=usable,
+    )
+    n_vis = int(detected * 16) if detected else 0
+    landmark = landmark_confidence_evidence(
+        mean_visibility=mean_conf if n_vis else None,
+        low_visibility_pct=low_conf_pct * 100.0,
+        n_samples=n_vis,
+    )
+    checks["pose_coverage_pct"] = coverage.coverage_pct
+    checks["pose_coverage_status"] = coverage.status
+    checks["landmark_confidence_status"] = landmark.status
+    checks["mean_landmark_visibility"] = round(mean_conf, 3)
+
     pass_count = sum(1 for item in items if item.status == "pass")
     warn_count = sum(1 for item in items if item.status == "warn")
     summary = (
-        f"Score {overall:.0f}/100 from {pass_count} passed, {warn_count} caution checks. "
-        "Derived from pose visibility, camera stability, and temporal coherence — not a clinical QA certificate."
+        f"Heuristic pose/video score {overall:.0f}/100 "
+        f"({pass_count} passed, {warn_count} caution checks). "
+        f"Pose coverage: {coverage.status}. Landmark visibility: {landmark.status}. "
+        f"{LANDMARK_NOT_TRACKING} Not spectral, cycle, or biomechanical quality."
     )
 
     return VideoQualityAssessment(
@@ -277,6 +325,8 @@ def assess_video_quality(sequence: PoseSequence) -> VideoQualityAssessment:
         checks=checks,
         items=items,
         summary_explanation=summary,
+        pose_coverage=coverage,
+        landmark_confidence=landmark,
     )
 
 

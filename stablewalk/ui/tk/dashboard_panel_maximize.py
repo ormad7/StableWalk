@@ -24,6 +24,9 @@ PANEL_TITLES: dict[str, str] = {
     "skeleton": "3D Reconstruction",
     "path_3d": "3D Path",
     "motion": "Motion Analysis",
+    "spectral": "Spectral Analysis",
+    "spectral_features": "Spectral Features",
+    "asymmetry": "Asymmetry",
     "biomechanics": "Biomechanics",
     "results_summary": "Results Summary",
     "pipeline": "Advanced Pipeline",
@@ -71,6 +74,9 @@ def _resolve_panel_widget(gui: Any, panel_id: str) -> tk.Misc | None:
         "skeleton": lambda g: getattr(g, "skel_frame", None),
         "path_3d": _resolve_path_3d_widget,
         "motion": lambda g: getattr(g, "_section_kinematic", None),
+        "spectral": lambda g: getattr(g, "_spectral_host", None),
+        "spectral_features": lambda g: getattr(g, "_spectral_features_host", None),
+        "asymmetry": lambda g: getattr(g, "_asymmetry_host", None),
         "biomechanics": lambda g: getattr(g, "_biomechanics_panel_host", None)
         or getattr(g, "_section_biomechanics", None)
         or getattr(g, "_tab_biomechanics", None),
@@ -126,6 +132,9 @@ def _ensure_panel_tab(gui: Any, panel_id: str, widget: tk.Misc) -> None:
         return
     tab_map = {
         "motion": TAB_MOTION,
+        "spectral": TAB_MOTION,
+        "spectral_features": TAB_MOTION,
+        "asymmetry": TAB_MOTION,
         "biomechanics": TAB_BIOMECHANICS,
         "results_summary": TAB_RESULTS_SUMMARY,
         "pipeline": TAB_ADVANCED,
@@ -133,6 +142,22 @@ def _ensure_panel_tab(gui: Any, panel_id: str, widget: tk.Misc) -> None:
     tab = tab_map.get(panel_id)
     if tab is not None:
         select_dashboard_tab(gui, tab)
+    inner = {
+        "spectral": "Spectral Analysis",
+        "spectral_features": "Spectral Features",
+        "asymmetry": "Asymmetry",
+        "motion": "Kinematics",
+    }.get(panel_id)
+    if inner:
+        nb = getattr(gui, "_motion_page_notebook", None)
+        if nb is not None:
+            try:
+                for tab_id in nb.tabs():
+                    if str(nb.tab(tab_id, "text")) == inner:
+                        nb.select(tab_id)
+                        break
+            except tk.TclError:
+                pass
 
 
 def _capture_playback(gui: Any) -> tuple[bool, float | None]:
@@ -261,6 +286,13 @@ def _fit_after_layout(gui: Any, panel_id: str) -> None:
                 )
 
                 _refresh_synced_overlays(gui)
+            except Exception:
+                pass
+        if panel_id in {"spectral", "spectral_features", "asymmetry", "motion"}:
+            try:
+                from stablewalk.ui.tk.dashboard_responsive import _reflow_motion_inner_figures
+
+                _reflow_motion_inner_figures(gui, width=int(gui.root.winfo_width() or 1200))
             except Exception:
                 pass
         if panel_id in {"motion", "path_3d"}:
@@ -677,21 +709,32 @@ def _place_corner_chrome(parent: tk.Misc) -> tk.Frame:
 
 def wire_all_panel_maximize_buttons(gui: Any) -> None:
     """Install maximize controls on every major panel/header that exists."""
-    # Video — corner control on the Original Video panel
+    # Video — dedicated toolbar row (not a place() overlay on the picture).
+    video_toolbar = getattr(gui, "_overview_video_toolbar", None)
     video = getattr(gui, "video_frame", None)
-    if video is not None and not getattr(gui, "_video_maximize_chrome", None):
+    if video_toolbar is None and video is not None and not getattr(
+        gui, "_video_maximize_chrome", None
+    ):
         chrome = _place_corner_chrome(video)
         gui._video_maximize_chrome = chrome
         install_maximize_button(gui, chrome, "video", pack_side=tk.RIGHT, padx=0)
 
     # Skeleton maximize is installed next to the display-mode selector in layout.
 
-    # 3D Path — overview dock camera bar + motion trajectory camera bar
+    # 3D Path — extras cluster (metrics + maximize), then motion trajectory bar.
+    path_extras = getattr(gui, "_overview_path_toolbar_extras", None)
+    if path_extras is not None and not getattr(path_extras, "_sw_maximize_installed", False):
+        install_maximize_button(
+            gui, path_extras, "path_3d", pack_side=tk.RIGHT, padx=(8, 4)
+        )
+        path_extras._sw_maximize_installed = True  # type: ignore[attr-defined]
     for bar_attr in ("overview_traj_camera_bar", "dof_traj_camera_bar"):
         bar = getattr(gui, bar_attr, None)
         if bar is None:
             continue
         if getattr(bar, "_sw_maximize_installed", False):
+            continue
+        if bar_attr == "overview_traj_camera_bar" and path_extras is not None:
             continue
         install_maximize_button(gui, bar, "path_3d", pack_side=tk.RIGHT, padx=(8, 4))
         bar._sw_maximize_installed = True  # type: ignore[attr-defined]
@@ -708,14 +751,32 @@ def wire_all_panel_maximize_buttons(gui: Any) -> None:
         )
         gui._motion_maximize_installed = True
 
-    # Biomechanics — header toolbar
+    # Biomechanics — header toolbar, or the chart tools row when no header exists
     biomech_header = getattr(gui, "_biomechanics_header", None)
-    if biomech_header is not None and not getattr(
+    tools = getattr(gui, "biomech_chart_tools", None)
+    tools_row = getattr(tools, "master", None) if tools is not None else None
+    biomech_btn_host = biomech_header if biomech_header is not None else tools_row
+    if biomech_btn_host is not None and not getattr(
         gui, "_biomech_maximize_installed", False
     ):
-        install_maximize_button(
-            gui, biomech_header, "biomechanics", pack_side=tk.RIGHT, padx=(8, 0)
-        )
+        if biomech_header is not None:
+            install_maximize_button(
+                gui, biomech_header, "biomechanics", pack_side=tk.RIGHT, padx=(8, 0)
+            )
+        else:
+            try:
+                biomech_btn_host.columnconfigure(1, weight=0)
+            except tk.TclError:
+                pass
+            install_maximize_button_grid(
+                gui,
+                biomech_btn_host,
+                "biomechanics",
+                row=0,
+                column=1,
+                sticky="e",
+                padx=(8, 0),
+            )
         gui._biomechanics_panel_host = getattr(
             gui, "_section_biomechanics", None
         ) or getattr(gui, "_tab_biomechanics", None)

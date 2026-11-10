@@ -37,6 +37,8 @@ class SkeletonPlayer:
     recording: GaitMotionRecording
     state: SkeletonPlaybackState = field(default_factory=SkeletonPlaybackState)
     smooth: bool = True
+    clock_s: float | None = None
+    """Source-video timestamp for this playhead. None until the first seek."""
 
     @property
     def frame_count(self) -> int:
@@ -63,6 +65,14 @@ class SkeletonPlayer:
                 return b
             if not b or alpha <= 0.0 or not self.smooth:
                 return a
+            a_ok = bool(a.metadata.get("detected", True)) and bool(a.joints)
+            b_ok = bool(b.metadata.get("detected", True)) and bool(b.joints)
+            if not a_ok or not b_ok:
+                return a
+            from stablewalk.analysis.joint_path_trace import segment_is_connected
+
+            if not segment_is_connected(float(a.time_s), float(b.time_s), fps=self.fps):
+                return a
             return interpolate_snapshots(a, b, alpha)
 
         idx = int(max(0, min(int(index), self.frame_count - 1)))
@@ -81,6 +91,31 @@ class SkeletonPlayer:
         else:
             self.state.frame_index = max(0, min(int(index), self.frame_count - 1))
             self.state.frame_float = float(self.state.frame_index)
+        snap = self.current_snapshot()
+        if snap is not None:
+            self.clock_s = float(snap.time_s)
+        return snap
+
+    def go_to_time(self, time_s: float) -> SkeletonSnapshot | None:
+        """Seek by source timestamp; hold the last valid snapshot across gaps."""
+        if self.frame_count == 0:
+            return None
+        snaps = self.recording.snapshots
+        t = float(time_s)
+        first_t = float(snaps[0].time_s)
+        last_t = float(snaps[-1].time_s)
+        if last_t < first_t:
+            last_t = first_t
+        t = max(first_t, min(t, last_t))
+        self.clock_s = t
+        idx = 0
+        for i, snap in enumerate(snaps):
+            if float(snap.time_s) <= t + 1e-9:
+                idx = i
+            else:
+                break
+        self.state.frame_index = idx
+        self.state.frame_float = float(idx)
         return self.current_snapshot()
 
     def play(self) -> None:
@@ -105,18 +140,26 @@ class SkeletonPlayer:
         return self.state.playing
 
     def advance(self, *, speed: float = 1.0, dt: float | None = None) -> SkeletonSnapshot | None:
-        """Advance playback by one tick; returns snapshot at new position."""
+        """Advance playback by wall-clock time along source timestamps."""
         if not self.state.playing or self.frame_count == 0:
             return self.current_snapshot()
 
         step = dt if dt is not None else (1.0 / self.fps)
-        advance_frames = speed * step * self.fps
-        self.state.frame_float += advance_frames
-        if self.state.frame_float >= self.frame_count:
-            self.state.frame_float = 0.0
-        self.state.frame_index = int(self.state.frame_float)
-        return self.current_snapshot()
+        snaps = self.recording.snapshots
+        first_t = float(snaps[0].time_s)
+        last_t = float(snaps[-1].time_s)
+        if last_t < first_t:
+            last_t = first_t
+        clock = self.clock_s
+        if clock is None:
+            clock = float(snaps[self.state.frame_index].time_s)
+        clock = float(clock) + float(speed) * float(step)
+        if clock > last_t + 1e-9:
+            clock = first_t
+        return self.go_to_time(clock)
 
     def time_at_current(self) -> float:
+        if self.clock_s is not None:
+            return float(self.clock_s)
         snap = self.current_snapshot()
         return snap.time_s if snap else 0.0

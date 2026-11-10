@@ -9,6 +9,14 @@ from stablewalk.analysis.biomechanical.types import GaitQualityScore
 from stablewalk.analysis.biomech_stability import StabilityResult
 from stablewalk.analysis.foot_contact_analysis import FootContactAnalysisResult
 from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult
+from stablewalk.analysis.quality_layers import (
+    GAIT_QUALITY_FORMULA,
+    GAIT_QUALITY_KIND,
+    GAIT_QUALITY_LIMITATIONS,
+    GAIT_QUALITY_WEIGHTS,
+    gait_quality_confidence,
+    gait_quality_status,
+)
 
 
 def _clamp_score(x: float) -> float:
@@ -45,24 +53,16 @@ def compute_gait_quality_score(
     cycles: GaitCycleAnalysisResult | None = None,
     contact: FootContactAnalysisResult | None = None,
 ) -> GaitQualityScore:
-    """
-    Composite 0–100 gait quality score combining stability, symmetry,
-    cadence consistency, cycle consistency, joint motion, and contact reliability.
+    """Heuristic 0–100 session descriptor — not a validated gait-quality instrument.
 
-    Distinct from Overview "Gait Coordination", which averages a different
-    domain set (temporal/spatial symmetry, clearance, cycle consistency, contact).
+    Weighted mean of available pose-derived components (stability proxy,
+    symmetry, cadence/cycle consistency, contact score, joint smoothness).
+    Unreportable physical COM–BoS / force-plate terms stay omitted.
+    Distinct from Overview "Gait Coordination", which averages a different set.
     """
     del gait_metrics  # Reserved for future cadence-derived components.
     components: dict[str, float] = {}
-    weights: dict[str, float] = {
-        "stability": 0.22,
-        "stability_margin": 0.15,
-        "symmetry": 0.20,
-        "cadence_consistency": 0.12,
-        "cycle_consistency": 0.12,
-        "contact_reliability": 0.10,
-        "motion_quality": 0.09,
-    }
+    weights = dict(GAIT_QUALITY_WEIGHTS)
 
     if stability:
         move = _movement_stability_score(stability)
@@ -74,7 +74,11 @@ def compute_gait_quality_score(
         if smooth is not None:
             components["motion_quality"] = smooth
 
-    if stability_margin and stability_margin.stable_pct is not None:
+    if (
+        stability_margin
+        and stability_margin.stable_pct is not None
+        and getattr(stability_margin, "reportable", True)
+    ):
         components["stability_margin"] = float(stability_margin.stable_pct)
 
     sym_score = _norm_symmetry(symmetry) if symmetry else None
@@ -92,23 +96,35 @@ def compute_gait_quality_score(
 
     active = {k: v for k, v in components.items() if v is not None}
     if not active:
+        # Do not invent a numeric 0/100 — unavailable must stay unavailable.
         return GaitQualityScore(
-            score=0.0,
+            score=None,
             confidence=0.0,
             dominant_factors=["Insufficient data"],
-            explanation="Gait quality could not be scored — insufficient pose or cycle data.",
+            explanation=(
+                "Heuristic gait-quality descriptor could not be scored — "
+                "insufficient pose or cycle data."
+            ),
             components={},
+            available=False,
+            kind=GAIT_QUALITY_KIND,
+            status="unavailable",
+            formula=GAIT_QUALITY_FORMULA,
+            limitations=GAIT_QUALITY_LIMITATIONS,
         )
 
     total_w = sum(weights[k] for k in active)
     score = sum(active[k] * weights[k] for k in active) / total_w
 
-    conf_parts = [contact.metrics.contact_confidence if contact else 0.5]
-    if cycles:
-        conf_parts.append(cycles.metrics.contact_confidence)
-    if stability:
-        conf_parts.append(stability.completeness_pct / 100.0)
-    confidence = min(1.0, sum(conf_parts) / len(conf_parts))
+    conf_parts: list[float] = []
+    if contact is not None:
+        conf_parts.append(float(contact.metrics.contact_confidence))
+    if cycles is not None:
+        conf_parts.append(float(cycles.metrics.contact_confidence))
+    if stability is not None:
+        conf_parts.append(float(stability.completeness_pct) / 100.0)
+    confidence = gait_quality_confidence(n_active=len(active), input_confidences=conf_parts)
+    status = gait_quality_status(len(active))
 
     ranked = sorted(active.items(), key=lambda kv: kv[1])
     weak = [k for k, v in ranked if v < 55.0]
@@ -121,16 +137,24 @@ def compute_gait_quality_score(
         factors.extend(f"strong {k.replace('_', ' ')}" for k in strong[:2])
 
     explanation_parts = [
-        f"Composite Gait Quality {_clamp_score(score):.0f}/100 (derived)."
+        f"Heuristic gait-quality descriptor {_clamp_score(score):.0f}/100 "
+        f"({len(active)}/{len(weights)} components; {status}). "
+        "Not a validated gait-quality instrument."
     ]
     if weak:
         explanation_parts.append(
             "Primary limitations: " + ", ".join(weak[:3]).replace("_", " ") + "."
         )
-    if sym_score is not None and sym_score >= 85:
-        explanation_parts.append("Bilateral symmetry is within typical healthy range.")
-    elif sym_score is not None and sym_score < 65:
-        explanation_parts.append("Notable left–right asymmetry detected.")
+    if sym_score is not None and sym_score < 65:
+        explanation_parts.append(
+            "Overall symmetry is a weighted composite of available L/R ratios — "
+            "not a clinically validated symmetry diagnosis."
+        )
+    elif sym_score is not None:
+        explanation_parts.append(
+            f"Overall symmetry {sym_score:.0f}% is a weighted composite of "
+            "spatiotemporal and ROM ratios, not a clinical symmetry grade."
+        )
 
     return GaitQualityScore(
         score=_clamp_score(score),
@@ -138,6 +162,11 @@ def compute_gait_quality_score(
         dominant_factors=factors[:5] or ["balanced profile"],
         explanation=" ".join(explanation_parts),
         components=active,
+        available=True,
+        kind=GAIT_QUALITY_KIND,
+        status=status,
+        formula=GAIT_QUALITY_FORMULA,
+        limitations=GAIT_QUALITY_LIMITATIONS,
     )
 
 

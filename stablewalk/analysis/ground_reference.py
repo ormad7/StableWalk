@@ -30,10 +30,11 @@ from stablewalk.models.joint_registry import ROOT_JOINT_ID
 # Analysis vertical axis — all ground-distance math uses this component only.
 VERTICAL_AXIS: str = CANONICAL_VERTICAL_AXIS
 
-# Lowest foot landmarks used for bilateral clearance (minimum heel/toe vertical distance).
+# Lowest reliable foot landmarks used for bilateral clearance. Canonical data
+# normally maps foot_index to toe; both names are accepted for source recordings.
 FOOT_MEASUREMENT_JOINTS: dict[str, tuple[str, ...]] = {
-    "left": ("left_heel", "left_toe"),
-    "right": ("right_heel", "right_toe"),
+    "left": ("left_heel", "left_toe", "left_foot_index"),
+    "right": ("right_heel", "right_toe", "right_foot_index"),
 }
 
 # High-confidence landmarks for sequence-level floor estimation.
@@ -42,6 +43,8 @@ FLOOR_ESTIMATION_JOINTS: tuple[str, ...] = (
     "right_heel",
     "left_toe",
     "right_toe",
+    "left_foot_index",
+    "right_foot_index",
 )
 
 # Foot GUI items that receive ground-distance readouts.
@@ -59,8 +62,18 @@ FOOT_POINT_IDS: frozenset[str] = frozenset(
 )
 
 # Contact classification thresholds (estimated meters at body-normalized scale).
+# These are NOT clinical tape-measure metres. Pose 3D is scaled so body height
+# is ~1.0; displayed "m" are body-scale estimates. +Y is vertical; ground is
+# the horizontal plane Y = floor_y from low-percentile heel/toe heights.
 ON_GROUND_THRESHOLD_M: float = 0.030
 NEAR_GROUND_THRESHOLD_M: float = 0.100
+CLEARANCE_GATE_RATIONALE = (
+    "NEAR_GROUND_THRESHOLD_M = 0.100 is a confirmed-flight / In-Air gate at "
+    "estimated body-scale metres (canonical +Y, floor_y ground plane). "
+    "It does not classify stance. Binary contact-off below this gate is "
+    "Near Ground → Unknown, not swing and not stance. Do not lower the gate "
+    "to manufacture swing, and do not equate low clearance with stance."
+)
 
 # Walking swing clearance above ~35 cm at body scale is suspicious for monocular pose.
 SANITY_MAX_CLEARANCE_M: float = 0.35
@@ -829,10 +842,10 @@ def lowest_foot_landmark(
     side: str,
 ) -> tuple[Vec3 | None, str | None]:
     """
-    Return the lowest heel/toe landmark on ``side`` (``left`` / ``right``).
+    Return the lowest reliable heel/toe/foot-index landmark on ``side``.
 
-    Uses the minimum vertical coordinate among heel and toe only.
-    Ankle is not used for foot clearance. Ignores heel/toe above ankle.
+    Ankle is not used for foot clearance. Low-confidence landmarks and foot
+    points above the ankle are ignored.
     """
     joints = FOOT_MEASUREMENT_JOINTS.get(side, ())
     ankle_sample = snapshot.joints.get(f"{side}_ankle")
@@ -849,10 +862,12 @@ def lowest_foot_landmark(
         sample = snapshot.joints.get(joint_id)
         if sample is None:
             continue
+        if _landmark_visibility(snapshot, joint_id) < _MIN_FLOOR_ESTIMATION_VISIBILITY:
+            continue
         y = vertical_coordinate(sample.position, axis=axis)
         if (
             ankle_y is not None
-            and joint_id.endswith(("_heel", "_toe", "_foot"))
+            and joint_id.endswith(("_heel", "_toe", "_foot", "_foot_index"))
             and y > ankle_y + 0.015
         ):
             continue
@@ -885,14 +900,15 @@ def _phase_from_clearance(
     the near-ground threshold; otherwise hold the previous phase.
     """
     if clearance_m is None:
-        return prev_phase or "—"
+        return prev_phase or "unknown"
     if clearance_m < ON_GROUND_THRESHOLD_M:
         return "stance"
     if clearance_m >= NEAR_GROUND_THRESHOLD_M:
         return "swing"
     if prev_phase in ("stance", "swing"):
         return prev_phase
-    return "stance" if clearance_m < (ON_GROUND_THRESHOLD_M + NEAR_GROUND_THRESHOLD_M) / 2 else "swing"
+    # Near-ground band without a prior phase: Unknown — not stance, not swing.
+    return "unknown"
 
 
 def bilateral_foot_clearance(

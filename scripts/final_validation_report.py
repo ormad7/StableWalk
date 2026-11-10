@@ -369,12 +369,15 @@ def _run_gui_interaction(
     if not app.selection.selected or recording is None or recording.frame_count <= 0:
         failures.append(f"{key}: analysis recording unavailable after load")
 
-    # Gait comparison opens from sidebar button (dialog, not accordion)
-    cmp_btn = getattr(app, "btn_toggle_comparison", None)
-    if cmp_btn is None:
-        failures.append(f"{key}: Compare Gaits button missing")
-    elif not cmp_btn.winfo_ismapped():
-        failures.append(f"{key}: Compare Gaits button not visible")
+    # Gait comparison opens from sidebar button (dialog, not accordion).
+    from stablewalk.ui.tk.dashboard_notebook import ENABLE_COMPARE_TAB
+
+    if ENABLE_COMPARE_TAB:
+        cmp_btn = getattr(app, "btn_toggle_comparison", None)
+        if cmp_btn is None:
+            failures.append(f"{key}: Compare Gaits button missing")
+        elif not cmp_btn.winfo_ismapped():
+            failures.append(f"{key}: Compare Gaits button not visible")
 
     # OpenSim status refresh
     app._refresh_opensim_status()

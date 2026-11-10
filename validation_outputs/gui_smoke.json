@@ -1,0 +1,22 @@
+{
+  "attempted": true,
+  "available": true,
+  "construct_s": 7.17,
+  "geometry": "1382x757+26+26",
+  "mapped": true,
+  "resize": [
+    {
+      "requested": "1920x1080",
+      "geometry": "1540x825+20+20",
+      "notebook_w": 1508,
+      "notebook_h": 610
+    },
+    {
+      "requested": "1366x768",
+      "geometry": "1366x768+20+20",
+      "notebook_w": 1334,
+      "notebook_h": 553
+    }
+  ],
+  "ok": true
+}

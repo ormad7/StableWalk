@@ -6,7 +6,7 @@ hip-centered). Display centimeters use ``clearance_m * 100`` only when
 ``scale_mode == "body_normalized"``.
 
 Foot clearance definition:
-    foot_clearance_m = min(heel_clearance_m, toe_clearance_m)
+    foot_clearance_m = min(reliable heel, toe / foot-index clearance)
 where each landmark clearance is ``max(0, landmark_Y - floor_y)``.
 Ankle height is never used as foot clearance.
 """
@@ -81,6 +81,7 @@ class FootClearanceSwingStats:
     current_m: float | None
     current_valid: bool
     current_reject_reason: RejectReason
+    min_swing_m: float | None
     max_swing_m: float | None
     avg_swing_m: float | None
     median_swing_m: float | None
@@ -113,12 +114,37 @@ def _heel_toe_landmark_sample(
 ) -> FootLandmarkSample:
     axis = plane.vertical_axis
     heel_id = f"{side}_heel"
-    toe_id = f"{side}_toe"
     heel_sample = snapshot.joints.get(heel_id)
-    toe_sample = snapshot.joints.get(toe_id)
     ankle_sample = snapshot.joints.get(f"{side}_ankle")
     heel_vis = _landmark_visibility(snapshot, heel_id)
-    toe_vis = _landmark_visibility(snapshot, toe_id)
+
+    # Canonical recordings normally map MediaPipe foot_index to ``*_toe``.
+    # Keep the original heel/toe method, with an explicit foot-index fallback
+    # for recordings that retain the source landmark name.
+    toe_options: list[tuple[str, object, float]] = []
+    for candidate_id in (f"{side}_toe", f"{side}_foot_index"):
+        candidate = snapshot.joints.get(candidate_id)
+        if candidate is not None:
+            toe_options.append(
+                (
+                    candidate_id,
+                    candidate,
+                    _landmark_visibility(snapshot, candidate_id),
+                )
+            )
+    reliable_toes = [
+        option for option in toe_options if option[2] >= MIN_LANDMARK_VISIBILITY
+    ]
+    toe_pool = reliable_toes or toe_options
+    if toe_pool:
+        toe_id, toe_sample, toe_vis = min(
+            toe_pool,
+            key=lambda option: vertical_coordinate(option[1].position, axis=axis),
+        )
+    else:
+        toe_id = f"{side}_toe"
+        toe_sample = None
+        toe_vis = 0.0
 
     heel_y = (
         vertical_coordinate(heel_sample.position, axis=axis) if heel_sample else None
@@ -148,7 +174,11 @@ def _heel_toe_landmark_sample(
     toe_c = _single_clearance(toe_sample.position if toe_sample else None, toe_id)
 
     raw: float | None = None
-    candidates = [c for c in (heel_c, toe_c) if c is not None]
+    candidates = [
+        clearance
+        for clearance, visibility in ((heel_c, heel_vis), (toe_c, toe_vis))
+        if clearance is not None and visibility >= MIN_LANDMARK_VISIBILITY
+    ]
     if candidates:
         raw = min(candidates)
 
@@ -176,8 +206,8 @@ def _phase_from_clearance(
         return "swing"
     if prev_phase in ("stance", "swing"):
         return prev_phase
-    mid = (ON_GROUND_THRESHOLD_M + NEAR_GROUND_THRESHOLD_M) / 2
-    return "stance" if clearance_m < mid else "swing"
+    # Near-ground band without a prior phase: Unknown — not stance, not swing.
+    return "unknown"
 
 
 def _display_state(phase: str, *, valid: bool) -> str:
@@ -364,6 +394,7 @@ def build_filtered_foot_clearance_series(
         current_m=current_m,
         current_valid=current_valid,
         current_reject_reason=current_reason,
+        min_swing_m=min(swing_valid) if swing_valid else None,
         max_swing_m=max(swing_valid) if swing_valid else None,
         avg_swing_m=(sum(swing_valid) / len(swing_valid)) if swing_valid else None,
         median_swing_m=(

@@ -1,0 +1,39 @@
+{
+  "filename": "fast_walking_v2.mp4",
+  "installed_on": "2026-11-01",
+  "replaces": "missing Fast Walking example (Health&Gait FGS RGB is not in the public release; athletic_walking.mp4 was not used)",
+  "source": "Twente wearable-system validation RGB",
+  "source_url": "https://zenodo.org/records/6644593",
+  "doi": "10.5281/zenodo.6644593",
+  "license": "CC BY 4.0",
+  "citation": "Huawei Wang. (2022). RGB data [front and side views] of the wearable system validation study [Dataset]. Zenodo. https://doi.org/10.5281/zenodo.6644593",
+  "companion_paper": {
+    "title": "A wearable real-time kinetic measurement sensor setup for human locomotion",
+    "authors": ["Huawei Wang", "Akash Basu", "Guillaume Durandau", "Massimo Sartori"],
+    "journal": "Wearable Technologies",
+    "year": 2023,
+    "doi": "10.1017/wtc.2023.7",
+    "ethics": "University of Twente Natural Sciences and Engineering Sciences Ethics Committee 2021.57"
+  },
+  "starting_paper_checked_first": {
+    "pmc": "https://pmc.ncbi.nlm.nih.gov/articles/PMC11385067/",
+    "dataset": "Zenodo 10559504 (Kuopio slow/comfortable/fast walking)",
+    "blocker": "Public release is mocap/IMU/OpenPose JSON only; paper states no video data."
+  },
+  "trial_id": "Subj04/walk_54_side_anonymized.avi",
+  "subject": "Subj04",
+  "trial": "walk_54",
+  "camera": "fixed left-side (xxxx_side_anonymized.avi)",
+  "documented_speed_condition": "treadmill walking 5.4 km/h (walk_54); fastest walking speed before running at 6.3 km/h",
+  "not_labels": ["running", "Health&Gait FGS", "athletic_walking.mp4", "Kuopio RGB"],
+  "installed_probe": {
+    "fps": 33.0,
+    "frames": 2261,
+    "duration_s": 68.515,
+    "width": 1920,
+    "height": 1088
+  },
+  "sha256": "122779bb974ec17aa579af5b860797b34d800f4dcc32aa9c2cd138b75fd621d4",
+  "timing": "original 33.000 FPS; stream-copied AVI to MP4; not looped, slowed, sped up, or interpolated",
+  "download_method": "Partial extract of Videos_anonymized.rar from Zenodo 6644593, then ffmpeg -c copy remux to MP4"
+}

@@ -7,7 +7,7 @@ completed unless the stage actually ran.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,10 +16,22 @@ from stablewalk.analysis.biomechanical.orchestrator import BiomechanicalAnalysis
 from stablewalk.analysis.estimated_vgrf_analysis import EstimatedVGRFResult
 from stablewalk.analysis.foot_contact_analysis import FootContactAnalysisResult
 from stablewalk.analysis.gait_cycle_analysis import GaitCycleAnalysisResult
+from stablewalk.analysis.pipeline_validation import (
+    QUALITY_LABEL,
+    PipelineValidationReport,
+    assess_pipeline_validation,
+)
 from stablewalk.models.gait_motion import GaitMotionRecording
 from stablewalk.ui.scientific_labels import LABEL_VIRTUAL_GRF_PANEL
 
 PipelineStageState = Literal["completed", "partial", "unavailable"]
+ValidationQualityLabel = Literal[
+    "not_assessed",
+    "insufficient_data",
+    "poor",
+    "limited",
+    "acceptable",
+]
 
 STATUS_COMPLETED = "completed"
 STATUS_PARTIAL = "partial"
@@ -48,15 +60,24 @@ class PipelineStageItem:
     status: PipelineStageState
     detail: str
     tooltip: str
+    quality: ValidationQualityLabel = "not_assessed"
+    confidence: float | None = None
+    warnings: tuple[str, ...] = ()
+    validation_note: str = ""
 
     def display_line(self) -> str:
         return STATUS_LABEL[self.status]
+
+    def quality_label(self) -> str:
+        return QUALITY_LABEL.get(self.quality, self.quality)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             **asdict(self),
             "status_symbol": STATUS_SYMBOL[self.status],
             "status_label": STATUS_LABEL[self.status],
+            "quality_label": self.quality_label(),
+            "warnings": list(self.warnings),
         }
 
 
@@ -67,7 +88,8 @@ class PipelineStatusReport:
     source: str = ""
     run_name: str = ""
     groups: list[tuple[str, list[PipelineStageItem]]] = field(default_factory=list)
-    schema_version: str = "1.0"
+    validation: PipelineValidationReport | None = None
+    schema_version: str = "1.1"
 
     def all_items(self) -> list[PipelineStageItem]:
         out: list[PipelineStageItem] = []
@@ -93,6 +115,7 @@ class PipelineStatusReport:
                 }
                 for title, items in self.groups
             ],
+            "validation": None if self.validation is None else self.validation.to_dict(),
         }
 
 
@@ -218,8 +241,12 @@ def _combine_stage_details(items: list[PipelineStageItem], *, max_parts: int = 2
     return " · ".join(parts) if parts else "Not executed in this session"
 
 
-def _opensim_diagram_detail(items_by_key: dict[str, PipelineStageItem]) -> str:
-    """Short OpenSim card line — full checklist lives in the stage dialog."""
+def _opensim_diagram_detail(
+    items_by_key: dict[str, PipelineStageItem],
+    *,
+    status: str,
+) -> str:
+    """Short OpenSim card line — explain Partial / Missing clearly."""
     order = (
         "osim_model",
         "osim_trc",
@@ -228,6 +255,50 @@ def _opensim_diagram_detail(items_by_key: dict[str, PipelineStageItem]) -> str:
         "osim_mapping",
         "osim_coverage",
     )
+    incomplete = [
+        items_by_key[k]
+        for k in order
+        if k in items_by_key and items_by_key[k].status != STATUS_COMPLETED
+    ]
+    if status == STATUS_PARTIAL:
+        ik = items_by_key.get("osim_ik")
+        trc = items_by_key.get("osim_trc")
+        mot = items_by_key.get("osim_mot")
+        export_done = bool(
+            trc is not None
+            and mot is not None
+            and trc.status == STATUS_COMPLETED
+            and mot.status == STATUS_COMPLETED
+        )
+        if (
+            ik is not None
+            and ik.status != STATUS_COMPLETED
+            and export_done
+        ):
+            detail = str(ik.detail or "").strip().lower()
+            if str(ik.status) == "failed" or "fail" in detail:
+                ik_label = "Failed"
+            elif "running" in detail:
+                ik_label = "Running"
+            else:
+                ik_label = "unavailable"
+            extra_detail = str(ik.detail or "").strip()
+            label = f"Export Complete · IK {ik_label}"
+            if extra_detail and extra_detail.lower() not in label.lower():
+                return f"{label}. {extra_detail}"
+            return label
+        reasons = [it.detail for it in incomplete[:2] if it.detail]
+        if reasons:
+            return "Partial — " + " · ".join(reasons) + ". Use Export OpenSim Files to finish."
+        return (
+            "Partial — SDK/model or TRC/MOT export incomplete. "
+            "Use Export OpenSim Files (or load a .osim model) to complete."
+        )
+    if status == STATUS_UNAVAILABLE:
+        return (
+            "Missing — OpenSim was not configured for this session "
+            "(no SDK/model and no export artifacts)."
+        )
     parts: list[str] = []
     for key in order:
         item = items_by_key.get(key)
@@ -239,14 +310,32 @@ def _opensim_diagram_detail(items_by_key: dict[str, PipelineStageItem]) -> str:
             break
     if not parts:
         return "OpenSim not assessed"
-    extra = sum(
-        1
-        for key in order
-        if key in items_by_key and items_by_key[key].status != STATUS_UNAVAILABLE
-    ) - len(parts)
-    text = " · ".join(parts)
-    if extra > 0:
-        text = f"{text} · +{extra} more"
+    return " · ".join(parts)
+
+
+def _retargeting_diagram_detail(
+    items_by_key: dict[str, PipelineStageItem],
+    *,
+    status: str,
+) -> str:
+    """Explain why Retargeting is Missing / Partial."""
+    if status == STATUS_UNAVAILABLE:
+        return (
+            "Missing — Real-to-Sim retargeting has not been run. "
+            "No retargeted_motion.npz. Use Real-to-Sim Pipeline after analysis."
+        )
+    if status == STATUS_PARTIAL:
+        bits = []
+        for key in ("retarget_scale", "retarget_joints", "retarget_export"):
+            item = items_by_key.get(key)
+            if item is not None and item.status != STATUS_COMPLETED and item.detail:
+                bits.append(item.detail)
+        if bits:
+            return "Partial — " + " · ".join(bits[:2])
+        return "Partial — motion reference exists; retarget export still pending."
+    _, text = _aggregate_stage_status(
+        items_by_key, ("retarget_scale", "retarget_joints"), detail_max_parts=2
+    )
     return text
 
 
@@ -286,11 +375,13 @@ def build_pipeline_diagram(report: PipelineStatusReport) -> list[PipelineDiagram
     items_by_key = {item.key: item for item in report.all_items()}
     stages: list[PipelineDiagramStage] = []
     for key, label, item_keys, tooltip in PIPELINE_DIAGRAM_STAGE_SPECS:
+        status, detail = _aggregate_stage_status(
+            items_by_key, item_keys, detail_max_parts=6 if key == "opensim" else 2
+        )
         if key == "opensim":
-            status, _ = _aggregate_stage_status(items_by_key, item_keys, detail_max_parts=6)
-            detail = _opensim_diagram_detail(items_by_key)
-        else:
-            status, detail = _aggregate_stage_status(items_by_key, item_keys)
+            detail = _opensim_diagram_detail(items_by_key, status=status)
+        elif key == "retargeting":
+            detail = _retargeting_diagram_detail(items_by_key, status=status)
         stages.append(
             PipelineDiagramStage(
                 key=key,
@@ -329,6 +420,7 @@ class PipelineStatusContext:
     opensim_model_name: str | None = None
     opensim_ik_completed: bool = False
     opensim_ik_running: bool = False
+    opensim_ik_state: str | None = None
     opensim_ik_block_reason: str | None = None
     opensim_mapping_status: str | None = None
     opensim_mapping_percent: float | None = None
@@ -414,6 +506,35 @@ def _artifact_exists(run_name: str | None, filename: str) -> bool:
         return False
     path = config.MOTION_REFERENCE_EXPORT_DIR / run_name / filename
     return path.is_file()
+
+
+def _apply_stage_validation(
+    report: PipelineStatusReport,
+    ctx: PipelineStatusContext,
+) -> PipelineStatusReport:
+    """Attach per-stage quality/confidence/warnings from available artifacts only."""
+    validation = assess_pipeline_validation(ctx)
+    report.validation = validation
+    enriched: list[tuple[str, list[PipelineStageItem]]] = []
+    for title, items in report.groups:
+        new_items: list[PipelineStageItem] = []
+        for item in items:
+            sv = validation.stages.get(item.key)
+            if sv is None:
+                new_items.append(item)
+                continue
+            new_items.append(
+                replace(
+                    item,
+                    quality=sv.quality,  # type: ignore[arg-type]
+                    confidence=sv.confidence,
+                    warnings=sv.warnings,
+                    validation_note=sv.summary,
+                )
+            )
+        enriched.append((title, new_items))
+    report.groups = enriched
+    return report
 
 
 def assess_pipeline_status(ctx: PipelineStatusContext) -> PipelineStatusReport:
@@ -775,30 +896,17 @@ def assess_pipeline_status(ctx: PipelineStatusContext) -> PipelineStatusReport:
         )
     )
 
-    if ctx.opensim_ik_completed and files_dict.get("IK_MOT"):
-        ik_status: PipelineStageState = STATUS_COMPLETED
-        ik_detail = "IK completed"
-    elif ctx.opensim_ik_running:
-        ik_status = STATUS_PARTIAL
-        ik_detail = "IK running…"
-    elif ctx.opensim_ik_block_reason:
-        ik_status = STATUS_PARTIAL if ctx.opensim_sdk_available else STATUS_UNAVAILABLE
-        ik_detail = ctx.opensim_ik_block_reason
-    elif files_dict.get("MAPPED") and ctx.opensim_sdk_available:
-        ik_status = STATUS_PARTIAL
-        ik_detail = "Mapped TRC ready; IK not completed"
-    else:
-        ik_status = STATUS_UNAVAILABLE
-        ik_detail = "IK not executed"
+    from stablewalk.opensim_ik_status import resolve_opensim_ik_status_from_context
 
+    ik = resolve_opensim_ik_status_from_context(ctx)
     osim_items.append(
         _item(
             "osim_ik",
             "Inverse Kinematics",
             "OpenSim",
-            ik_status,
-            ik_detail,
-            "Experimental IK from mapped markers — not clinical mocap grade.",
+            ik.pipeline_status,
+            ik.detail,
+            ik.tooltip,
         )
     )
 
@@ -1024,11 +1132,12 @@ def assess_pipeline_status(ctx: PipelineStatusContext) -> PipelineStatusReport:
     )
     groups.append(("Isaac Lab", isaac_items))
 
-    return PipelineStatusReport(
+    report = PipelineStatusReport(
         source=ctx.source,
         run_name=run_name,
         groups=groups,
     )
+    return _apply_stage_validation(report, ctx)
 
 
 __all__ = [
@@ -1043,6 +1152,7 @@ __all__ = [
     "STATUS_UNAVAILABLE",
     "STATUS_LABEL",
     "STATUS_SYMBOL",
+    "QUALITY_LABEL",
     "assess_pipeline_status",
     "build_pipeline_diagram",
 ]

@@ -46,11 +46,11 @@ from stablewalk.pose.enrichment import enrich_pose_sequence
 from stablewalk.ui.viewers.knee_angle_chart import build_knee_angle_series
 
 # Ground-truth labels for report grouping only — not pipeline inputs.
-# Internal key ``athletic`` = UI label "Performance" (Health&Gait FGS).
+# Internal key ``athletic`` = UI label "Fast Walking" (Twente walk_54).
 COMPARISON_VIDEOS: tuple[tuple[str, str], ...] = (
-    ("abnormal", "abnormal_gait"),
-    ("normal", "normal_gait"),
-    ("athletic", "athletic_walking"),  # Performance demo
+    ("abnormal", "abnormal_gait_v2"),
+    ("normal", "normal_gait_v2"),
+    ("athletic", "fast_walking_v2"),
 )
 
 FOOT_LANDMARKS = (

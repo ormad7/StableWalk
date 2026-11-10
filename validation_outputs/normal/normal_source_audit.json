@@ -1,0 +1,515 @@
+{
+  "key": "normal",
+  "display_name": "Normal Gait",
+  "filename": "normal_gait_v2.mp4",
+  "pose_json": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\data\\output\\poses\\run_90d21a9367838db7_1793711300741_poses.json",
+  "source_video": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\data\\demo_videos\\normal_gait_v2.mp4",
+  "source_probe": {
+    "opened": 1,
+    "fps": 29.97002997002997,
+    "frame_count": 300,
+    "duration_s": 10.01,
+    "width": 360,
+    "height": 640
+  },
+  "decode_s": 0.28,
+  "analysis_s": 3.31,
+  "clip": {
+    "source_frames_decoded": 300,
+    "source_duration_s": 10.01,
+    "source_fps": 29.97002997002997,
+    "n_pose_frames": 300,
+    "playback_slots": 300,
+    "recording_frames": 300,
+    "detected_only": false,
+    "analyzed_duration_s": 9.976633333333334,
+    "analyzed_span_s": 9.976633333333334,
+    "cumulative_valid_duration_s": 6.339666666666666,
+    "coverage": 0.6354515050167223,
+    "longest_valid_segment_s": 3.7704333333333335,
+    "n_valid_runs": 11,
+    "interval_counting_convention": "Durations use original source timestamps, not 1/fps. A contiguous run of n valid frames contributes t[n-1] \u2212 t[0] (n\u22121 adjacent intervals). An isolated valid frame contributes 0 s. Analyzed span is last_analyzed_timestamp \u2212 first_analyzed_timestamp and includes internal gaps. Cumulative valid duration is the sum of those run lengths. Coverage = cumulative_valid_duration / analyzed_span. Longest valid segment is the maximum run length.",
+    "usable_duration_s": 6.339666666666666,
+    "ids_match_recording": true
+  },
+  "dropped_or_excluded": {
+    "pose_id_holes_in_dump": [],
+    "n_pose_id_holes": 0,
+    "n_source_not_in_dump": 0,
+    "first_excluded_source_frame": null,
+    "excluded_reason": "",
+    "status_counts": {
+      "pose_ok": 201,
+      "filter_skip": 28,
+      "subject_lock_skip": 71,
+      "detection_failed": 0,
+      "undetected_unclassified": 0
+    }
+  },
+  "cycles": {
+    "n_cycles": 0,
+    "n_left": 0,
+    "n_right": 0,
+    "n_candidates": 5,
+    "n_accepted": 0,
+    "n_accepted_left": 0,
+    "n_accepted_right": 0,
+    "rejection_counts": {
+      "no_known_swing": 2,
+      "unsupported_pose_gap": 2,
+      "duration_below_min": 1
+    },
+    "candidate_reasons": [
+      {
+        "side": "left",
+        "start_frame": 80,
+        "end_frame": 94,
+        "duration_s": 0.4671333333333334,
+        "known_contact_coverage": 0.5,
+        "n_known_stance": 7,
+        "n_known_swing": 0,
+        "valid_pose_coverage": 1.0,
+        "longest_internal_gap_s": 0.0,
+        "accepted": false,
+        "acceptance_reason": "no_known_swing \u2014 off bits were near-ground Unknown, not confirmed flight"
+      },
+      {
+        "side": "left",
+        "start_frame": 94,
+        "end_frame": 125,
+        "duration_s": 1.0343666666666667,
+        "known_contact_coverage": 0.3870967741935484,
+        "n_known_stance": 3,
+        "n_known_swing": 9,
+        "valid_pose_coverage": 0.7096774193548383,
+        "longest_internal_gap_s": 0.23356666666666692,
+        "accepted": false,
+        "acceptance_reason": "unsupported_pose_gap (longest internal gap 0.234 s; valid-pose coverage 71.0%; gaps are not interpolated)"
+      },
+      {
+        "side": "left",
+        "start_frame": 125,
+        "end_frame": 184,
+        "duration_s": 1.968633333333333,
+        "known_contact_coverage": 0.6440677966101694,
+        "n_known_stance": 37,
+        "n_known_swing": 1,
+        "valid_pose_coverage": 0.5084745762711862,
+        "longest_internal_gap_s": 0.23356666666666737,
+        "accepted": false,
+        "acceptance_reason": "unsupported_pose_gap (longest internal gap 0.234 s; valid-pose coverage 50.8%; gaps are not interpolated)"
+      },
+      {
+        "side": "left",
+        "start_frame": 184,
+        "end_frame": 193,
+        "duration_s": 0.3003,
+        "known_contact_coverage": 0.5555555555555556,
+        "n_known_stance": 5,
+        "n_known_swing": 0,
+        "valid_pose_coverage": 1.0,
+        "longest_internal_gap_s": 0.0,
+        "accepted": false,
+        "acceptance_reason": "duration_below_min (0.300 s < 0.35 s)"
+      },
+      {
+        "side": "left",
+        "start_frame": 193,
+        "end_frame": 224,
+        "duration_s": 1.034366666666667,
+        "known_contact_coverage": 0.0967741935483871,
+        "n_known_stance": 3,
+        "n_known_swing": 0,
+        "valid_pose_coverage": 1.0,
+        "longest_internal_gap_s": 0.0,
+        "accepted": false,
+        "acceptance_reason": "no_known_swing \u2014 off bits were near-ground Unknown, not confirmed flight"
+      }
+    ]
+  },
+  "contact_coverage": {
+    "n_rows": 600,
+    "by_side": {
+      "left": {
+        "n_frames": 300,
+        "n_known": 33,
+        "n_unknown": 267,
+        "known_pct": 11.0,
+        "unknown_reasons": {
+          "not_confirmed_flight": 168,
+          "low_foot_visibility": 99
+        }
+      },
+      "right": {
+        "n_frames": 300,
+        "n_known": 75,
+        "n_unknown": 225,
+        "known_pct": 25.0,
+        "unknown_reasons": {
+          "not_confirmed_flight": 126,
+          "low_foot_visibility": 99
+        }
+      }
+    },
+    "note": "Unknown is a missing observation. Unequal L/R coverage is not a gait-laterality finding.",
+    "reason_labels": {
+      "low_foot_visibility": "Foot landmark visibility below 0.35 \u2014 not confirmed contact and not confirmed swing.",
+      "missing_kinematic_probability": "No heel/toe/velocity contact probability \u2014 unknown, not non-contact.",
+      "missing_foot_clearance": "Foot clearance was not measured, so an off bit is not confirmed flight.",
+      "not_confirmed_flight": "Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing."
+    }
+  },
+  "validity": {
+    "pose_coverage": {
+      "layer": "pose_coverage",
+      "status": "limited",
+      "explanation": "Pose detected on 201/300 frames (67% coverage). Gaps reduce usable duration. Detected landmarks and visibility scores are not a claim of accurate tracking.",
+      "label": "limited \u2014 Pose detected on 201/300 frames (67% coverage). Gaps reduce usable duration. Detected landmarks and visibility scores are not a claim of accurate tracking.",
+      "coverage_pct": 67.0,
+      "mean_visibility": null,
+      "usable_duration_s": 10.01,
+      "gap_fraction": null,
+      "n_frames": 300,
+      "n_detected": 201,
+      "n_cycles": 0,
+      "formula": "coverage = detected_frames / n_frames  (presence only)",
+      "note": "Detected landmarks and visibility scores are not a claim of accurate tracking.",
+      "extras": {}
+    },
+    "contact_left": {
+      "layer": "contact_coverage",
+      "status": "insufficient",
+      "explanation": "Left contact known on only 33/300 frames (11% coverage). Dominant Unknown reason: not_confirmed_flight (168 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing.. Unequal missing-data coverage is not a gait-laterality finding.",
+      "label": "insufficient \u2014 Left contact known on only 33/300 frames (11% coverage). Dominant Unknown reason: not_confirmed_flight (168 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing.. Unequal missing-data coverage is not a gait-laterality finding.",
+      "coverage_pct": 11.0,
+      "mean_visibility": null,
+      "usable_duration_s": null,
+      "gap_fraction": null,
+      "n_frames": 300,
+      "n_detected": 33,
+      "n_cycles": 0,
+      "formula": "known_frames / n_frames  (Unknown \u2260 non-contact)",
+      "note": "Unequal missing-data coverage is not a gait-laterality finding.",
+      "extras": {
+        "side": "Left",
+        "n_unknown": 267,
+        "n_contact_on": 20,
+        "n_confirmed_swing": 13,
+        "dominant_unknown_reason": "not_confirmed_flight (168 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing."
+      }
+    },
+    "contact_right": {
+      "layer": "contact_coverage",
+      "status": "insufficient",
+      "explanation": "Right contact known on only 75/300 frames (25% coverage). Dominant Unknown reason: not_confirmed_flight (126 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing.. Unequal missing-data coverage is not a gait-laterality finding.",
+      "label": "insufficient \u2014 Right contact known on only 75/300 frames (25% coverage). Dominant Unknown reason: not_confirmed_flight (126 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing.. Unequal missing-data coverage is not a gait-laterality finding.",
+      "coverage_pct": 25.0,
+      "mean_visibility": null,
+      "usable_duration_s": null,
+      "gap_fraction": null,
+      "n_frames": 300,
+      "n_detected": 75,
+      "n_cycles": 0,
+      "formula": "known_frames / n_frames  (Unknown \u2260 non-contact)",
+      "note": "Unequal missing-data coverage is not a gait-laterality finding.",
+      "extras": {
+        "side": "Right",
+        "n_unknown": 225,
+        "n_contact_on": 0,
+        "n_confirmed_swing": 75,
+        "dominant_unknown_reason": "not_confirmed_flight (126 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing."
+      }
+    },
+    "contact_coverage": {
+      "layer": "contact_coverage",
+      "status": "insufficient",
+      "explanation": "L 11% known \u00b7 R 25% known. Unequal missing-data coverage is not a gait-laterality finding.",
+      "label": "insufficient \u2014 L 11% known \u00b7 R 25% known. Unequal missing-data coverage is not a gait-laterality finding.",
+      "coverage_pct": 18.0,
+      "mean_visibility": null,
+      "usable_duration_s": null,
+      "gap_fraction": null,
+      "n_frames": 300,
+      "n_detected": 0,
+      "n_cycles": 0,
+      "formula": "per-foot known_frames / n_frames; not a laterality index",
+      "note": "Unequal missing-data coverage is not a gait-laterality finding.",
+      "extras": {
+        "left_pct": 11.0,
+        "right_pct": 25.0,
+        "unequal": false,
+        "left": {
+          "layer": "contact_coverage",
+          "status": "insufficient",
+          "explanation": "Left contact known on only 33/300 frames (11% coverage). Dominant Unknown reason: not_confirmed_flight (168 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing.. Unequal missing-data coverage is not a gait-laterality finding.",
+          "label": "insufficient \u2014 Left contact known on only 33/300 frames (11% coverage). Dominant Unknown reason: not_confirmed_flight (168 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing.. Unequal missing-data coverage is not a gait-laterality finding.",
+          "coverage_pct": 11.0,
+          "mean_visibility": null,
+          "usable_duration_s": null,
+          "gap_fraction": null,
+          "n_frames": 300,
+          "n_detected": 33,
+          "n_cycles": 0,
+          "formula": "known_frames / n_frames  (Unknown \u2260 non-contact)",
+          "note": "Unequal missing-data coverage is not a gait-laterality finding.",
+          "extras": {
+            "side": "Left",
+            "n_unknown": 267,
+            "n_contact_on": 20,
+            "n_confirmed_swing": 13,
+            "dominant_unknown_reason": "not_confirmed_flight (168 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing."
+          }
+        },
+        "right": {
+          "layer": "contact_coverage",
+          "status": "insufficient",
+          "explanation": "Right contact known on only 75/300 frames (25% coverage). Dominant Unknown reason: not_confirmed_flight (126 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing.. Unequal missing-data coverage is not a gait-laterality finding.",
+          "label": "insufficient \u2014 Right contact known on only 75/300 frames (25% coverage). Dominant Unknown reason: not_confirmed_flight (126 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing.. Unequal missing-data coverage is not a gait-laterality finding.",
+          "coverage_pct": 25.0,
+          "mean_visibility": null,
+          "usable_duration_s": null,
+          "gap_fraction": null,
+          "n_frames": 300,
+          "n_detected": 75,
+          "n_cycles": 0,
+          "formula": "known_frames / n_frames  (Unknown \u2260 non-contact)",
+          "note": "Unequal missing-data coverage is not a gait-laterality finding.",
+          "extras": {
+            "side": "Right",
+            "n_unknown": 225,
+            "n_contact_on": 0,
+            "n_confirmed_swing": 75,
+            "dominant_unknown_reason": "not_confirmed_flight (126 frames) \u2014 Foot is off the contact bit but clearance is below the 0.100 m flight gate \u2014 near-ground unknown, not confirmed swing."
+          }
+        }
+      }
+    },
+    "spectral": {
+      "layer": "spectral",
+      "status": "insufficient",
+      "explanation": "Spectral reliability from duration 9.98 s, gap fraction 33%. This is not pose coverage or video quality \u2014 ACF reliability is insufficient (score 0.10).",
+      "label": "insufficient \u2014 Spectral reliability from duration 9.98 s, gap fraction 33%. This is not pose coverage or video quality \u2014 ACF reliability is insufficient (score 0.10).",
+      "coverage_pct": null,
+      "mean_visibility": null,
+      "usable_duration_s": 9.976633333333334,
+      "gap_fraction": 0.33,
+      "n_frames": 0,
+      "n_detected": 0,
+      "n_cycles": 0,
+      "formula": "0.35\u00b7clip(\u03c1_stride,0,1) + 0.25\u00b7clip(prominence,0,1) + 0.25\u00b7min(n_cycles/6,1) + 0.15\u00b7(1\u2212gap_fraction)",
+      "note": "",
+      "extras": {
+        "peak_value": null,
+        "reliability_label": "insufficient",
+        "reliability": 0.10049999999999999
+      }
+    },
+    "biomechanical": {
+      "layer": "biomechanical",
+      "status": "unavailable",
+      "explanation": "Monocular COM\u2013BoS is experimental: floor projection uses heuristic depth (Z), not a measured support polygon. The stable-frame percentage is a 2-D geometric proxy \u2014 not Hof margin of stability and not evidence from a pelvis-vertical COM graph. XCoM requires reliable horizontal COM velocity and pendulum length; those are not available from this video, so XCoM is diagnostic only.",
+      "label": "unavailable \u2014 Monocular COM\u2013BoS is experimental: floor projection uses heuristic depth (Z), not a measured support polygon. The stable-frame percentage is a 2-D geometric proxy \u2014 not Hof margin of stability and not evidence from a pelvis-vertical COM graph. XCoM requires reliable horizontal COM velocity and pendulum length; those are not available from this video, so XCoM is diagnostic only.",
+      "coverage_pct": null,
+      "mean_visibility": null,
+      "usable_duration_s": null,
+      "gap_fraction": null,
+      "n_frames": 0,
+      "n_detected": 0,
+      "n_cycles": 0,
+      "formula": "Physical validity requires calibrated metric and/or measured GRF",
+      "note": "",
+      "extras": {
+        "calibrated_metric": false,
+        "force_plates": false,
+        "stability_reportable": false,
+        "opensim_id": false
+      }
+    },
+    "cycle_detection": {
+      "layer": "cycle_detection",
+      "status": "insufficient",
+      "explanation": "Only 0 left / 0 right complete same-side heel-strike cycle(s); at least 2 ipsilateral cycles on one side are required for cadence.",
+      "label": "insufficient \u2014 Only 0 left / 0 right complete same-side heel-strike cycle(s); at least 2 ipsilateral cycles on one side are required for cadence.",
+      "coverage_pct": null,
+      "mean_visibility": null,
+      "usable_duration_s": 9.976633333333334,
+      "gap_fraction": null,
+      "n_frames": 0,
+      "n_detected": 0,
+      "n_cycles": 0,
+      "formula": "Complete ipsilateral heel-strike to heel-strike intervals only",
+      "note": "",
+      "extras": {
+        "n_left": 0,
+        "n_right": 0,
+        "contact_confidence": 0.926663097948615
+      }
+    },
+    "limitations": [
+      "Pose detected on 201/300 frames (67% coverage). Gaps reduce usable duration. Detected landmarks and visibility scores are not a claim of accurate tracking.",
+      "L 11% known \u00b7 R 25% known. Unequal missing-data coverage is not a gait-laterality finding.",
+      "Event-based cycles: 0 left / 0 right. Unilateral cycle counts are not a laterality score.",
+      "Spectral reliability from duration 9.98 s, gap fraction 33%. This is not pose coverage or video quality \u2014 ACF reliability is insufficient (score 0.10).",
+      "Monocular COM\u2013BoS is experimental: floor projection uses heuristic depth (Z), not a measured support polygon. The stable-frame percentage is a 2-D geometric proxy \u2014 not Hof margin of stability and not evidence from a pelvis-vertical COM graph. XCoM requires reliable horizontal COM velocity and pendulum length; those are not available from this video, so XCoM is diagnostic only.",
+      "Unequal missing-data coverage is not a gait-laterality finding."
+    ],
+    "headline": [
+      "Pose coverage: limited \u2014 Pose detected on 201/300 frames (67% coverage). Gaps reduce usable duration. Detected landmarks and visibility scores are not a claim of accurate tracking.",
+      "Contact coverage: insufficient \u2014 L 11% known \u00b7 R 25% known. Unequal missing-data coverage is not a gait-laterality finding.",
+      "Spectral reliability: insufficient \u2014 Spectral reliability from duration 9.98 s, gap fraction 33%. This is not pose coverage or video quality \u2014 ACF reliability is insufficient (score 0.10).",
+      "Biomechanical validity: unavailable \u2014 Monocular COM\u2013BoS is experimental: floor projection uses heuristic depth (Z), not a measured support polygon. The stable-frame percentage is a 2-D geometric proxy \u2014 not Hof margin of stability and not evidence from a pelvis-vertical COM graph. XCoM requires reliable horizontal COM velocity and pendulum length; those are not available from this video, so XCoM is diagnostic only."
+    ]
+  },
+  "headline": [
+    "Pose coverage: limited \u2014 Pose detected on 201/300 frames (67% coverage). Gaps reduce usable duration. Detected landmarks and visibility scores are not a claim of accurate tracking.",
+    "Contact coverage: insufficient \u2014 L 11% known \u00b7 R 25% known. Unequal missing-data coverage is not a gait-laterality finding.",
+    "Spectral reliability: insufficient \u2014 Spectral reliability from duration 9.98 s, gap fraction 33%. This is not pose coverage or video quality \u2014 ACF reliability is insufficient (score 0.10).",
+    "Biomechanical validity: unavailable \u2014 Monocular COM\u2013BoS is experimental: floor projection uses heuristic depth (Z), not a measured support polygon. The stable-frame percentage is a 2-D geometric proxy \u2014 not Hof margin of stability and not evidence from a pelvis-vertical COM graph. XCoM requires reliable horizontal COM velocity and pendulum length; those are not available from this video, so XCoM is diagnostic only."
+  ],
+  "laterality_withhold": "Withheld: contact coverage is insufficient (L 11% / R 25% known). A symmetry percentage is not validated from these inputs.",
+  "gait_quality_withhold": "Withheld: contact coverage is insufficient (L 11% / R 25% known). The gait-quality heuristic is not validated from these inputs.",
+  "summary": {
+    "gait_quality": {
+      "label": "Gait Quality (heuristic descriptor)",
+      "value": "Not available",
+      "tier": "derived",
+      "available": false,
+      "reason": "Withheld: contact coverage is insufficient (L 11% / R 25% known). The gait-quality heuristic is not validated from these inputs."
+    },
+    "walking_speed": {
+      "label": "Walking Speed (estimated)",
+      "value": "0.55 m/s (estimated)",
+      "tier": "estimated",
+      "available": true,
+      "reason": "Global pelvis progression scaled to 1.70 m stature (estimated m/s)"
+    },
+    "symmetry": {
+      "label": "Symmetry (derived)",
+      "value": "Not available",
+      "tier": "derived",
+      "available": false,
+      "reason": "Withheld: contact coverage is insufficient (L 11% / R 25% known). A symmetry percentage is not validated from these inputs."
+    },
+    "contact_left": {
+      "label": "Left contact coverage",
+      "value": "11% known \u00b7 insufficient",
+      "tier": "derived",
+      "available": true,
+      "reason": "Left foot: 11% of analyzed frames have a known contact state. Missing contact is not gait asymmetry."
+    },
+    "contact_right": {
+      "label": "Right contact coverage",
+      "value": "25% known \u00b7 insufficient",
+      "tier": "derived",
+      "available": true,
+      "reason": "Right foot: 25% of analyzed frames have a known contact state. Missing contact is not gait asymmetry."
+    },
+    "cycle_evidence": {
+      "label": "Cycle evidence",
+      "value": "0 L / 0 R cycle(s)",
+      "tier": "derived",
+      "available": true,
+      "reason": "Only 0 left / 0 right complete same-side heel-strike cycle(s); at least 2 ipsilateral cycles on one side are required for cadence."
+    }
+  },
+  "walking_speed": {
+    "raw_value": 0.549,
+    "confidence": 0.92,
+    "kind": "estimated",
+    "note": "Global pelvis progression scaled to 1.70 m stature (estimated m/s)",
+    "reportable": true,
+    "measured": false,
+    "estimated": true,
+    "fallback": false
+  },
+  "phase_annotation": "Estimated speed 0.55 m/s (estimated) | Stance  3%\nSwing   15%\nUnknown 82%",
+  "phase_annotation_hides_withheld_quality": true,
+  "cursor": {
+    "playback_labels": [
+      {
+        "list_index": 0,
+        "source_frame": 0,
+        "display_frame": 1,
+        "cursor_frame": 1,
+        "time_s": 0.0,
+        "ok": true
+      },
+      {
+        "list_index": 29,
+        "source_frame": 29,
+        "display_frame": 30,
+        "cursor_frame": 30,
+        "time_s": 0.9676333333333333,
+        "ok": true
+      },
+      {
+        "list_index": 59,
+        "source_frame": 59,
+        "display_frame": 60,
+        "cursor_frame": 60,
+        "time_s": 1.9686333333333335,
+        "ok": true
+      },
+      {
+        "list_index": 89,
+        "source_frame": 89,
+        "display_frame": 90,
+        "cursor_frame": 90,
+        "time_s": 2.9696333333333333,
+        "ok": true
+      },
+      {
+        "list_index": 299,
+        "source_frame": 299,
+        "display_frame": 300,
+        "cursor_frame": 300,
+        "time_s": 9.976633333333334,
+        "ok": true
+      }
+    ],
+    "labels_ok": true,
+    "hover_vs_playhead": {
+      "inspect_chip": "Inspect \u00b7 1.97s",
+      "playhead_label": "1.97s \u00b7 F60",
+      "inspect_is_not_playhead": true,
+      "ok": true
+    },
+    "pause_step_seek": [
+      {
+        "action": "pause",
+        "time_s": 0.0,
+        "expected_y": 0.07835775770043774,
+        "marker_visible": true,
+        "ok": true
+      },
+      {
+        "action": "step",
+        "time_s": 0.03336666666666667,
+        "expected_y": 0.0770177810615236,
+        "marker_visible": true,
+        "ok": true
+      },
+      {
+        "action": "seek",
+        "time_s": 9.976633333333334,
+        "expected_y": 0.0,
+        "marker_visible": true,
+        "ok": true
+      }
+    ],
+    "pause_step_ok": true
+  },
+  "exports": {
+    "frame_audit_csv": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\frame_audit.csv",
+    "analysis_json": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\normal_analysis.json",
+    "analysis_csv": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\normal_analysis.csv",
+    "contact_evidence_csv": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\normal_contact_evidence.csv",
+    "contact_evidence_json": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\normal_contact_evidence.json",
+    "cycle_candidates_csv": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\normal_cycle_candidates.csv",
+    "cycle_candidates_json": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\normal_cycle_candidates.json",
+    "validity_json": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\normal_validity.json",
+    "audit_json": "C:\\Users\\ormad\\Downloads\\Stable__Walk\\StableWalk\\validation_outputs\\normal\\normal_source_audit.json"
+  },
+  "cache_used": true,
+  "cache_note": "Reused 2026-11-03 13:07 UTC full-analysis pose dumps; no MediaPipe rerun."
+}

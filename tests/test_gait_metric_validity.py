@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from stablewalk.analysis.biomechanical.base_of_support import BaseOfSupportAnalysis
 from stablewalk.analysis.biomechanical.advanced_gait_metrics import analyze_advanced_gait_metrics
 from stablewalk.analysis.biomechanical.com_estimation import CenterOfMassAnalysis
-from stablewalk.analysis.biomechanical.joint_rom import _cycle_angle_values, _rom_stats
+from stablewalk.analysis.biomechanical.joint_rom import (
+    _cycle_angle_values,
+    _robust_span,
+    _rom_stats,
+)
 from stablewalk.analysis.biomechanical.stability_margin import analyze_stability_margin
 from stablewalk.analysis.biomechanical.types import BiomechanicalFrameBoS, BiomechanicalFrameCOM
 from stablewalk.analysis.gait_cycle_analysis import (
@@ -17,6 +23,7 @@ from stablewalk.analysis.gait_cycle_analysis import (
     GaitTemporalMetrics,
     compute_temporal_metrics,
     detect_gait_cycles,
+    summary_cadence_spm,
 )
 from stablewalk.analysis.gait_feature_analysis import symmetry_index
 from stablewalk.io.session_pdf_report import (
@@ -73,7 +80,12 @@ def _two_cycle_case(*, abnormal: bool = False):
 
 def test_normal_video_temporal_percentages_partition_complete_cycles() -> None:
     metrics, cycles = _two_cycle_case()
-    assert len(cycles) == 2
+    n_left = sum(1 for c in cycles if c.boundary_side == "left")
+    n_right = sum(1 for c in cycles if c.boundary_side == "right")
+    assert n_left == 2
+    assert n_right == 1
+    assert len(cycles) == 3
+    assert metrics.gait_cycle_count == 3
     assert metrics.metrics_reliable
     assert metrics.left_stance_pct + metrics.left_swing_pct == pytest.approx(100.0)
     assert metrics.right_stance_pct + metrics.right_swing_pct == pytest.approx(100.0)
@@ -145,6 +157,7 @@ def test_low_confidence_cycles_are_not_final_metrics() -> None:
     assert metrics.metrics_reliable
     assert not low.metrics_reliable
     assert low.double_support_pct is None
+    assert summary_cadence_spm(low, SimpleNamespace(cycles=cycles)) is None
 
 
 def test_rom_uses_complete_cycles_and_excludes_outside_extreme() -> None:
@@ -158,7 +171,9 @@ def test_rom_uses_complete_cycles_and_excludes_outside_extreme() -> None:
     angles = [float(i % 10) for i in range(20)] + [170.0]
     grouped = _cycle_angle_values(angles, cycles, list(range(21)))
     stats = _rom_stats(grouped, joint="knee", side="left", confidence=0.8)
-    assert stats.rom_deg == pytest.approx(9.0)
+    _, _, expected_rom = _robust_span([float(i) for i in range(10)])
+    assert stats.rom_deg == pytest.approx(expected_rom)
+    assert 170.0 not in [v for cycle in grouped for v in cycle]
 
 
 def test_negative_symmetry_input_is_invalid_not_absolute() -> None:

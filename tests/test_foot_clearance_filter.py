@@ -97,6 +97,28 @@ class FootClearanceFilterTests(unittest.TestCase):
         sample = series.samples[0]
         self.assertAlmostEqual(sample.raw_clearance_m or 0.0, 0.05, places=3)
 
+    def test_min_swing_from_valid_samples_only(self) -> None:
+        plane = GroundReferencePlane(floor_y=0.0, scale_mode="body_normalized")
+        snapshots = [
+            _stance_snap(0, 0.00),
+            _stance_snap(1, 0.06),
+            _stance_snap(2, 0.11),
+            _stance_snap(3, 0.04),
+        ]
+        series = build_filtered_foot_clearance_series(
+            GaitMotionRecording(source="t", fps=30.0, snapshots=snapshots),
+            plane,
+            "left",
+        )
+        stats = series.swing_stats
+        assert stats is not None
+        self.assertIsNotNone(stats.min_swing_m)
+        self.assertIsNotNone(stats.max_swing_m)
+        assert stats.min_swing_m is not None and stats.max_swing_m is not None
+        self.assertLessEqual(stats.min_swing_m, stats.max_swing_m)
+        self.assertAlmostEqual(stats.min_swing_m, 0.04, places=3)
+        self.assertAlmostEqual(stats.max_swing_m, 0.11, places=3)
+
     def test_plausible_max_constant(self) -> None:
         self.assertEqual(MAX_PLAUSIBLE_CLEARANCE_M, 0.25)
 

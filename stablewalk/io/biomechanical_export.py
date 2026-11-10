@@ -126,16 +126,23 @@ def export_video_quality_json(result: BiomechanicalAnalysisResult, path: Path) -
 def export_biomechanical_report_json(result: BiomechanicalAnalysisResult, path: Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    from stablewalk.metrics.session_view import build_session_metric_snapshots
+
+    metric_view = build_session_metric_snapshots(biomechanical=result)
+    gq = result.gait_quality
+    gq_available = (
+        gq is not None and getattr(gq, "available", True) and gq.score is not None
+    )
     report: dict[str, Any] = {
         "schema_version": BIOMECH_SCHEMA_VERSION,
         "terminology": export_terminology_block(),
         "summary": result.to_dict(),
-        "gait_quality": None if result.gait_quality is None else result.gait_quality.to_dict(),
+        "gait_quality": None if gq is None else gq.to_dict(),
         "abnormalities": list(result.abnormalities),
         "warnings": list(result.warnings),
-        "interpretation": (
-            None if result.gait_quality is None else result.gait_quality.explanation
-        ),
+        "interpretation": (gq.explanation if gq_available else None),
+        # Shared metric contracts (raw + validity + provenance) for all UI surfaces.
+        "session_metrics": metric_view.export_dict(),
     }
     if result.stability_margin and result.stability_margin.per_frame:
         report["stability_margin_summary"] = result.stability_margin.to_dict()

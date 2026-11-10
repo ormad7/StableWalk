@@ -95,10 +95,12 @@ def format_gui_layout_audit(gui: Any) -> str:
     scroll = getattr(gui, "_tab_advanced_scroll_canvas", None) or getattr(
         gui, "_dash_scroll_canvas", None
     )
+    adv_host = getattr(gui, "_tab_advanced_content", None)
     analysis = getattr(gui, "_analysis_scroll_canvas", None)
     notebook = getattr(gui, "_dashboard_notebook", None)
     lines.append(f"Dashboard notebook: {'yes' if notebook is not None else 'no'}")
-    lines.append(f"Advanced tab scroll: {'yes' if scroll is not None else 'no'}")
+    lines.append(f"Advanced tab host: {'yes' if adv_host is not None else 'no'}")
+    lines.append(f"Advanced tab page canvas: {'yes' if scroll is not None else 'no'}")
     lines.append(f"Nested analysis scroll canvas: {'yes' if analysis is not None else 'no'}")
     transport = getattr(gui, "_transport_row", None)
     lines.append(f"Fixed transport bar: {'yes' if transport is not None else 'no'}")

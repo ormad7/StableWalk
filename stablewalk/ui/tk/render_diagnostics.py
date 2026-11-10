@@ -2,20 +2,28 @@
 Playback render diagnostics for StableWalk dashboard ghosting audits.
 
 Logs widget and canvas item counts at key frames during video playback.
+Also provides lightweight timing logs for video / skeleton / graph renders.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from stablewalk.ui.tk.clip_viewport import clip_canvas_item_count
 from stablewalk.ui.tk.gui_layout_debug import audit_gui_widget_counts
 
+logger = logging.getLogger(__name__)
+
 _DIAG_FRAMES = frozenset({1, 30, 60, 90, 120})
+_PERF_LOG_INTERVAL_S = 2.0
+_PERF_SAMPLE_CAP = 120
 
 
 def render_debug_enabled(gui: Any) -> bool:
@@ -27,6 +35,110 @@ def render_debug_enabled(gui: Any) -> bool:
         "yes",
         "on",
     )
+
+
+def perf_log_enabled(gui: Any | None = None) -> bool:
+    """True when lightweight render timing logs should print."""
+    if gui is not None and getattr(gui, "_perf_log", False):
+        return True
+    return os.environ.get("STABLEWALK_PERF_LOG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+_PERF_SECTIONS = (
+    "decode",
+    "video",
+    "skeleton",
+    "trajectory",
+    "3d",
+    "mpl_draw",
+    "tk_paint",
+    "chart",
+    "compare_prep",
+    "opensim",
+    "tab_switch",
+    "startup",
+    "total",
+)
+
+
+@contextmanager
+def timed_render(gui: Any, section: str) -> Iterator[None]:
+    """Record wall time for video / skeleton / trajectory / chart / total sections."""
+    from stablewalk.ui.tk.perf_diagnostics import (
+        CHART_REFRESH_BUDGET_MS,
+        UI_CALLBACK_BUDGET_MS,
+        timed_section,
+    )
+
+    # Legacy alias used by older call sites.
+    if section == "graph":
+        section = "chart"
+    budget = None
+    label = section
+    if section in (
+        "video",
+        "skeleton",
+        "trajectory",
+        "3d",
+        "tk_paint",
+        "decode",
+        "total",
+    ):
+        if getattr(gui, "playing", False):
+            budget = UI_CALLBACK_BUDGET_MS
+            label = f"{section} (playback UI)"
+    elif section in ("chart", "mpl_draw"):
+        budget = CHART_REFRESH_BUDGET_MS
+        label = f"{section} refresh"
+    with timed_section(gui, section, budget_ms=budget, warn_label=label):
+        yield
+
+
+def maybe_log_perf_timings(gui: Any) -> None:
+    """Print averaged section timings every few seconds when enabled."""
+    from stablewalk.ui.tk.perf_diagnostics import (
+        maybe_log_perf_diagnostics,
+        perf_diagnostics_enabled,
+    )
+
+    if perf_diagnostics_enabled(gui):
+        maybe_log_perf_diagnostics(gui)
+        return
+    if not perf_log_enabled(gui):
+        return
+    now = time.monotonic()
+    last = float(getattr(gui, "_last_perf_log_ts", 0.0) or 0.0)
+    if now - last < _PERF_LOG_INTERVAL_S:
+        return
+    gui._last_perf_log_ts = now
+    store = getattr(gui, "_perf_timings", None) or {}
+    # Fold legacy "graph" samples into "chart".
+    if store.get("graph") and not store.get("chart"):
+        store["chart"] = list(store.get("graph") or [])
+    parts: list[str] = []
+    for key in _PERF_SECTIONS:
+        samples = store.get(key) or []
+        if not samples:
+            parts.append(f"{key}=—")
+            continue
+        ordered = sorted(samples)
+        avg = sum(samples) / len(samples)
+        mx = max(samples)
+        # Nearest-rank p95
+        rank = max(1, int(0.95 * len(ordered) + 0.999999))
+        p95 = ordered[min(len(ordered), rank) - 1]
+        parts.append(
+            f"{key}={avg:.1f}ms(avg)/{mx:.1f}ms(max)/{p95:.1f}ms(p95)/n={len(samples)}"
+        )
+        samples.clear()
+    msg = "[Perf] " + " | ".join(parts)
+    print(msg, flush=True)
+    logger.debug(msg)
 
 
 @dataclass(frozen=True)
@@ -120,6 +232,11 @@ def assert_playback_render_counts_stable(
 def reset_playback_render_counters(gui: Any) -> None:
     gui._playback_render_frame = 0
     gui._playback_render_baseline = None
+    store = getattr(gui, "_perf_timings", None)
+    if isinstance(store, dict):
+        for key in store:
+            store[key] = []
+    gui._last_perf_log_ts = 0.0
 
 
 def record_playback_render_frame(gui: Any) -> int:

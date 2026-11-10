@@ -221,9 +221,11 @@ def test_opensim_ik_block_reason_in_pipeline() -> None:
     assert ik.detail == reason
 
     osim = next(s for s in build_pipeline_diagram(report) if s.key == "opensim")
-    # Card shows a short roll-up; IK block reason stays on the IK sub-item.
-    assert "Model" in osim.detail or "TRC" in osim.detail
-    assert reason not in osim.detail or len(osim.detail) < len(reason) + 20
+    # Partial cards keep export success separate from IK (incl. IK block reason).
+    assert osim.status == STATUS_PARTIAL
+    assert "Export Complete" in osim.detail
+    assert "IK unavailable" in osim.detail or "IK" in osim.detail
+    assert "Export OpenSim" in osim.detail or reason in osim.detail
     assert ik.detail == reason
     assert "Marker mapping 55%" in next(
         i.detail for i in report.all_items() if i.key == "osim_mapping"
@@ -231,3 +233,44 @@ def test_opensim_ik_block_reason_in_pipeline() -> None:
     assert "Coverage 48%" in next(
         i.detail for i in report.all_items() if i.key == "osim_coverage"
     )
+
+
+def test_opensim_ik_file_alone_is_not_complete() -> None:
+    report = assess_pipeline_status(
+        PipelineStatusContext(
+            opensim_sdk_available=True,
+            opensim_model_loaded=True,
+            opensim_model_name="gait2392.osim",
+            opensim_ik_completed=False,
+            opensim_export_files={
+                "TRC": True,
+                "MOT": True,
+                "JSON": True,
+                "MAPPED": True,
+                "IK_MOT": True,
+            },
+        )
+    )
+    ik = next(i for i in report.all_items() if i.key == "osim_ik")
+    assert ik.status == STATUS_PARTIAL
+    assert ik.detail != "IK completed"
+    assert "IK not completed" in ik.detail or "not completed" in ik.tooltip.lower()
+
+
+def test_opensim_ik_complete_from_process_without_requiring_file() -> None:
+    report = assess_pipeline_status(
+        PipelineStatusContext(
+            opensim_sdk_available=True,
+            opensim_model_loaded=True,
+            opensim_ik_completed=True,
+            opensim_export_files={
+                "TRC": True,
+                "MOT": True,
+                "MAPPED": True,
+                "IK_MOT": False,
+            },
+        )
+    )
+    ik = next(i for i in report.all_items() if i.key == "osim_ik")
+    assert ik.status == STATUS_COMPLETED
+    assert ik.detail == "IK completed"

@@ -23,12 +23,14 @@ from stablewalk.analysis.ground_reference import (
     foot_clearance_m,
     vertical_coordinate,
 )
+from stablewalk.analysis.timeline_duration import cycle_interval_pose_evidence
 from stablewalk.models.gait_motion import GaitMotionRecording, SkeletonSnapshot, Vec3
 from stablewalk.models.pose_data import PoseSequence
 
 logger = logging.getLogger(__name__)
 
 from stablewalk.analysis.gait_phase_classification import (
+    FLIGHT_CLEARANCE_THRESHOLD_M,
     GaitPhaseName,
     classify_gait_phase_from_contacts,
     contact_to_display_state,
@@ -42,6 +44,7 @@ GaitEventType = Literal[
     "right_toe_off",
 ]
 ConfidenceTier = Literal["HIGH", "MEDIUM", "LOW_CONFIDENCE"]
+EventSufficiency = Literal["none", "input_insufficient", "processing_failure"]
 
 # Fallback velocity gates (m/s at body scale) when calibration has too few samples.
 _DEFAULT_ENTRY_MAX_VEL_M_S = 0.28
@@ -55,10 +58,20 @@ MIN_CONTACT_RUN_FRAMES = 3
 MIN_COMPLETE_CYCLE_DURATION_S = 0.35
 MAX_COMPLETE_CYCLE_DURATION_S = 3.0
 MIN_RELIABLE_CONTACT_CONFIDENCE = 0.48
+# Per-cycle support integration may miss a few samples at 25 fps; do not
+# require 98% coverage or cadence disappears on otherwise valid HS intervals.
+CYCLE_SUPPORT_COVERAGE_MIN = 0.80
 
 # Maximum displayed min(heel,toe) clearance while retaining CONTACT (fraction of leg length).
 # Prevents ankle-driven contact hysteresis when heel/toe are clearly off the floor.
 MAX_DISPLAY_EXIT_LEG_RATIO = 0.10
+# Contact FSM saturated (walking aid / shuffle): do not invent HS/TO from
+# clearance extrema — those peaks are not gait events.
+SATURATED_CONTACT_FRAC = 0.85
+# Kinematic toe-off: first leave-floor after heel strike, not mid-swing peak.
+_KIN_TO_MIN_STANCE_S = 0.18
+_KIN_TO_MAX_STANCE_S = 0.85
+_KIN_TO_CLEARANCE_FRAC = 0.25
 
 SIDE_JOINTS: dict[str, dict[str, tuple[str, ...]]] = {
     "left": {
@@ -109,6 +122,7 @@ class GaitEvent:
     frame_index: int
     time_s: float
     side: str
+    confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +134,41 @@ class DetectedGaitCycle:
     end_time_s: float
     duration_s: float
     boundary_side: str = ""
+
+
+@dataclass(frozen=True)
+class CycleCandidate:
+    """Binary-contact HS–HS interval. Not a valid cycle unless ``accepted``."""
+
+    candidate_index: int
+    side: str
+    start_frame: int
+    end_frame: int
+    start_time_s: float
+    end_time_s: float
+    duration_s: float
+    n_frames: int
+    n_known_contact: int
+    n_known_stance: int
+    n_known_swing: int
+    known_contact_coverage: float
+    accepted: bool
+    acceptance_reason: str
+    source: str = "binary_contact_hs_hs"
+    n_valid_pose_frames: int = 0
+    valid_pose_coverage: float | None = None
+    longest_internal_gap_s: float | None = None
+
+    def to_detected(self, cycle_index: int) -> DetectedGaitCycle:
+        return DetectedGaitCycle(
+            cycle_index=cycle_index,
+            start_frame=self.start_frame,
+            end_frame=self.end_frame,
+            start_time_s=self.start_time_s,
+            end_time_s=self.end_time_s,
+            duration_s=self.duration_s,
+            boundary_side=self.side,
+        )
 
 
 @dataclass
@@ -150,6 +199,7 @@ class GaitTemporalMetrics:
     contact_confidence: float = 0.0
     confidence_tier: ConfidenceTier = "LOW_CONFIDENCE"
     metrics_reliable: bool = False
+    session_metrics_withheld: bool = False
     reliability_reason: str = "No complete gait cycles were analyzed."
     double_support_definition: str = (
         "Total time with both feet in contact, combining both double-support "
@@ -194,18 +244,22 @@ class GaitCycleAnalysisResult:
     per_frame: list[FrameContactState] = field(default_factory=list)
     events: list[GaitEvent] = field(default_factory=list)
     cycles: list[DetectedGaitCycle] = field(default_factory=list)
+    cycle_candidates: list[CycleCandidate] = field(default_factory=list)
     metrics: GaitTemporalMetrics = field(default_factory=GaitTemporalMetrics)
     ground_plane: GroundReferencePlane | None = None
     vertical_axis: str = "y"
     fps: float = 30.0
     contact_thresholds: ContactThresholds | None = None
     warnings: list[str] = field(default_factory=list)
+    event_sufficiency: EventSufficiency = "none"
+    event_sufficiency_reason: str = ""
 
     def frame_at(self, frame_index: int) -> FrameContactState | None:
-        for state in self.per_frame:
-            if state.frame_index == frame_index:
-                return state
-        return None
+        idx = getattr(self, "_by_frame", None)
+        if idx is None:
+            idx = {int(f.frame_index): f for f in self.per_frame}
+            self._by_frame = idx
+        return idx.get(int(frame_index))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -221,11 +275,14 @@ class GaitCycleAnalysisResult:
             "metrics": self.metrics.to_dict(),
             "events": [asdict(e) for e in self.events],
             "cycles": [asdict(c) for c in self.cycles],
+            "cycle_candidates": [asdict(c) for c in self.cycle_candidates],
             "per_frame_count": len(self.per_frame),
             "contact_thresholds": (
                 None if self.contact_thresholds is None else self.contact_thresholds.to_dict()
             ),
             "warnings": list(self.warnings),
+            "event_sufficiency": self.event_sufficiency,
+            "event_sufficiency_reason": self.event_sufficiency_reason,
         }
 
 
@@ -672,6 +729,276 @@ def detect_gait_events(
     return events
 
 
+def _clearance_and_velocity(
+    sample: FootLandmarkSample,
+) -> tuple[float | None, float | None]:
+    """Prefer heel, then ankle, then generic foot clearance (confidence-aware)."""
+    if sample.visibility < MIN_FOOT_VISIBILITY:
+        return None, None
+    clearance = sample.heel_clearance_m
+    velocity = sample.heel_velocity_m_s
+    if clearance is None:
+        clearance = sample.ankle_clearance_m
+        velocity = sample.ankle_velocity_m_s
+    if clearance is None:
+        clearance = sample.foot_clearance_m
+        velocity = sample.ankle_velocity_m_s
+    return clearance, velocity
+
+
+def kinematic_supplement_allowed(contact_frac: float) -> bool:
+    """False when feet never leave contact — kinematic extrema would be fabricated."""
+    return math.isfinite(contact_frac) and contact_frac <= SATURATED_CONTACT_FRAC
+
+
+def _kinematic_prominence_m(leg_length_m: float | None, view_type: str | None) -> float:
+    """View-aware clearance prominence. Frontal image-Y is not true sagittal clearance."""
+    leg = float(leg_length_m) if leg_length_m and leg_length_m > 0 else 0.45
+    base = max(0.012, leg * 0.03)
+    key = str(view_type or "").lower()
+    if "frontal" in key or key == "unknown":
+        return max(base, leg * 0.040)
+    if "sagittal" in key:
+        return max(0.010, leg * 0.022)
+    return base
+
+
+def detect_kinematic_foot_events(
+    samples: list[FootLandmarkSample],
+    times_s: list[float],
+    frame_indices: list[int],
+    *,
+    side: str,
+    min_interval_s: float = MIN_COMPLETE_CYCLE_DURATION_S,
+    min_prominence_m: float = 0.012,
+) -> list[GaitEvent]:
+    """
+    Heel-strike / toe-off from kinematics when the contact FSM has no transitions.
+
+    Heel strike = prominent local heel-clearance minimum, confirmed by a
+    descending→ascending vertical-velocity change when velocities are available.
+    Toe-off = first leave-floor after that heel strike (clearance rising through
+    a fraction of the swing range), **not** the mid-swing clearance peak.
+
+    Returns no events when prominence or visibility is insufficient (walking-aid
+    shuffle, occlusion). Does not invent a cycle from a single noisy extremum.
+    """
+    n = min(len(samples), len(times_s), len(frame_indices))
+    if n < 7:
+        return []
+    clearance: list[float | None] = []
+    velocity: list[float | None] = []
+    for i in range(n):
+        c, v = _clearance_and_velocity(samples[i])
+        clearance.append(c)
+        velocity.append(v)
+
+    finite = [c for c in clearance if c is not None]
+    if len(finite) < 7:
+        return []
+    spread = max(finite) - min(finite)
+    if spread < min_prominence_m:
+        return []
+
+    half_win = 2
+    if n >= 2 and times_s[-1] > times_s[0]:
+        dt = (times_s[-1] - times_s[0]) / max(n - 1, 1)
+        if dt > 1e-6:
+            half_win = max(2, int(round(0.20 / dt)))
+
+    hs: list[GaitEvent] = []
+    last_hs_t = -1e9
+    for i in range(half_win, n - half_win):
+        c = clearance[i]
+        if c is None:
+            continue
+        prev_c = clearance[i - 1]
+        next_c = clearance[i + 1]
+        if prev_c is None or next_c is None:
+            continue
+        if not (c <= prev_c and c <= next_c):
+            continue
+        neighborhood = [
+            clearance[j]
+            for j in range(i - half_win, i + half_win + 1)
+            if clearance[j] is not None
+        ]
+        if len(neighborhood) < 5:
+            continue
+        prominence = max(neighborhood) - c
+        t = times_s[i]
+        if prominence < min_prominence_m or (t - last_hs_t) < min_interval_s:
+            continue
+        pv = velocity[i - 1] if i > 0 else None
+        nv = velocity[i + 1] if i + 1 < n else None
+        if (
+            pv is not None
+            and nv is not None
+            and (abs(pv) + abs(nv)) > 1e-6
+            and not (pv <= 1e-4 and nv >= -1e-4)
+        ):
+            continue
+        hs.append(GaitEvent(f"{side}_heel_strike", frame_indices[i], t, side))
+        last_hs_t = t
+
+    events: list[GaitEvent] = list(hs)
+    leave_thr = min(finite) + _KIN_TO_CLEARANCE_FRAC * spread
+    last_to_t = -1e9
+    for strike in hs:
+        t0 = strike.time_s
+        for i in range(n):
+            t = times_s[i]
+            if t < t0 + _KIN_TO_MIN_STANCE_S:
+                continue
+            if t > t0 + _KIN_TO_MAX_STANCE_S:
+                break
+            c = clearance[i]
+            prev_c = clearance[i - 1] if i > 0 else None
+            if c is None or prev_c is None:
+                continue
+            if c < leave_thr:
+                continue
+            if c < prev_c:
+                continue
+            if (t - last_to_t) < 0.20:
+                continue
+            events.append(GaitEvent(f"{side}_toe_off", frame_indices[i], t, side))
+            last_to_t = t
+            break
+    events.sort(key=lambda e: e.time_s)
+    return events
+
+
+def annotate_event_confidence(
+    events: list[GaitEvent],
+    per_frame: list[FrameContactState],
+) -> list[GaitEvent]:
+    """Attach ipsilateral foot-landmark visibility at the event frame.
+
+    Events have no independent detector posterior. Visibility is the
+    evidence that the landmark used for HS/TO was seen, not a clinical
+    certainty that the event is a true heel strike.
+    """
+    by_frame = {state.frame_index: state for state in per_frame}
+    out: list[GaitEvent] = []
+    for event in events:
+        vis = event.confidence
+        state = by_frame.get(event.frame_index)
+        if vis is None and state is not None:
+            sample = state.left if event.side == "left" else state.right
+            raw = getattr(sample, "visibility", None)
+            vis = float(raw) if raw is not None else None
+        if vis == event.confidence:
+            out.append(event)
+        else:
+            out.append(
+                GaitEvent(
+                    event.event_type,
+                    event.frame_index,
+                    event.time_s,
+                    event.side,
+                    vis,
+                )
+            )
+    return out
+
+
+def merge_gait_events(
+    primary: list[GaitEvent],
+    supplemental: list[GaitEvent],
+    *,
+    tol_s: float = 0.12,
+) -> list[GaitEvent]:
+    """Keep contact-FSM events; add kinematic events only when that type/side is absent nearby."""
+    merged = list(primary)
+    for extra in supplemental:
+        if any(
+            e.event_type == extra.event_type
+            and e.side == extra.side
+            and abs(e.time_s - extra.time_s) <= tol_s
+            for e in merged
+        ):
+            continue
+        same_side_type = [
+            e for e in primary if e.event_type == extra.event_type and e.side == extra.side
+        ]
+        # If the contact FSM already found this event class, do not add extras
+        # except when the FSM found none for that side/type.
+        if same_side_type:
+            continue
+        merged.append(extra)
+    merged.sort(key=lambda e: (e.time_s, e.event_type))
+    return merged
+
+
+def classify_event_sufficiency(
+    *,
+    frame_count: int,
+    duration_s: float,
+    ground_plane: GroundReferencePlane | None,
+    heel_strike_count: int,
+    toe_off_count: int,
+    cycle_count: int,
+    foot_visibility_mean: float,
+    warnings: list[str],
+) -> tuple[EventSufficiency, str]:
+    """Separate a technical failure from scientifically insufficient input."""
+    if frame_count < MIN_FRAMES_FOR_ANALYSIS:
+        return (
+            "processing_failure",
+            f"Only {frame_count} pose frames (need {MIN_FRAMES_FOR_ANALYSIS}).",
+        )
+    if ground_plane is None:
+        return ("processing_failure", "Ground plane could not be estimated.")
+    if cycle_count >= MIN_CYCLES_FOR_CADENCE:
+        return (
+            "none",
+            f"{cycle_count} complete same-side cycle(s) — no event-sufficiency "
+            "failure. Measurement reliability is a separate flag.",
+        )
+    if duration_s < 2.0 * MIN_COMPLETE_CYCLE_DURATION_S:
+        return (
+            "input_insufficient",
+            f"Clip is {duration_s:.1f}s — shorter than two minimum gait cycles "
+            f"({2.0 * MIN_COMPLETE_CYCLE_DURATION_S:.1f}s). Not a processing crash.",
+        )
+    if foot_visibility_mean < MIN_FOOT_VISIBILITY:
+        return (
+            "input_insufficient",
+            "Foot landmarks are too occluded for reliable heel-strike/toe-off detection.",
+        )
+    if heel_strike_count < 2:
+        return (
+            "input_insufficient",
+            "Fewer than two heel-strike events with sufficient prominence. "
+            "Short clips, walking aids, or shuffle gait often lack usable intervals. "
+            "Cycles were not fabricated.",
+        )
+    if cycle_count == 0 and heel_strike_count >= 2:
+        return (
+            "input_insufficient",
+            "Heel strikes were detected but no same-side pair formed a valid "
+            f"{MIN_COMPLETE_CYCLE_DURATION_S:.2f}–{MAX_COMPLETE_CYCLE_DURATION_S:.1f}s cycle.",
+        )
+    if toe_off_count == 0 and cycle_count == 0:
+        return (
+            "input_insufficient",
+            "No toe-off transitions and no complete gait cycles.",
+        )
+    del warnings
+    return ("input_insufficient", "Usable gait cycles are below the session minimum.")
+
+
+def _contact_partition_untrustworthy(warnings: list[str]) -> bool:
+    """Withhold session cadence only when feet never leave contact (aid / shuffle).
+
+    A stance+swing+flight sum ≠ 100% is an accounting warning, not missing
+    heel-strikes. Do not suppress cadence for that alone.
+    """
+    text = " ".join(warnings).lower()
+    return "foot-frames are in contact" in text
+
+
 def segment_durations_s(
     states: list[int],
     times_s: list[float],
@@ -718,58 +1045,235 @@ def interval_cv(intervals: list[float]) -> float | None:
     return statistics.pstdev(intervals) / mean
 
 
-def detect_gait_cycles(
+def contact_bit_is_known(sample: FootLandmarkSample, binary: int) -> bool:
+    """Known observation: contact-on, or confirmed flight. Near-ground off is not known."""
+    if sample.visibility < MIN_FOOT_VISIBILITY:
+        return False
+    if binary:
+        return True
+    if sample.foot_clearance_m is None:
+        return False
+    return float(sample.foot_clearance_m) >= FLIGHT_CLEARANCE_THRESHOLD_M
+
+
+def _side_contact_bits(state: FrameContactState, side: str) -> tuple[int, FootLandmarkSample]:
+    if str(side).lower().startswith("right"):
+        return int(state.right_contact), state.right
+    return int(state.left_contact), state.left
+
+
+def recording_pose_validity(
+    recording: GaitMotionRecording,
+) -> tuple[list[float], list[bool]]:
+    """Detected, not skipped, with joints — the pose evidence for cycle gaps."""
+    times: list[float] = []
+    valid: list[bool] = []
+    for snap in recording.snapshots:
+        times.append(float(snap.time_s))
+        meta = getattr(snap, "metadata", None) or {}
+        detected = bool(meta.get("detected", True))
+        skipped = bool(meta.get("skipped", False))
+        valid.append(detected and not skipped and bool(getattr(snap, "joints", None)))
+    return times, valid
+
+
+def evaluate_cycle_candidate(
+    start: GaitEvent,
+    end: GaitEvent,
+    *,
+    candidate_index: int,
+    per_frame: list[FrameContactState] | None,
+    require_known_contact: bool,
+    pose_times: list[float] | None = None,
+    pose_valid: list[bool] | None = None,
+    fps: float = 0.0,
+) -> CycleCandidate:
+    """Score one binary HS–HS interval. Does not retune contact thresholds."""
+    side = str(start.side or "").lower() or "left"
+    duration = float(end.time_s) - float(start.time_s)
+    states = [
+        state
+        for state in (per_frame or [])
+        if start.time_s <= state.time_s < end.time_s
+    ]
+    n_frames = len(states)
+    n_known = n_stance = n_swing = 0
+    for state in states:
+        binary, sample = _side_contact_bits(state, side)
+        known = contact_bit_is_known(sample, binary)
+        if known:
+            n_known += 1
+            if binary:
+                n_stance += 1
+            else:
+                n_swing += 1
+    coverage = (n_known / n_frames) if n_frames else 0.0
+    n_valid_pose = 0
+    pose_coverage: float | None = None
+    longest_gap: float | None = None
+    pose_gap_reason = ""
+    if pose_times is not None and pose_valid is not None:
+        evidence = cycle_interval_pose_evidence(
+            float(start.time_s),
+            float(end.time_s),
+            pose_times,
+            pose_valid,
+            fps=float(fps or 0.0),
+        )
+        n_valid_pose = evidence.n_valid_pose_frames
+        pose_coverage = evidence.valid_pose_coverage
+        longest_gap = evidence.longest_internal_gap_s
+        if evidence.n_unsupported_gaps > 0:
+            pose_gap_reason = (
+                "unsupported_pose_gap "
+                f"(longest internal gap {evidence.longest_internal_gap_s:.3f} s; "
+                f"valid-pose coverage {evidence.valid_pose_coverage:.1%}; "
+                "gaps are not interpolated)"
+            )
+    if duration < MIN_COMPLETE_CYCLE_DURATION_S:
+        reason = (
+            f"duration_below_min ({duration:.3f} s < {MIN_COMPLETE_CYCLE_DURATION_S:.2f} s)"
+        )
+        accepted = False
+    elif duration > MAX_COMPLETE_CYCLE_DURATION_S:
+        reason = (
+            f"duration_above_max ({duration:.3f} s > {MAX_COMPLETE_CYCLE_DURATION_S:.2f} s)"
+        )
+        accepted = False
+    elif pose_gap_reason:
+        reason = pose_gap_reason
+        accepted = False
+    elif require_known_contact and n_frames == 0:
+        reason = "no_frames_in_interval"
+        accepted = False
+    elif require_known_contact and n_stance < 1:
+        reason = (
+            "no_known_stance — binary HS–HS used contact bits that the validity "
+            "layer marks Unknown"
+        )
+        accepted = False
+    elif require_known_contact and n_swing < 1:
+        reason = (
+            "no_known_swing — off bits were near-ground Unknown, not confirmed flight"
+        )
+        accepted = False
+    else:
+        accepted = True
+        pose_note = ""
+        if pose_coverage is not None and longest_gap is not None:
+            pose_note = (
+                f"; valid-pose coverage {pose_coverage:.1%}; "
+                f"longest internal gap {longest_gap:.3f} s"
+            )
+        if require_known_contact:
+            reason = (
+                f"accepted: duration {duration:.3f} s in "
+                f"[{MIN_COMPLETE_CYCLE_DURATION_S:.2f}, {MAX_COMPLETE_CYCLE_DURATION_S:.2f}] s; "
+                f"known stance {n_stance} and confirmed swing {n_swing} "
+                f"(known-contact coverage {coverage:.1%})"
+                f"{pose_note}"
+            )
+        else:
+            reason = (
+                f"duration_in_range ({duration:.3f} s); known-contact coverage not evaluated"
+                f"{pose_note}"
+            )
+    return CycleCandidate(
+        candidate_index=candidate_index,
+        side=side,
+        start_frame=int(start.frame_index),
+        end_frame=int(end.frame_index),
+        start_time_s=float(start.time_s),
+        end_time_s=float(end.time_s),
+        duration_s=duration,
+        n_frames=n_frames,
+        n_known_contact=n_known,
+        n_known_stance=n_stance,
+        n_known_swing=n_swing,
+        known_contact_coverage=coverage,
+        accepted=accepted,
+        acceptance_reason=reason,
+        n_valid_pose_frames=n_valid_pose,
+        valid_pose_coverage=pose_coverage,
+        longest_internal_gap_s=longest_gap,
+    )
+
+
+def enumerate_cycle_candidates(
     events: list[GaitEvent],
     *,
-    duration_s: float,
-) -> list[DetectedGaitCycle]:
-    """Return complete cycles bounded by consecutive same-side heel strikes.
-
-    Alternating heel strikes delimit steps, not gait cycles. A leading or
-    trailing partial interval is therefore never promoted to a complete cycle.
-    """
-    del duration_s  # Retained for API compatibility; partial clip duration is not a cycle.
-    candidates: list[tuple[str, list[GaitEvent]]] = []
+    per_frame: list[FrameContactState] | None = None,
+    require_known_contact: bool | None = None,
+    pose_times: list[float] | None = None,
+    pose_valid: list[bool] | None = None,
+    fps: float = 0.0,
+) -> list[CycleCandidate]:
+    """Every consecutive same-side HS–HS interval, accepted or rejected."""
+    require = bool(per_frame) if require_known_contact is None else bool(require_known_contact)
+    out: list[CycleCandidate] = []
     for side in ("left", "right"):
         bounds = sorted(
             (e for e in events if e.event_type == f"{side}_heel_strike"),
             key=lambda e: e.time_s,
         )
-        if len(bounds) >= 2:
-            candidates.append((side, bounds))
-    if not candidates:
-        return []
-
-    def _candidate_rank(item: tuple[str, list[GaitEvent]]) -> tuple[int, float]:
-        _, bounds = item
-        durations = [
-            bounds[i + 1].time_s - bounds[i].time_s
-            for i in range(len(bounds) - 1)
-            if bounds[i + 1].time_s > bounds[i].time_s
-        ]
-        cv = interval_cv(durations)
-        return len(durations), -(cv if cv is not None else 1.0)
-
-    boundary_side, bounds = max(candidates, key=_candidate_rank)
-
-    cycles: list[DetectedGaitCycle] = []
-    for i in range(len(bounds) - 1):
-        start, end = bounds[i], bounds[i + 1]
-        dur = end.time_s - start.time_s
-        if not (MIN_COMPLETE_CYCLE_DURATION_S <= dur <= MAX_COMPLETE_CYCLE_DURATION_S):
-            continue
-        cycles.append(
-            DetectedGaitCycle(
-                cycle_index=len(cycles),
-                start_frame=start.frame_index,
-                end_frame=end.frame_index,
-                start_time_s=start.time_s,
-                end_time_s=end.time_s,
-                duration_s=dur,
-                boundary_side=boundary_side,
+        for i in range(len(bounds) - 1):
+            start, end = bounds[i], bounds[i + 1]
+            if end.time_s <= start.time_s:
+                continue
+            out.append(
+                evaluate_cycle_candidate(
+                    start,
+                    end,
+                    candidate_index=len(out),
+                    per_frame=per_frame,
+                    require_known_contact=require,
+                    pose_times=pose_times,
+                    pose_valid=pose_valid,
+                    fps=fps,
+                )
             )
+    return out
+
+
+def detect_gait_cycles(
+    events: list[GaitEvent],
+    *,
+    duration_s: float,
+    per_frame: list[FrameContactState] | None = None,
+    cycle_candidates: list[CycleCandidate] | None = None,
+    pose_times: list[float] | None = None,
+    pose_valid: list[bool] | None = None,
+    fps: float = 0.0,
+) -> list[DetectedGaitCycle]:
+    """Return every accepted ipsilateral HS–HS cycle from both sides.
+
+    Alternating heel strikes delimit steps, not gait cycles. A leading or
+    trailing partial interval is therefore never promoted to a complete cycle.
+    When ``per_frame`` is supplied, binary-contact intervals that lack known
+    stance and confirmed swing are candidates only — not valid cycles.
+    Intervals that span an unsupported pose gap are rejected explicitly.
+    Accepted left and right cycles are both published; the non-winning side
+    is not dropped.
+    """
+    del duration_s  # Retained for API compatibility; partial clip duration is not a cycle.
+    candidates = cycle_candidates
+    if candidates is None:
+        candidates = enumerate_cycle_candidates(
+            events,
+            per_frame=per_frame,
+            pose_times=pose_times,
+            pose_valid=pose_valid,
+            fps=fps,
         )
-    return cycles
+    accepted = [item for item in candidates if item.accepted]
+    accepted.sort(
+        key=lambda item: (
+            item.start_time_s,
+            0 if str(item.side).lower().startswith("left") else 1,
+            item.candidate_index,
+        )
+    )
+    return [item.to_detected(index) for index, item in enumerate(accepted)]
 
 
 def _cycle_support_durations(
@@ -818,7 +1322,7 @@ def _cycle_support_durations(
     covered = (
         totals["double_support"] + totals["single_support"] + totals["flight"]
     )
-    if covered < cycle.duration_s * 0.98:
+    if covered < cycle.duration_s * CYCLE_SUPPORT_COVERAGE_MIN:
         return None
     return totals
 
@@ -863,29 +1367,56 @@ def compute_temporal_metrics(
     ]
     usable_cycles = [cycle for cycle, _ in cycle_samples]
     support_samples = [sample for _, sample in cycle_samples]
-    reliable = (
-        len(support_samples) >= MIN_CYCLES_FOR_CADENCE
-        and contact_confidence >= MIN_RELIABLE_CONTACT_CONFIDENCE
+    # Cadence uses detected same-side HS→HS cycles. Support-time integration is
+    # only required for stance/swing symmetry — do not hide cadence when the
+    # partition is slightly incomplete.
+    cadence_cycles = list(cycles) if cycles else []
+    n_left_cycles = sum(
+        1
+        for cycle in cadence_cycles
+        if str(getattr(cycle, "boundary_side", "")).lower().startswith("left")
+    )
+    n_right_cycles = sum(
+        1
+        for cycle in cadence_cycles
+        if str(getattr(cycle, "boundary_side", "")).lower().startswith("right")
+    )
+    # Cadence still needs ≥2 ipsilateral HS→HS intervals on at least one side.
+    # Mixed 1 L + 1 R is two steps, not two strides, so it does not unlock cadence.
+    can_compute_cadence = max(n_left_cycles, n_right_cycles) >= MIN_CYCLES_FOR_CADENCE
+    can_compute_symmetry = len(support_samples) >= MIN_CYCLES_FOR_CADENCE
+    contact_ok = (
+        contact_confidence >= MIN_RELIABLE_CONTACT_CONFIDENCE
         and confidence_tier != "LOW_CONFIDENCE"
     )
-    if len(support_samples) < MIN_CYCLES_FOR_CADENCE:
+    if not can_compute_cadence:
         reason = (
-            f"Only {len(support_samples)} complete, adequately sampled gait cycle(s); "
-            f"at least {MIN_CYCLES_FOR_CADENCE} are required for final session metrics."
+            f"Only {n_left_cycles} left / {n_right_cycles} right complete "
+            f"same-side heel-strike cycle(s); at least {MIN_CYCLES_FOR_CADENCE} "
+            "ipsilateral cycles on one side are required for cadence."
         )
-    elif contact_confidence < MIN_RELIABLE_CONTACT_CONFIDENCE or confidence_tier == "LOW_CONFIDENCE":
+    elif not contact_ok:
         reason = (
-            f"Contact confidence is {contact_confidence:.2f} ({confidence_tier}); "
-            f"at least {MIN_RELIABLE_CONTACT_CONFIDENCE:.2f} and MEDIUM confidence are required."
+            f"Cadence computed from {n_left_cycles} left / {n_right_cycles} right "
+            f"HS→HS cycle(s) at reduced reliability (contact "
+            f"{contact_confidence:.2f}, {confidence_tier}). "
+            f"MEDIUM and >={MIN_RELIABLE_CONTACT_CONFIDENCE:.2f} are required "
+            "before the value is marked scientifically reliable."
         )
     else:
         reason = (
-            f"Computed from {len(support_samples)} complete same-side heel-strike cycles."
+            f"Computed from {n_left_cycles} left / {n_right_cycles} right "
+            "complete same-side heel-strike cycles."
         )
+        if not can_compute_symmetry:
+            reason += (
+                " Stance/swing symmetry withheld — cycle support coverage "
+                f"below {CYCLE_SUPPORT_COVERAGE_MIN:.0%}."
+            )
 
-    if not reliable:
+    if not can_compute_cadence:
         return GaitTemporalMetrics(
-            gait_cycle_count=len(support_samples),
+            gait_cycle_count=len(cadence_cycles),
             contact_confidence=contact_confidence,
             confidence_tier=confidence_tier,
             metrics_reliable=False,
@@ -893,7 +1424,44 @@ def compute_temporal_metrics(
             **event_counts,
         )
 
-    cycle_durations = [cycle.duration_s for cycle in usable_cycles]
+    cycle_durations = [cycle.duration_s for cycle in cadence_cycles]
+    if not can_compute_symmetry or not contact_ok:
+        complete_hs = sorted(
+            {
+                (event.time_s, event.side)
+                for event in events
+                if event.event_type.endswith("_heel_strike")
+                and any(
+                    cycle.start_time_s <= event.time_s <= cycle.end_time_s
+                    for cycle in cadence_cycles
+                )
+            }
+        )
+        step_intervals = [
+            complete_hs[i + 1][0] - complete_hs[i][0]
+            for i in range(len(complete_hs) - 1)
+            if complete_hs[i][1] != complete_hs[i + 1][1]
+            and complete_hs[i + 1][0] > complete_hs[i][0]
+        ]
+        step_time = statistics.mean(step_intervals) if step_intervals else None
+        stride_time = statistics.mean(cycle_durations)
+        cadence = (
+            60.0 / step_time if step_time and step_time > 1e-6 else 120.0 / stride_time
+        )
+        cycle_cv = interval_cv(cycle_durations)
+        return GaitTemporalMetrics(
+            step_time_s=step_time,
+            stride_time_s=stride_time,
+            cadence_steps_per_min=cadence,
+            gait_cycle_count=len(cadence_cycles),
+            gait_cycle_consistency=(1.0 - min(cycle_cv, 1.0)) if cycle_cv is not None else None,
+            contact_confidence=contact_confidence,
+            confidence_tier=confidence_tier,
+            metrics_reliable=contact_ok,
+            reliability_reason=reason,
+            **event_counts,
+        )
+
     left_stance_values = [s["left_stance"] for s in support_samples]
     right_stance_values = [s["right_stance"] for s in support_samples]
     left_swing_values = [
@@ -967,14 +1535,64 @@ def compute_temporal_metrics(
         step_time_s=step_time,
         stride_time_s=stride_time,
         cadence_steps_per_min=cadence,
-        gait_cycle_count=len(usable_cycles),
+        gait_cycle_count=len(cadence_cycles),
         gait_cycle_consistency=(1.0 - min(cycle_cv, 1.0)) if cycle_cv is not None else None,
         contact_confidence=contact_confidence,
         confidence_tier=confidence_tier,
-        metrics_reliable=True,
+        metrics_reliable=contact_ok,
         reliability_reason=reason,
         **event_counts,
     )
+
+
+def cadence_is_exploratory(metrics: Any | None, cycles: Any | None = None) -> bool:
+    """True when cadence must not be shown as a session summary number.
+
+    Low-confidence contact and unilateral (single-channel) HS–HS sets can still
+    produce a numeric cadence. That value is exploratory, not a bilateral
+    session result. Thresholds are not relaxed here.
+    """
+    if metrics is None:
+        return False
+    value = getattr(metrics, "cadence_steps_per_min", None)
+    if value is None:
+        return False
+    if getattr(metrics, "metrics_reliable", None) is False:
+        return True
+    tier = str(getattr(metrics, "confidence_tier", "") or "").upper()
+    if tier == "LOW_CONFIDENCE":
+        return True
+    clist = list(getattr(cycles, "cycles", None) or [])
+    if not clist:
+        return False
+    n_left = sum(
+        1
+        for cycle in clist
+        if str(getattr(cycle, "boundary_side", "")).lower().startswith("left")
+    )
+    n_right = sum(
+        1
+        for cycle in clist
+        if str(getattr(cycle, "boundary_side", "")).lower().startswith("right")
+    )
+    return (n_left == 0) ^ (n_right == 0)
+
+
+def summary_cadence_spm(metrics: Any | None, cycles: Any | None = None) -> float | None:
+    """Cadence for Overview / Results / exports, or None when exploratory."""
+    if cadence_is_exploratory(metrics, cycles):
+        return None
+    if metrics is None:
+        return None
+    value = getattr(metrics, "cadence_steps_per_min", None)
+    if value is None:
+        value = getattr(metrics, "cadence_spm", None)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def assess_contact_confidence(
@@ -1071,12 +1689,26 @@ def _lowest_clearance(
 
 def analyze_gait_cycles(
     recording: GaitMotionRecording,
+    *,
+    sequence: PoseSequence | None = None,
+    view_estimate: Any | None = None,
 ) -> GaitCycleAnalysisResult:
     """
     Full gait contact + cycle analysis from a ``GaitMotionRecording``.
 
     Reuses ``estimate_ground_plane`` and foot clearance from ``ground_reference``.
+    Optional ``sequence`` / ``view_estimate`` only scale kinematic-supplement
+    prominence (frontal views are more conservative). They do not invent events.
     """
+    if view_estimate is None and sequence is not None:
+        try:
+            from stablewalk.analysis.gait_view_analysis import estimate_gait_view
+
+            frames = getattr(sequence, "frames", None) or []
+            if frames:
+                view_estimate = estimate_gait_view(frames)
+        except Exception:
+            view_estimate = None
     fps = max(recording.fps, 1e-6)
     if recording.frame_count < MIN_FRAMES_FOR_ANALYSIS:
         logger.warning(
@@ -1090,6 +1722,10 @@ def analyze_gait_cycles(
                 f"Final gait metrics unavailable: only {recording.frame_count} frames "
                 f"were available; at least {MIN_FRAMES_FOR_ANALYSIS} are required."
             ],
+            event_sufficiency="processing_failure",
+            event_sufficiency_reason=(
+                f"Only {recording.frame_count} pose frames (need {MIN_FRAMES_FOR_ANALYSIS})."
+            ),
         )
 
     end_index = recording.frame_count - 1
@@ -1119,6 +1755,8 @@ def analyze_gait_cycles(
             warnings=[
                 "Final gait metrics unavailable: ground plane could not be estimated."
             ],
+            event_sufficiency="processing_failure",
+            event_sufficiency_reason="Ground plane could not be estimated.",
         )
 
     smooth_window = max(3, int(round(fps * 0.06)) | 1)
@@ -1277,8 +1915,54 @@ def analyze_gait_cycles(
         )
 
     events = detect_gait_events(per_frame)
+    hs_contact = sum(1 for e in events if e.event_type.endswith("_heel_strike"))
+    to_contact = sum(1 for e in events if e.event_type.endswith("_toe_off"))
+    n_pf = max(len(per_frame), 1)
+    contact_frac = (
+        sum(s.left_contact for s in per_frame) + sum(s.right_contact for s in per_frame)
+    ) / float(2 * n_pf)
+    if (hs_contact < 2 or to_contact == 0) and kinematic_supplement_allowed(contact_frac):
+        kin: list[GaitEvent] = []
+        view_key = None
+        if view_estimate is not None:
+            view_key = str(
+                getattr(getattr(view_estimate, "view_type", None), "value", None)
+                or getattr(view_estimate, "view_type", None)
+                or view_estimate
+            )
+        prominence = _kinematic_prominence_m(leg_length, view_key)
+        kin.extend(
+            detect_kinematic_foot_events(
+                left_samples, times, frame_indices, side="left",
+                min_prominence_m=prominence,
+            )
+        )
+        kin.extend(
+            detect_kinematic_foot_events(
+                right_samples, times, frame_indices, side="right",
+                min_prominence_m=prominence,
+            )
+        )
+        events = merge_gait_events(events, kin)
+    events = annotate_event_confidence(events, per_frame)
     duration_s = recording.duration_s or (len(per_frame) / fps)
-    cycles = detect_gait_cycles(events, duration_s=duration_s)
+    pose_times, pose_valid = recording_pose_validity(recording)
+    cycle_candidates = enumerate_cycle_candidates(
+        events,
+        per_frame=per_frame,
+        pose_times=pose_times,
+        pose_valid=pose_valid,
+        fps=fps,
+    )
+    cycles = detect_gait_cycles(
+        events,
+        duration_s=duration_s,
+        per_frame=per_frame,
+        cycle_candidates=cycle_candidates,
+        pose_times=pose_times,
+        pose_valid=pose_valid,
+        fps=fps,
+    )
 
     foot_vis = float(statistics.mean(vis_accum)) if vis_accum else 0.0
     valid_ratio = len(per_frame) / max(recording.frame_count, 1)
@@ -1308,21 +1992,71 @@ def analyze_gait_cycles(
     )
 
     warnings = validate_gait_cycle_analysis(per_frame, events, cycles, metrics, thresholds)
+    withhold = _contact_partition_untrustworthy(warnings)
+    if withhold:
+        metrics.metrics_reliable = False
+        metrics.session_metrics_withheld = True
+        metrics.cadence_steps_per_min = None
+        metrics.left_right_stance_symmetry = None
+        metrics.left_right_swing_symmetry = None
+        metrics.step_time_s = None
+        metrics.stride_time_s = None
+        metrics.reliability_reason = (
+            "Near-constant foot contact (>85% of foot-frames). "
+            "Cadence and symmetry are withheld because heel-strike intervals "
+            "are not reliable under saturated contact. Cycles were not fabricated. "
+            "Walking aids and shuffle gait often cause this."
+        )
+    # Log each distinct warning once per process — analysis may re-run on load
+    # and the repeated WARNING spam slows the UI thread / floods the console.
+    seen = getattr(validate_gait_cycle_analysis, "_logged_warnings", None)
+    if not isinstance(seen, set):
+        seen = set()
+        setattr(validate_gait_cycle_analysis, "_logged_warnings", seen)
     for w in warnings:
+        key = str(w)
+        if key in seen:
+            continue
+        seen.add(key)
         logger.warning("Gait cycle validation: %s", w)
 
     _log_analysis_summary(metrics)
+
+    sufficiency, sufficiency_reason = classify_event_sufficiency(
+        frame_count=len(per_frame),
+        duration_s=duration_s,
+        ground_plane=plane,
+        heel_strike_count=hs_count,
+        toe_off_count=metrics.left_toe_off_count + metrics.right_toe_off_count,
+        cycle_count=len(cycles),
+        foot_visibility_mean=foot_vis,
+        warnings=warnings,
+    )
+    if withhold:
+        sufficiency = "input_insufficient"
+        sufficiency_reason = metrics.reliability_reason
+    if sufficiency != "none" and sufficiency_reason:
+        note = (
+            "Scientifically insufficient input: "
+            if sufficiency == "input_insufficient"
+            else "Technical processing limitation: "
+        ) + sufficiency_reason
+        if note not in warnings:
+            warnings.append(note)
 
     return GaitCycleAnalysisResult(
         per_frame=per_frame,
         events=events,
         cycles=cycles,
+        cycle_candidates=cycle_candidates,
         metrics=metrics,
         ground_plane=plane,
         vertical_axis=axis,
         fps=fps,
         contact_thresholds=thresholds,
         warnings=warnings,
+        event_sufficiency=sufficiency,
+        event_sufficiency_reason=sufficiency_reason,
     )
 
 
@@ -1377,7 +2111,15 @@ def validate_gait_cycle_analysis(
     if metrics.gait_cycle_count == 0 and hs_total == 0:
         warnings.append("No complete gait cycles detected.")
     if not metrics.metrics_reliable:
-        warnings.append(f"Final temporal gait metrics unavailable: {metrics.reliability_reason}")
+        if metrics.cadence_steps_per_min is not None:
+            warnings.append(
+                "Temporal gait metrics computed at reduced reliability: "
+                f"{metrics.reliability_reason}"
+            )
+        else:
+            warnings.append(
+                f"Final temporal gait metrics unavailable: {metrics.reliability_reason}"
+            )
     if metrics.metrics_reliable:
         for side in ("left", "right"):
             stance = getattr(metrics, f"{side}_stance_pct")
@@ -1458,7 +2200,7 @@ def analyze_gait_cycles_from_pose_sequence(
     from stablewalk.adapters.pose_adapter import pose_sequence_to_gait_motion
 
     recording = pose_sequence_to_gait_motion(sequence)
-    result = analyze_gait_cycles(recording)
+    result = analyze_gait_cycles(recording, sequence=sequence)
     recording.metadata["gait_cycle_analysis"] = result.to_dict()
     return result
 
@@ -1494,8 +2236,14 @@ __all__ = [
     "attach_gait_cycle_to_sequence",
     "classify_gait_phase",
     "detect_gait_events",
+    "detect_kinematic_foot_events",
+    "annotate_event_confidence",
+    "merge_gait_events",
+    "kinematic_supplement_allowed",
     "apply_contact_state_machine",
     "raw_contact_desire",
     "compute_temporal_metrics",
+    "cadence_is_exploratory",
+    "summary_cadence_spm",
     "assess_contact_confidence",
 ]

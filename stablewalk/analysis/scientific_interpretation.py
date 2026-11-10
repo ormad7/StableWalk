@@ -36,10 +36,26 @@ def _parse_speed_ms(text: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+def _stability_reportable(
+    summary: AnalysisSummary,
+    biomechanical: BiomechanicalAnalysisResult | None,
+) -> bool:
+    if biomechanical is not None and getattr(biomechanical, "stability_margin", None) is not None:
+        if getattr(biomechanical.stability_margin, "reportable", True) is False:
+            return False
+    field = summary.stability_margin
+    if field is not None and not field.available:
+        if biomechanical is None or getattr(biomechanical, "stability_margin", None) is None:
+            return False
+    return True
+
+
 def _stable_frame_pct(
     summary: AnalysisSummary,
     biomechanical: BiomechanicalAnalysisResult | None,
 ) -> float | None:
+    if not _stability_reportable(summary, biomechanical):
+        return None
     if biomechanical is not None and biomechanical.stability_margin is not None:
         value = biomechanical.stability_margin.stable_pct
         return float(value) if value is not None else None
@@ -54,6 +70,8 @@ def _dominant_stability_label(
     summary: AnalysisSummary,
     biomechanical: BiomechanicalAnalysisResult | None,
 ) -> str | None:
+    if not _stability_reportable(summary, biomechanical):
+        return None
     if biomechanical is not None and biomechanical.stability_margin is not None:
         counts: dict[str, int] = {}
         for frame in biomechanical.stability_margin.per_frame:
@@ -82,11 +100,13 @@ def _opening_clinical_assessment(
     sym = _first_number(sym_field.value) if sym_field and sym_field.available else None
 
     if dominant == "Unstable" or (stable_pct is not None and stable_pct < 40):
-        stability_phrase = "markedly reduced stability"
+        stability_phrase: str | None = "markedly reduced stability"
     elif dominant == "Reduced Stability" or (stable_pct is not None and stable_pct < 55):
         stability_phrase = "reduced stability"
     elif stable_pct is not None and stable_pct >= 70:
         stability_phrase = "predominantly stable weight-bearing control"
+    elif stable_pct is None and dominant is None:
+        stability_phrase = None
     else:
         stability_phrase = "mixed stability characteristics"
 
@@ -98,8 +118,15 @@ def _opening_clinical_assessment(
     if gq is not None and gq < 55 and not causes:
         causes.append("limited overall gait coordination")
 
-    if causes:
-        cause_text = " and ".join(causes)
+    cause_text = " and ".join(causes)
+    if stability_phrase is None:
+        opening = (
+            "Physical COM–BoS stability is not reportable from this monocular session. "
+            "The remaining descriptors use available temporal and spatial parameters only."
+        )
+        if causes:
+            opening += f" Notable available findings include {cause_text}."
+    elif causes:
         opening = (
             f"The analyzed gait demonstrates {stability_phrase} caused primarily by {cause_text}."
         )
@@ -176,6 +203,19 @@ def _sentence_stability_margin(
     summary: AnalysisSummary,
     biomechanical: BiomechanicalAnalysisResult | None,
 ) -> str:
+    if not _stability_reportable(summary, biomechanical):
+        note = ""
+        if biomechanical is not None and getattr(biomechanical, "stability_margin", None) is not None:
+            note = str(getattr(biomechanical.stability_margin, "experimental_note", "") or "")
+        if not note:
+            note = (
+                "Monocular COM versus base of support is experimental and is not a "
+                "physical stability score"
+            )
+        return (
+            f"{note.rstrip('.')}. It must not be used as a confident Reduced or Unstable "
+            "balance conclusion."
+        )
     stable_pct = _stable_frame_pct(summary, biomechanical)
     dominant = _dominant_stability_label(summary, biomechanical)
     if stable_pct is None and dominant is None:
@@ -204,6 +244,9 @@ def _sentence_stability_margin(
 def _sentence_symmetry(summary: AnalysisSummary) -> str:
     field = summary.symmetry
     if field is None or not field.available:
+        reason = str(getattr(field, "reason", "") or "").strip() if field is not None else ""
+        if "laterality" in reason.lower() or "coverage" in reason.lower():
+            return reason if reason.endswith(".") else f"{reason}."
         return (
             "Left-right symmetry indices could not be derived reliably from the bilateral "
             "timing and spatial metrics available in this clip."
@@ -266,6 +309,13 @@ def _sentence_vgrf(summary: AnalysisSummary) -> str:
 
 
 def _sentence_confidence(summary: AnalysisSummary) -> str:
+    validity = getattr(summary, "result_validity", None)
+    if validity is not None:
+        lines = validity.headline_lines()
+        joined = " ".join(lines[:4])
+        return (
+            f"{joined} These layers are not interchangeable and are not a clinical diagnosis."
+        )
     conf = summary.analysis_confidence
     vq = summary.video_quality
     tracking = summary.tracking_confidence

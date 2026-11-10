@@ -34,9 +34,10 @@ class ComparisonCursor:
     active_gait_events: tuple[str, ...] = ()
 
     def to_playhead_state(self) -> PlayheadState:
+        display = int(self.list_pos) + 1 if self.list_pos is not None else int(self.frame_index) + 1
         return PlayheadState(
             time_s=self.time_s,
-            frame_index=self.frame_index,
+            frame_index=display,
             list_pos=self.list_pos,
             anim_phase=self.anim_phase,
             animating=self.playing,
@@ -135,43 +136,53 @@ def snapshot_comparison_cursor(
     snap: Any | None = None,
     advance_anim: bool = False,
 ) -> ComparisonCursor:
-    """Build the shared cursor from the live player / session state."""
-    frame_float = float(getattr(gui, "_playback_pos", 0.0) or 0.0)
-    list_pos = int(getattr(gui, "current_pos", 0) or 0)
-    player = getattr(gui, "skeleton_player", None)
-    if player is not None:
-        try:
-            frame_float = float(player.state.frame_float)
-            list_pos = max(0, int(getattr(player, "current_index", list_pos) or list_pos))
-        except Exception:
-            pass
+    """Build the shared cursor from the authoritative playback state."""
+    from stablewalk.ui.playback_state import read_playback_state
+
+    state = read_playback_state(gui)
+    if state is not None:
+        frame_float = float(state.frame_float)
+        list_pos = int(state.current_frame_index)
+        playing = bool(state.playing)
+        time_s = float(state.current_time_seconds)
+        frame_index = (
+            int(state.source_frame_index)
+            if state.source_frame_index is not None
+            else list_pos
+        )
+    else:
+        frame_float = float(getattr(gui, "_playback_pos", 0.0) or 0.0)
+        list_pos = int(getattr(gui, "current_pos", 0) or 0)
+        playing = bool(getattr(gui, "playing", False))
+        time_s = 0.0
+        frame_index = list_pos
 
     pose_indices = list(getattr(gui, "pose_indices", None) or [])
     if pose_indices:
         list_pos = max(0, min(list_pos, len(pose_indices) - 1))
 
-    frame_index = 0
     if snap is not None:
         try:
             frame_index = int(snap.frame_index)
         except (TypeError, ValueError):
-            frame_index = 0
+            pass
     elif pose_indices and 0 <= list_pos < len(pose_indices):
         frame_index = int(pose_indices[list_pos])
 
-    time_s = 0.0
     frame_events: list[str] = []
     sequence = getattr(gui, "sequence", None)
+    player = getattr(gui, "skeleton_player", None)
+    has_player = player is not None and getattr(player, "frame_count", 0) > 0
     if sequence is not None:
         pf = next(
             (f for f in sequence.frames if f.frame_index == frame_index),
             None,
         )
         if pf is not None:
-            time_s = float(pf.timestamp_s)
+            if not has_player:
+                time_s = float(pf.timestamp_s)
             frame_events = list(getattr(pf, "gait_events", None) or [])
 
-    playing = bool(getattr(gui, "playing", False))
     if player is not None:
         try:
             playing = bool(player.state.playing)
@@ -210,9 +221,10 @@ def draw_cycle_percent_playhead(ax: Any, cursor: ComparisonCursor) -> None:
     """Playhead on gait-cycle-% charts (x = 0-100)."""
     if cursor.cycle_percent is None:
         return
+    display = int(cursor.list_pos) + 1 if cursor.list_pos is not None else int(cursor.frame_index) + 1
     state = PlayheadState(
         time_s=float(cursor.cycle_percent),
-        frame_index=cursor.frame_index,
+        frame_index=display,
         list_pos=cursor.list_pos,
         anim_phase=cursor.anim_phase,
         animating=cursor.playing,
@@ -295,8 +307,8 @@ def highlight_gait_events_at_cursor(
 
 
 def format_video_cursor_badge(cursor: ComparisonCursor) -> str:
-    """Compact on-video overlay text."""
-    parts = [f"F{cursor.frame_index}", f"{cursor.time_s:.2f}s"]
+    """Compact on-video overlay text (1-based display frame)."""
+    parts = [f"F{int(cursor.list_pos) + 1}", f"{cursor.time_s:.2f}s"]
     if cursor.active_gait_events:
         parts.append(_short_event_name(cursor.active_gait_events[0]))
     return "  ·  ".join(parts)

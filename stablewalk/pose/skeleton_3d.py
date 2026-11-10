@@ -36,6 +36,16 @@ SKELETON_3D_JOINTS: tuple[str, ...] = (
     "right_ankle",
 )
 
+# Extra MediaPipe landmarks reconstructed in the same hip-centered frame as
+# SKELETON_3D_JOINTS. They are NOT additional independent DOFs and are not
+# packed into the 15-column reconstruction arrays.
+FOOT_3D_LANDMARKS: tuple[str, ...] = (
+    "left_heel",
+    "right_heel",
+    "left_foot_index",
+    "right_foot_index",
+)
+
 # Bone connections (pairs of joint names)
 SKELETON_3D_CONNECTIONS: tuple[tuple[str, str], ...] = (
     ("mid_hip", "left_hip"),
@@ -258,6 +268,21 @@ def reconstruct_skeleton_3d(
         )
         joints[name] = Joint3D(name=name, x=x, y=y, z=z, visibility=kp.visibility)
 
+    for name in FOOT_3D_LANDMARKS:
+        kp = kp_map.get(name)
+        if kp is None or kp.visibility < 0.3:
+            continue
+        x, y, z = mediapipe_to_canonical(
+            kp.x,
+            kp.y,
+            kp.z,
+            cx=cx,
+            cy=cy,
+            joint_name=name,
+            scale=1.0,
+        )
+        joints[name] = Joint3D(name=name, x=x, y=y, z=z, visibility=kp.visibility)
+
     skeleton = Skeleton3D(joints=joints)
 
     # Normalize by body height (nose to lowest ankle) for consistent proportions
@@ -277,8 +302,47 @@ def reconstruct_skeleton_3d(
         joint.y *= skeleton.scale
         joint.z *= skeleton.scale
 
+    ankle_before: dict[str, tuple[float, float, float]] = {}
+    for name in ("left_ankle", "right_ankle"):
+        joint = skeleton.joints.get(name)
+        if joint is not None:
+            ankle_before[name] = (joint.x, joint.y, joint.z)
     _apply_limb_proportions(skeleton)
+    # Limb-ratio correction moves ankles; keep reconstructed feet attached.
+    _follow_parent_delta(
+        skeleton,
+        parent_before=ankle_before,
+        children={
+            "left_ankle": ("left_heel", "left_foot_index"),
+            "right_ankle": ("right_heel", "right_foot_index"),
+        },
+    )
     return skeleton
+
+
+def _follow_parent_delta(
+    skeleton: Skeleton3D,
+    *,
+    parent_before: dict[str, tuple[float, float, float]],
+    children: dict[str, tuple[str, ...]],
+) -> None:
+    for parent_name, child_names in children.items():
+        parent = skeleton.joints.get(parent_name)
+        before = parent_before.get(parent_name)
+        if parent is None or before is None:
+            continue
+        dx = parent.x - before[0]
+        dy = parent.y - before[1]
+        dz = parent.z - before[2]
+        if abs(dx) + abs(dy) + abs(dz) < 1e-12:
+            continue
+        for child_name in child_names:
+            child = skeleton.joints.get(child_name)
+            if child is None:
+                continue
+            child.x += dx
+            child.y += dy
+            child.z += dz
 
 
 def _apply_limb_proportions(skeleton: Skeleton3D) -> None:

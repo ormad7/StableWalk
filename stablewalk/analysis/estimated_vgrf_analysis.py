@@ -145,6 +145,8 @@ def _loading_rate(force: np.ndarray, times: np.ndarray) -> float:
         dt = times[i] - times[i - 1]
         if dt <= 1e-9:
             continue
+        if not np.isfinite(force[i]) or not np.isfinite(force[i - 1]):
+            continue
         rate = (force[i] - force[i - 1]) / dt
         if rate > best:
             best = rate
@@ -201,6 +203,9 @@ def analyze_estimated_vgrf(
 
     notes: list[str] = [
         "Estimated Virtual GRF — not measured kinetics or PhysX contact forces.",
+        "Assumptions: F = m·(g + pelvis vertical accel); allocate only to feet "
+        "with confirmed contact; confirmed airborne = 0; unknown/unreliable "
+        "feet are withheld (NaN), not recorded as zero.",
     ]
     bw = body_mass_kg * G
     stature = float(subject_height_m) if subject_height_m else DEFAULT_SUBJECT_HEIGHT_M
@@ -270,44 +275,82 @@ def analyze_estimated_vgrf(
     right_c = contact.right_contact_binary.astype(bool)
     left_prob = contact.left_contact_probability
     right_prob = contact.right_contact_probability
+    left_known = getattr(contact, "left_contact_known_mask", None)
+    right_known = getattr(contact, "right_contact_known_mask", None)
+    if left_known is None or len(left_known) != len(times):
+        left_known = np.ones(len(times), dtype=bool)
+    if right_known is None or len(right_known) != len(times):
+        right_known = np.ones(len(times), dtype=bool)
 
     n = len(times)
     left_n = np.zeros(n, dtype=np.float64)
     right_n = np.zeros(n, dtype=np.float64)
     conf = np.zeros(n, dtype=np.float64)
+    unknown_count = 0
 
     for i in range(n):
-        if not left_c[i] and not right_c[i]:
-            continue
-        f_total = body_mass_kg * (float(acc_z[i]) + G)
-        f_total = max(0.0, min(f_total, 2.5 * bw))
-        fl, fr = _allocate_total_force(
-            f_total,
-            bool(left_c[i]),
-            bool(right_c[i]),
-            left_prob=float(left_prob[i]) if i < len(left_prob) else 0.5,
-            right_prob=float(right_prob[i]) if i < len(right_prob) else 0.5,
-        )
-        left_n[i] = fl
-        right_n[i] = fr
         frame_conf = contact.per_frame[i]
-        conf[i] = min(
-            1.0,
-            contact.metrics.contact_confidence
-            * 0.5
-            + frame_conf.left_confidence * left_prob[i] * 0.25
-            + frame_conf.right_confidence * right_prob[i] * 0.25,
-        )
+        lk = bool(left_known[i])
+        rk = bool(right_known[i])
+        # Confirmed contact only. Hysteresis-held or missing bits are not force.
+        lc = bool(left_c[i]) and lk
+        rc = bool(right_c[i]) and rk
+        lp = float(left_prob[i]) if i < len(left_prob) else 0.5
+        rp = float(right_prob[i]) if i < len(right_prob) else 0.5
+        if not np.isfinite(lp):
+            lp = 0.5
+        if not np.isfinite(rp):
+            rp = 0.5
+
+        if not lk or not rk:
+            fl = fr = 0.0
+            if lc or rc:
+                f_total = body_mass_kg * (float(acc_z[i]) + G)
+                f_total = max(0.0, min(f_total, 2.5 * bw))
+                fl, fr = _allocate_total_force(
+                    f_total, lc, rc, left_prob=lp, right_prob=rp
+                )
+            left_n[i] = fl if lk else np.nan
+            right_n[i] = fr if rk else np.nan
+            if lk and not lc:
+                left_n[i] = 0.0
+            if rk and not rc:
+                right_n[i] = 0.0
+            conf[i] = 0.0
+            unknown_count += 1
+            continue
+
+        if lc or rc:
+            f_total = body_mass_kg * (float(acc_z[i]) + G)
+            f_total = max(0.0, min(f_total, 2.5 * bw))
+            fl, fr = _allocate_total_force(
+                f_total, lc, rc, left_prob=lp, right_prob=rp
+            )
+            left_n[i] = fl
+            right_n[i] = fr
+            conf[i] = min(
+                1.0,
+                contact.metrics.contact_confidence
+                * 0.5
+                + frame_conf.left_confidence * lp * 0.25
+                + frame_conf.right_confidence * rp * 0.25,
+            )
+            continue
+        # Confirmed flight: both feet clearly airborne. Zero is physical here.
+        conf[i] = min(1.0, contact.metrics.contact_confidence * 0.5)
 
     total_n = left_n + right_n
     left_bw = left_n / bw
     right_bw = right_n / bw
 
     dt_mean = float(np.mean(np.diff(times))) if len(times) > 1 else 1.0 / max(contact.fps, 1e-6)
-    impulse = float(np.sum(total_n) * dt_mean)
-    peak_n = float(np.max(total_n)) if len(total_n) else 0.0
-    left_peak_n = float(np.max(left_n)) if len(left_n) else 0.0
-    right_peak_n = float(np.max(right_n)) if len(right_n) else 0.0
+    finite_total = total_n[np.isfinite(total_n)]
+    finite_left = left_n[np.isfinite(left_n)]
+    finite_right = right_n[np.isfinite(right_n)]
+    impulse = float(np.nansum(total_n) * dt_mean)
+    peak_n = float(np.max(finite_total)) if finite_total.size else 0.0
+    left_peak_n = float(np.max(finite_left)) if finite_left.size else 0.0
+    right_peak_n = float(np.max(finite_right)) if finite_right.size else 0.0
     load_rate = _loading_rate(total_n, times)
     left_load_rate = _loading_rate(left_n, times)
     right_load_rate = _loading_rate(right_n, times)
@@ -328,6 +371,11 @@ def analyze_estimated_vgrf(
     )
 
     notes.append(f"Height source: {height_source}.")
+    if unknown_count:
+        notes.append(
+            f"{unknown_count} frames have at least one unknown/unreliable foot. "
+            "Those sides are withheld (NaN), not recorded as zero force."
+        )
 
     return EstimatedVGRFResult(
         method_name=METHOD_NAME,

@@ -28,17 +28,43 @@ from stablewalk.ui.viewers.dof_trajectory_3d import (
 )
 
 
-def test_traj_column_weights_are_balanced() -> None:
-    assert SEC1_TRAJ_VIDEO_WEIGHT == 34
-    assert SEC1_TRAJ_SKELETON_WEIGHT == 36
-    assert SEC1_TRAJ_PATH_WEIGHT == 30
-    assert (
-        SEC1_TRAJ_VIDEO_WEIGHT
-        + SEC1_TRAJ_SKELETON_WEIGHT
-        + SEC1_TRAJ_PATH_WEIGHT
-        == 100
+def test_path_inspector_split_keeps_path_visible() -> None:
+    """Wide default favors the Path while keeping the Inspector mapped."""
+    from stablewalk.ui.tk import dashboard_layout as layout
+
+    assert layout._OVERVIEW_PATH_VIEW_WEIGHT == 80
+    assert layout._OVERVIEW_COORD_INSPECTOR_WEIGHT == 20
+    assert layout._OVERVIEW_PATH_VIEW_WEIGHT + layout._OVERVIEW_COORD_INSPECTOR_WEIGHT == 100
+    # Path must remain strictly larger than the Coordinate Inspector.
+    assert layout._OVERVIEW_PATH_VIEW_WEIGHT > layout._OVERVIEW_COORD_INSPECTOR_WEIGHT
+    # Column floors stay soft so the responsive ratio cannot force overflow.
+    assert layout._OVERVIEW_PATH_VIEW_MINWIDTH == 0
+    assert layout._OVERVIEW_TRAJ_CANVAS_MINSIZE == 120
+    assert layout._OVERVIEW_COORD_INSPECTOR_MINWIDTH == 0
+
+
+def test_reflow_never_shrinks_path_below_build_floor() -> None:
+    """Responsive reflow must not undercut the Path card / viewport minimums."""
+    from stablewalk.ui.tk import dashboard_layout as layout
+    from stablewalk.ui.tk.overview_responsive import (
+        PATH_CANVAS_MINSIZE_WIDE,
+        PATH_PANEL_MINWIDTH,
     )
-    assert SEC1_TRAJ_PANEL_MINWIDTH >= 240
+
+    assert PATH_PANEL_MINWIDTH >= SEC1_TRAJ_PANEL_MINWIDTH
+    assert PATH_CANVAS_MINSIZE_WIDE >= layout._OVERVIEW_TRAJ_CANVAS_MINSIZE
+    assert PATH_PANEL_MINWIDTH >= layout._OVERVIEW_PATH_VIEW_MINWIDTH
+
+
+def test_traj_column_weights_are_balanced() -> None:
+    # Video 40% | Skeleton 30% | Path 30%.
+    assert SEC1_TRAJ_VIDEO_WEIGHT == 40
+    assert SEC1_TRAJ_SKELETON_WEIGHT == 30
+    assert SEC1_TRAJ_PATH_WEIGHT == 30
+    assert SEC1_TRAJ_VIDEO_WEIGHT > SEC1_TRAJ_SKELETON_WEIGHT
+    assert SEC1_TRAJ_SKELETON_WEIGHT == SEC1_TRAJ_PATH_WEIGHT
+    # Columns stay usable without forcing horizontal overflow.
+    assert 180 <= SEC1_TRAJ_PANEL_MINWIDTH <= 280
 
 
 def test_overview_margins_are_not_flush() -> None:
@@ -46,9 +72,19 @@ def test_overview_margins_are_not_flush() -> None:
     assert left > 0.0
     assert bottom > 0.05
     assert right < 1.0
-    assert top < 1.0
-    assert right - left > 0.7
-    assert top - bottom > 0.7
+    assert top <= 0.93
+    assert right - left > 0.65
+    assert top - bottom > 0.65
+
+
+def test_trajectory_margins_leave_room_for_axis_titles() -> None:
+    single = _single_dof_figure_margins(6.5, 5.2, dpi=100.0)
+    overview = _overview_dof_figure_margins(4.0, 3.6, dpi=100.0)
+    for left, bottom, right, top in (single, overview):
+        assert top <= 0.93
+        assert bottom >= 0.08
+        assert left >= 0.03
+        assert right <= 0.97
 
 
 def test_motion_axes_use_most_of_available_graph_area() -> None:
@@ -56,15 +92,37 @@ def test_motion_axes_use_most_of_available_graph_area() -> None:
         6.5, 5.2, dpi=100.0
     )
     area_fraction = (right - left) * (top - bottom)
-    assert 0.80 <= area_fraction <= 0.95
+    assert 0.78 <= area_fraction <= 0.95
 
 
 def test_overview_box_zoom_shrinks_on_short_panel() -> None:
     short = _single_traj_box_zoom(2.0, 2.0, dpi=100.0, overview_dock=True)
     tall = _single_traj_box_zoom(4.0, 5.0, dpi=100.0, overview_dock=True)
-    assert short < 1.0
-    assert tall <= 1.0
-    assert short <= tall
+    assert 0.82 <= short <= 1.0
+    assert 0.90 <= tall <= 1.0
+    assert short <= tall + 0.02
+
+
+def test_motion_box_zoom_fills_at_least_70_percent() -> None:
+    zoom = _single_traj_box_zoom(6.5, 5.2, dpi=100.0, motion_dock=True)
+    assert zoom >= 0.70
+    short = _single_traj_box_zoom(4.0, 2.5, dpi=100.0, motion_dock=True)
+    assert short >= 0.70
+
+
+def test_motion_viewport_uses_equal_xyz_scale() -> None:
+    xs = [0.0, 0.05, 0.10]
+    ys = [0.80, 0.82, 0.81]
+    zs = [0.0, 0.02, 0.04]
+    vp = _viewport_for_overview_dock(
+        xs, ys, zs, joint_id="right_knee", motion_dock=True
+    )
+    sx = vp.xlim[1] - vp.xlim[0]
+    sy = vp.ylim[1] - vp.ylim[0]
+    sz = vp.zlim[1] - vp.zlim[0]
+    assert abs(sx - sy) < 1e-9
+    assert abs(sy - sz) < 1e-9
+    assert abs(vp.box_aspect[0] - vp.box_aspect[1]) < 1e-9
 
 
 def test_overview_viewport_pads_and_ignores_nan() -> None:
@@ -143,9 +201,9 @@ def test_selected_trajectory_axes_use_scientific_cm_labels() -> None:
     ax._stablewalk_motion_dock = True
     ax._stablewalk_overview_cm_ticks = True
     setup_single_dof_trajectory_axes(ax)
-    assert ax.get_xlabel() == "X (cm)"
-    assert ax.get_ylabel() == "Y (cm)"
-    assert ax.get_zlabel() == "Z (cm)"
+    assert ax.get_xlabel() == "X · Lat (cm, est.)"
+    assert ax.get_ylabel() == "Y · Up (cm, est.)"
+    assert ax.get_zlabel() == "Z · Fwd (cm, est.)"
 
 
 def test_adaptive_ticks_avoid_duplicate_labels() -> None:

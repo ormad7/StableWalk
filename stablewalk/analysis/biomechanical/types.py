@@ -60,6 +60,10 @@ class BiomechanicalFrameBoS:
     centroid: tuple[float, float]
     area_m2: float
     confidence: float
+    polygon_source: str = "contact"  # contact | soft_contralateral | carried_stance
+    # Per-foot world (x, z) used for margin; polygon_xy remains the display hull.
+    left_xy: list[tuple[float, float]] = field(default_factory=list)
+    right_xy: list[tuple[float, float]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +74,9 @@ class BiomechanicalFrameBoS:
             "centroid": self.centroid,
             "area_m2": self.area_m2,
             "confidence": self.confidence,
+            "polygon_source": self.polygon_source,
+            "left_xy": self.left_xy,
+            "right_xy": self.right_xy,
         }
 
 
@@ -107,17 +114,27 @@ class JointROMStats:
 
 @dataclass
 class GaitQualityScore:
-    score: float  # 0–100
+    score: float | None  # 0–100 when available; None when not scored
     confidence: float
     dominant_factors: list[str]
     explanation: str
     components: dict[str, float] = field(default_factory=dict)
+    available: bool = True
+    kind: str = "heuristic"
+    status: str = "unavailable"
+    formula: str = ""
+    limitations: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "score": round(self.score, 1),
+            "score": None if self.score is None else round(self.score, 1),
             "confidence": round(self.confidence, 3),
             "dominant_factors": list(self.dominant_factors),
             "explanation": self.explanation,
             "components": {k: round(v, 2) for k, v in self.components.items()},
+            "available": bool(self.available and self.score is not None),
+            "kind": self.kind,
+            "status": self.status,
+            "formula": self.formula,
+            "limitations": self.limitations,
         }

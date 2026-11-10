@@ -34,6 +34,8 @@ class RecentSessionEntry:
     video_source: str = ""
     saved_at: str = ""
     frame_count: int = 0
+    backend: str = ""
+    confidence: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +44,8 @@ class RecentSessionEntry:
             "video_source": self.video_source,
             "saved_at": self.saved_at,
             "frame_count": self.frame_count,
+            "backend": self.backend,
+            "confidence": self.confidence,
         }
 
     @classmethod
@@ -52,6 +56,8 @@ class RecentSessionEntry:
             video_source=str(data.get("video_source") or ""),
             saved_at=str(data.get("saved_at") or ""),
             frame_count=int(data.get("frame_count") or 0),
+            backend=str(data.get("backend") or ""),
+            confidence=str(data.get("confidence") or ""),
         )
 
 
@@ -118,6 +124,8 @@ def remember_session(
     display_name: str | None = None,
     video_source: str = "",
     frame_count: int = 0,
+    backend: str = "",
+    confidence: str = "",
 ) -> None:
     bundle = Path(path).expanduser().resolve()
     data = load_registry()
@@ -132,6 +140,8 @@ def remember_session(
         video_source=video_source,
         saved_at=datetime.now().isoformat(timespec="seconds"),
         frame_count=frame_count,
+        backend=backend,
+        confidence=confidence,
     )
     recent.insert(0, entry.to_dict())
     data["recent"] = recent[:MAX_RECENT]

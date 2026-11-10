@@ -9,6 +9,8 @@ from unittest import mock
 
 from stablewalk.ui.tk.generated_files_panel import (
     format_file_size,
+    generated_files_tree_column_plan,
+    generated_files_tree_display_columns,
     scan_generated_files,
 )
 
@@ -17,6 +19,28 @@ class GeneratedFilesPanelTests(unittest.TestCase):
     def test_format_file_size(self) -> None:
         self.assertEqual(format_file_size(512), "512 B")
         self.assertEqual(format_file_size(2048), "2.0 KB")
+
+    def test_tree_columns_hide_metadata_on_narrow_cards(self) -> None:
+        self.assertEqual(
+            generated_files_tree_display_columns(400),
+            ("filename", "type", "status"),
+        )
+        self.assertEqual(
+            generated_files_tree_display_columns(600),
+            ("filename", "type", "status", "size"),
+        )
+        self.assertEqual(
+            generated_files_tree_display_columns(800),
+            ("filename", "type", "status", "size", "created"),
+        )
+        narrow = generated_files_tree_column_plan(400)
+        wide = generated_files_tree_column_plan(900)
+        self.assertTrue(narrow["filename"]["stretch"])
+        self.assertLess(narrow["filename"]["width"], wide["filename"]["width"])
+        self.assertLessEqual(
+            sum(wide[name]["width"] for name in ("type", "status", "size", "created")),
+            420,
+        )
 
     def test_scan_classifies_exports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
